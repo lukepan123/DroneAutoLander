@@ -124,7 +124,7 @@
                 <pose frame="">0.0812 0 0.245 0 0 0</pose>
                 <geometry>
                     <mesh>
-                        <uri>model://X1/meshes/top_plate.dae</uri>
+                        <uri>model://X1/meshes/top_plate_new.dae</uri>
                     </mesh>
                 </geometry>
             </visual>

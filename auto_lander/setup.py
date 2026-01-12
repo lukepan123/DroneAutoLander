@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'bearing_measurement_generation = auto_lander.bearing_measurement_generation:main',
+            'apriltagdetector = auto_lander.apriltagdetector:main',
             'controller = auto_lander.controller:main'
         ],
     },
