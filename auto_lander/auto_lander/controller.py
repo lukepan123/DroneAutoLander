@@ -18,13 +18,13 @@ from mavros_msgs.srv import CommandBool, CommandTOL, SetMode, MessageInterval
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 
-from .implimented_controllers import MD_Controller, MDV_Controller, DKR_Controller, KRV_Controller
+from .implimented_controllers import Controller
 
 
 
-class CircumnavigationController(Node):
+class ChaserController(Node):
     def __init__(self):
-        super().__init__('circumnavigation_controller')
+        super().__init__('chaser_controller')
 
         state_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -403,12 +403,7 @@ class CircumnavigationController(Node):
             self.csv_file.flush()
             return
             
-    
-
-        #msg = MD_Controller(self)
-        #msg = MDV_Controller(self)
-        #msg = DKR_Controller(self)
-        msg = KRV_Controller(self)
+        msg = Controller(self)
 
         current_time = self.get_clock().now().nanoseconds / 1e9
         self.csv_writer.writerow([
@@ -445,7 +440,7 @@ class CircumnavigationController(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = CircumnavigationController()
+    node = ChaserController()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     try:

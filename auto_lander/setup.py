@@ -24,9 +24,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'bearing_measurement_generation = auto_lander.bearing_measurement_generation:main',
-            'apriltagdetector = auto_lander.apriltagdetector:main',
-            'controller = auto_lander.controller:main'
+            'tagposedetector = auto_lander.tagposedetector:main',
+            'controller = auto_lander.controller:main',
+            'camera_calibrate = auto_lander.camera_calibrate:main'
         ],
     },
 )
