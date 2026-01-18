@@ -3,7 +3,7 @@ import os
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float64, Float64
 from geometry_msgs.msg import PoseStamped
@@ -79,16 +79,43 @@ class ArUCoNode(Node):
         self.get_logger().info(f"Video recording parameters: save_frames={self.save_frames}, create_video={self.create_video}, video_fps={self.video_fps}")
         self.get_logger().info(f"Output directory: '{self.output_dir}' (empty means workspace root)")
 
+        # Must match the IR input size you exported (default IRIS is 640 x 480)
+        self.declare_parameter("imgsz_width", 640)
+        self.image_width = int(self.get_parameter("imgsz_width").get_parameter_value().integer_value)
+        
+        self.declare_parameter("imgsz_height", 480)
+        self.image_height = int(self.get_parameter("imgsz_height").get_parameter_value().integer_value)
 
-        # Must match the IR input size you exported (default OpenVINO export is 640)
-        self.declare_parameter("imgsz", 256)
-        self.imgsz = int(self.get_parameter("imgsz").get_parameter_value().integer_value)
+        self.camera_fov_horizontal = 0.8  # radians (≈114.6°) – tune for your camera
+        self.camera_fov_vertical = 2 * np.arctan(np.tan(self.camera_fov_horizontal / 2) / (self.image_width/self.image_height))
         # ----------------------------------------------------------
+
+        # Initialise MAVROS subscriptions
+        state_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
+        self.pose = PoseStamped()
+        pose_qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        self.pose_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self.local_pose_callback, pose_qos)
 
         # Publishers
         self.target_pose_publisher = self.create_publisher(PoseStamped, '/target_pose', 10)
         self.bridge = CvBridge()
         self.webcam_publisher = self.create_publisher(Image, "/image", 10)
+
+        # AruCo Detector State
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
+
+        self.aruco_params = cv2.aruco.DetectorParameters()
+        self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self.aruco_params.cornerRefinementWinSize = 5
+        self.aruco_params.cornerRefinementMaxIterations = 30
+        self.aruco_params.cornerRefinementMinAccuracy = 0.01
+
+        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
 
         # Initialize frame saving
         self.frame_count = 0
@@ -120,12 +147,6 @@ class ArUCoNode(Node):
 
         if self.show_debug_window:
             cv2.namedWindow("Detected Markers", cv2.WINDOW_AUTOSIZE)
-
-        # State
-        self.image_width = self.imgsz
-        self.image_height = self.imgsz
-        self.camera_fov_horizontal = 0.8  # radians (≈114.6°) – tune for your camera
-        self.camera_fov_vertical = 0.8  # radians - since square camera
 
         # Image source
         if self.image_source == "topic":
@@ -163,8 +184,8 @@ class ArUCoNode(Node):
             else:
                 # Set camera properties
                 self.cap.set(cv2.CAP_PROP_FPS, 30)
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.imgsz)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.imgsz)
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.image_width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.image_height)
                 
                 # Log actual camera properties
                 actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -195,7 +216,11 @@ class ArUCoNode(Node):
                 self.get_logger().warning("Failed to read frame from webcam.")
         else:
             self.get_logger().warning("Webcam not opened.")
-
+    
+    # Callback functions for subscriptions
+    def local_pose_callback(self, msg: PoseStamped):
+        self.pose = msg
+    
     def altitude_callback(self, msg):
         """Get current quadcopter height from MAVROS altimeter"""
         self.current_altitude = msg.data
@@ -205,22 +230,16 @@ class ArUCoNode(Node):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
 
         # Ensure inference size matches IR (handles topic frames of any size)
-        if frame.shape[0] != self.imgsz or frame.shape[1] != self.imgsz:
+        if frame.shape[0] != self.image_height or frame.shape[1] != self.image_width:
             frame = cv2.resize(
-                frame, (self.imgsz, self.imgsz), interpolation=cv2.INTER_NEAREST
+                frame, (self.image_width, self.image_height), interpolation=cv2.INTER_LINEAR
             )
 
         # Inference (ArUCo detection via OpenCV)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Change to greyscale before inference step
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
-
-        parameters = cv2.aruco.DetectorParameters()
-        parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-
-        detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
         # Detect the markers
-        corners, ids, rejected = detector.detectMarkers(gray_frame)
+        corners, ids, rejected = self.detector.detectMarkers(gray_frame)
 
         # Determine the pose of each marker
         if ids is not None:
@@ -235,12 +254,11 @@ class ArUCoNode(Node):
             dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
 
             TAG_SIZES = {
-                35: 0.54,
-                27: 0.108,
+                35: 0.489
             }
 
-            for i, id in enumerate(ids):
-                tag_id = int(id[0])
+            for i, marker_id in enumerate(ids):
+                tag_id = int(marker_id[0])
 
                 if tag_id not in TAG_SIZES:
                     continue
@@ -249,10 +267,10 @@ class ArUCoNode(Node):
                 half = marker_length / 2.0
 
                 object_points = np.array([
+                    [-half,  half, 0],  # top-left
                     [ half,  half, 0],  # top-right
                     [ half, -half, 0],  # bottom-right
                     [-half, -half, 0],  # bottom-left
-                    [-half,  half, 0],  # top-left
                 ], dtype=np.float32)
 
                 image_points = corners[i][0].astype(np.float32)
@@ -262,7 +280,7 @@ class ArUCoNode(Node):
                     image_points,
                     camera_matrix,
                     dist_coeffs,
-                    flags=cv2.SOLVEPNP_ITERATIVE
+                    flags=cv2.SOLVEPNP_IPPE_SQUARE
                 )
 
                 if success:
@@ -280,11 +298,9 @@ class ArUCoNode(Node):
                     pose_msg = self.rvec_tvec_to_posestamped(
                         rvec,
                         tvec,
-                        frame_id='quadcopter'
                     )
 
                     self.target_pose_publisher.publish(pose_msg)
-                    print(pose_msg)
 
         # Show the output image after ArUCo detection (if debug window enabled)
         if self.show_debug_window:
@@ -313,48 +329,57 @@ class ArUCoNode(Node):
             msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
             self.webcam_publisher.publish(msg)
             
-    def rvec_tvec_to_posestamped(self, rvec, tvec, frame_id='quadcopter'):
-        pose = PoseStamped()
+    def rvec_tvec_to_posestamped(self, rvec, tvec):
+        # To figure out where the target is in the world, we need to the following set of transformations:
+        # world -> quad -> camera -> target
 
-        # Camera relative to quad - position vector and rotation matrix (m)
-        pos_cam_to_quad = np.array([0.0, 0.0, 0.7])
-        R_cam_to_quad = np.array([
-            [ 0,  0,  1],
+        # From ArUCo tag, find the camera --> target transform (4x4)
+        T_cam_to_target = np.eye(4)
+        T_cam_to_target[:3, 3] = tvec.reshape(3) # position
+        R_cam_to_target, _ = cv2.Rodrigues(rvec)
+        T_cam_to_target[:3, :3] = R_cam_to_target # rotation
+
+        # From quad setup, we know the quad -> camera transform (4x4)
+        T_quad_to_cam = np.eye(4)
+        T_quad_to_cam[:3, 3] = np.array([0.0, 0.0, -0.1249]) # position
+        T_quad_to_cam[:3, :3] = np.array([
+            [ 0, -1,  0],
             [-1,  0,  0],
-            [ 0, -1,  0]
-        ])
+            [ 0,  0, -1]
+        ]) # rotation
 
-        pos_cam = tvec.reshape(3) # Ensure correct shape
-        pos_target = R_cam_to_quad @ pos_cam + pos_cam_to_quad
+        # From MAVROS, we know the map -> quad transform (4x4)
+        T_map_to_quad = np.eye(4)
+        T_map_to_quad[:3, 3] = np.array([self.pose.pose.position.x, self.pose.pose.position.y, self.pose.pose.position.z]) # position
+        q_map_to_quad = [self.pose.pose.orientation.x, self.pose.pose.orientation.y, self.pose.pose.orientation.z, self.pose.pose.orientation.w]       
+        T_map_to_quad[:3, :3] = tf_transformations.quaternion_matrix(q_map_to_quad)[:3, :3] # rotation
+
+        # Now using all the transforms, we can obtain the map -> target transform
+        T_map_to_target = T_map_to_quad @ T_quad_to_cam @ T_cam_to_target
+        # print("T_mt", T_map_to_target)
+        # print("T_mq", T_map_to_quad)
+        # print("T_qc", T_quad_to_cam)
+        # print("T_ct", T_cam_to_target)
+
+        # Extract translation and rotation
+        t_map_to_target = T_map_to_target[:3, 3]
+        q_map_to_target = tf_transformations.quaternion_from_matrix(T_map_to_target)
 
         # Header
-        pose.header.stamp = self.get_clock().now().to_msg()
-        pose.header.frame_id = frame_id
+        target_pose = PoseStamped()
+        target_pose.header.stamp = self.get_clock().now().to_msg()
+        target_pose.header.frame_id = 'map'
 
         # Translation (camera frame, meters)
-        pose.pose.position.x = float(pos_target[0])
-        pose.pose.position.y = float(pos_target[1])
-        pose.pose.position.z = float(pos_target[2])
+        target_pose.pose.position.x = float(t_map_to_target[0])
+        target_pose.pose.position.y = float(t_map_to_target[1])
+        target_pose.pose.position.z = float(t_map_to_target[2])
+        target_pose.pose.orientation.x = q_map_to_target[0]
+        target_pose.pose.orientation.y = q_map_to_target[1]
+        target_pose.pose.orientation.z = q_map_to_target[2]
+        target_pose.pose.orientation.w = q_map_to_target[3]
 
-        # Rodrigues to rotation matrix
-        R_cam, _ = cv2.Rodrigues(rvec)
-
-        # Rotate into quadcopter frame
-        R_target = R_cam_to_quad @ R_cam
-
-        # Build 4x4 homogeneous transform
-        T = np.eye(4)
-        T[:3, :3] = R_target
-
-        # Rotation matrix → quaternion
-        q = tf_transformations.quaternion_from_matrix(T)
-
-        pose.pose.orientation.x = q[0]
-        pose.pose.orientation.y = q[1]
-        pose.pose.orientation.z = q[2]
-        pose.pose.orientation.w = q[3]
-
-        return pose
+        return target_pose
 
     def create_video_from_frames(self):
         """Create video from saved frames"""

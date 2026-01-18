@@ -6,7 +6,7 @@ import os
 import numpy as np
 from datetime import datetime
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.executors import MultiThreadedExecutor
 
 from std_msgs.msg import Float64, Bool
@@ -15,17 +15,19 @@ from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode, MessageInterval
 
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 
-from .implimented_controllers import Controller
+from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs
 
+from .implimented_controllers import Controller
 
 
 class ChaserController(Node):
     def __init__(self):
         super().__init__('chaser_controller')
 
+        # Initialise MAVROS subscriptions
         state_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
@@ -40,11 +42,6 @@ class ChaserController(Node):
 
         self.compass_sub = self.create_subscription(Float64, '/mavros/global_position/compass_hdg', self._on_compass, pose_qos)
 
-
-        self.err_sub = self.create_subscription( Float64, '/yaw_error', self._on_person_error, 10)
-        self.bearing_sub = self.create_subscription(Float64, '/bearing', self._on_bearing, 10)
-        self.tracking_enable_sub = self.create_subscription(Bool, '/tracking_enable', self._on_tracking_enable, 10)
-
         self.vel_pub = self.create_publisher( TwistStamped, '/mavros/setpoint_velocity/cmd_vel', 10)
         self.setpoint_timer = self.create_timer(0.15, self._publish_setpoint)
 
@@ -53,33 +50,39 @@ class ChaserController(Node):
         self.takeoff_client = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
         self.message_interval_client = self.create_client(MessageInterval, '/mavros/set_message_interval')
 
+        # Initialise additional subscriptions
+        self.target_pose_sub = self.create_subscription(PoseStamped, '/target_pose', self._on_target_pose, 10)
+        self.tracking_enable_sub = self.create_subscription(Bool, '/tracking_enable', self._on_tracking_enable, 10)
+
+        # Initialise node variables
         self.state = State()
         self.pose = PoseStamped()
+        self.target_pose = PoseStamped()
         self.global_pos = NavSatFix()
-        self.person_err = 0.0
-        self.bearing = 0.0
         self.compass_hdg = 0.0
+        
+        # Initialise controller variables
+        self.target_altitude = 5.0
+        self.kp = 0.9
+        self.ki = 0.08
+        self.kd = -0.1
+        self.x_error_int = 0.0
+        self.y_error_int = 0.0
+        self.prev_x_meas = 0.0
+        self.prev_y_meas = 0.0
+        self.prev_time = self.get_clock().now()
 
-        self.target_altitude = 3.0
-        self.tangential_speed = 1.0
-        self.parallel_speed = 0.30
-        self.yaw_kp = 1.5
-        self.yaw_ki = 0.025
-        self.max_yaw_rate = 2.0
-        self._last_yaw_rate = 0.0
-        self.yaw_integral_error = 0.0
-
+        # Initialise flight .csv log
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.csv_filename = f"circumnavigation_data_{timestamp}.csv"
+        self.csv_filename = f"controller_{timestamp}.csv"
         self.csv_file = open(self.csv_filename, 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow([
-            'timestamp', 'x', 'y', 'z', 'latitude', 'longitude', 'global_altitude', 'compass_hdg', 'bearing', 'yaw_error', 
-            'vel_x', 'vel_y', 'vel_z', 'yaw_rate', 
-            'estimated_state_x', 'estimated_state_y','desired_radius','distance_error'
+            'timestamp', 'quad_x', 'quad_y', 'quad_z', 'target_x', 'target_y', 'target_z'
         ])
         self.get_logger().info(f'CSV logging initialized: {self.csv_filename}')
 
+        # Initialise arming and landing variables
         self._guided_requested = False
         self._guided_confirmed = False
 
@@ -100,19 +103,10 @@ class ChaserController(Node):
         self.orchestrator = self.create_timer(0.2, self._orchestrate)
         self.safety_timer = self.create_timer(1.0, self._check_safety_conditions)
 
-
-        self.estimator_gain = 0.1
-        self.estimated_state = np.array([0.0, 0.0])
-        self.desired_radius = 5.0
-        self.estimated_error = 0.0
-        self.P = np.zeros((2,2))
-        self.Q = np.zeros((2,1))
-        self.counter = 0
-
         # Set MAVROS message intervals
         self._set_message_intervals()
 
-        self.get_logger().info('Circumnavigation Controller (callbacks) started')
+        self.get_logger().info('Auto Lander (callbacks) started')
 
     def _set_message_intervals(self):
         """Set MAVROS message intervals for global position and compass to 30Hz"""
@@ -169,6 +163,7 @@ class ChaserController(Node):
             self.get_logger().info(f'Estimated target at: ({target_x:.2f}, {target_y:.2f})')
 
 
+    # Helper functions for subscriptions
     def _on_pose(self, msg: PoseStamped):
         self.pose = msg
         alt = msg.pose.position.z
@@ -182,14 +177,11 @@ class ChaserController(Node):
     def _on_global_position(self, msg: NavSatFix):
         self.global_pos = msg
 
-    def _on_person_error(self, msg: Float64):
-        self.person_err = float(msg.data)
-
-    def _on_bearing(self, msg: Float64):
-        self.bearing = float(msg.data)
-
     def _on_compass(self, msg: Float64):
         self.compass_hdg = float(msg.data)
+
+    def _on_target_pose(self, msg: PoseStamped):
+        self.target_pose = msg
 
     def _on_tracking_enable(self, msg: Bool):
         """Handle manual tracking enable/disable commands"""
@@ -199,6 +191,8 @@ class ChaserController(Node):
         else:
             self._disable_tracking_manual()
         self.get_logger().info(f'Manual tracking override: {"ENABLED" if msg.data else "DISABLED"}')
+    # -------------------------------------------------------------
+
 
     def _orchestrate(self):
         if not self.state.connected:
@@ -328,7 +322,7 @@ class ChaserController(Node):
         # Check 120-second timer after takeoff
         if self._takeoff_complete_time is not None:
             elapsed_since_takeoff = current_time - self._takeoff_complete_time
-            if elapsed_since_takeoff >= 60.0:
+            if elapsed_since_takeoff >= 120.0:
                 self.get_logger().warn('120 seconds elapsed since takeoff - Initiating RTL')
                 self._initiate_rtl('120-second timer expired')
                 return
@@ -385,20 +379,9 @@ class ChaserController(Node):
                 self.pose.pose.position.x,
                 self.pose.pose.position.y, 
                 self.pose.pose.position.z,
-                self.global_pos.latitude,
-                self.global_pos.longitude,
-                self.global_pos.altitude,
-                self.compass_hdg,
-                self.bearing,
-                self.person_err,
-                0.0,  # Zero velocities during RTL
-                0.0,
-                0.0,
-                0.0,
-                self.estimated_state[0],
-                self.estimated_state[1],
-                self.desired_radius,
-                self.estimated_error,
+                self.target_pose.pose.position.x,
+                self.target_pose.pose.position.y,
+                self.target_pose.pose.position.z
             ])
             self.csv_file.flush()
             return
@@ -411,21 +394,9 @@ class ChaserController(Node):
             self.pose.pose.position.x,
             self.pose.pose.position.y, 
             self.pose.pose.position.z,
-            self.global_pos.latitude,
-            self.global_pos.longitude,
-            self.global_pos.altitude,
-            self.compass_hdg,
-            self.bearing,
-            self.person_err,
-            msg.twist.linear.x,
-            msg.twist.linear.y,
-            msg.twist.linear.z,
-            msg.twist.angular.z,
-            self.estimated_state[0],
-            self.estimated_state[1],
-            self.desired_radius,
-            self.estimated_error,
-
+            self.target_pose.pose.position.x,
+            self.target_pose.pose.position.y,
+            self.target_pose.pose.position.z
         ])
         self.csv_file.flush()
 

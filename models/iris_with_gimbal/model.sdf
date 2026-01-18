@@ -7,8 +7,8 @@
 
     <!-- Fixed camera mount -->
     <link name="camera_link">
-      <pose degrees="true">0.0 0.0 0.7 90 0 270</pose>
-      <!-- pose degrees="true">0.0 0.0 -0.124923 160 0 90</pose> -->
+      <pose degrees="true">0.0 0.0 -0.124923 180 0 90</pose>
+      <!--pose degrees="true">0.0 0.0 5.0 180 0 90</pose-->
       <inertial>
         <mass>0.05</mass>
         <inertia>
