@@ -15,9 +15,17 @@ def Controller(node):
         dt = max(dt, 1e-3)
         node.prev_time = now
 
+        # Determine target coordinates based on target position and velcoity
+        lookout_factor = 0.0
+
+        x_target = lookout_factor * node.target_odometry.twist.twist.linear.x + node.target_odometry.pose.pose.position.x
+        y_target = lookout_factor * node.target_odometry.twist.twist.linear.y + node.target_odometry.pose.pose.position.y
+        z_target = node.target_odometry.pose.pose.position.z + 1.0
+
         # Position error
-        x_error = node.target_pose.pose.position.x - node.pose.pose.position.x
-        y_error = node.target_pose.pose.position.y - node.pose.pose.position.y
+        x_error = x_target - node.pose.pose.position.x
+        y_error = y_target - node.pose.pose.position.y
+        z_error = z_target - node.pose.pose.position.z
 
         # Integrate error
         node.x_error_int += x_error * dt
@@ -29,32 +37,42 @@ def Controller(node):
         node.y_error_int = max(min(node.y_error_int, max_int), -max_int)
 
         # Derivative
-        dx_meas = (node.pose.pose.position.x - node.prev_x_meas) / dt
-        dy_meas = (node.pose.pose.position.y - node.prev_y_meas) / dt
+        dx_error = (node.target_odometry.twist.twist.linear.x - node.twist.twist.linear.x)
+        dy_error = (node.target_odometry.twist.twist.linear.y - node.twist.twist.linear.y)
+        dz_error = (node.target_odometry.twist.twist.linear.z - node.twist.twist.linear.z)
 
-        node.prev_x_meas = node.pose.pose.position.x
-        node.prev_y_meas = node.pose.pose.position.y
+        node.x_p = node.kp * x_error
+        node.x_i = node.ki * node.x_error_int
+        node.x_d = node.kd * dx_error
+        node.y_p = node.kp * y_error
+        node.y_i = node.ki * node.y_error_int
+        node.y_d = node.kd * dy_error
+
+        # Make gains more sensitive as drone gets closer to rover
+        node.kp = max(min((node.target_altitude + z_error)/7 * 2.5,1.5),0.2)
 
         # PID output
-        vx = node.kp * x_error + node.ki * node.x_error_int + node.kd * dx_meas
-        vy = node.kp * y_error + node.ki * node.y_error_int + node.kd * dy_meas
+        vx = node.kp * x_error + node.ki * node.x_error_int + node.kd * dx_error
+        vy = node.kp * y_error + node.ki * node.y_error_int + node.kd * dy_error
+        vz = 0.04 * z_error
 
         # Velocity saturation
-        max_vel = 2.0
+        max_vel = 8.0
         vx = max(min(vx, max_vel), -max_vel)
         vy = max(min(vy, max_vel), -max_vel)
+        vz = max(min(vz, max_vel), -max_vel)
 
-        msg.twist.linear.x = float(vx)
-        msg.twist.linear.y = float(vy)
+        # msg.twist.linear.x = float(vx)
+        # msg.twist.linear.y = float(vy)
+        # msg.twist.linear.z = float(vz)
             
         node.vel_pub.publish(msg)
 
-        print("X_drone", node.pose.pose.position.x, "Y_drone", node.pose.pose.position.y, "Z_drone", node.pose.pose.position.z)
-        print("X_targ", node.target_pose.pose.position.x, "Y_targ", node.target_pose.pose.position.y, "Z_targ", node.target_pose.pose.position.z)
-        print("X_err", x_error, "Y_err", y_error, "Z_targ")
-        print("X_com", vx, "Y_com", vy)
+        # print("X_drone", node.pose.pose.position.x, "Y_drone", node.pose.pose.position.y, "Z_drone", node.pose.pose.position.z)
+        # print("X_targ", node.target_odometry.pose.pose.position.x, "Y_targ", node.target_odometry.pose.pose.position.y, "Z_targ", node.target_odometry.pose.pose.position.z)
+        # print("X_err", x_error, "Y_err", y_error, "Z_targ")
+        # print("X_com", vx, "Y_com", vy)
         #error_mag = np.sqrt(np.power(x_error, 2) + np.power(y_error, 2))
         #print("Distance Error: ", error_mag)
-
 
     return msg

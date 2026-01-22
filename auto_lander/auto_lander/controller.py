@@ -1,76 +1,79 @@
 #!/usr/bin/env python3
-import rclpy
 import math
 import csv
-import os
 import numpy as np
 from datetime import datetime
+
+import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.executors import MultiThreadedExecutor
 
 from std_msgs.msg import Float64, Bool
 from geometry_msgs.msg import PoseStamped, TwistStamped
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode, MessageInterval
 
-from rclpy.qos import qos_profile_sensor_data
-
-from tf2_ros import Buffer, TransformListener
-import tf2_geometry_msgs
-
 from .implimented_controllers import Controller
-
 
 class ChaserController(Node):
     def __init__(self):
         super().__init__('chaser_controller')
 
+        # ---------------- PUBLISHERS AND SUBSCRIPTIONS ----------------
         # Initialise MAVROS subscriptions
-        state_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
+        state_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        self.state_sub = self.create_subscription(State, '/mavros/state', self._on_state, state_qos)
 
         pose_qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
-
-        self.state_sub = self.create_subscription( State, '/mavros/state', self._on_state, state_qos)
         self.pose_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._on_pose, pose_qos)
+        self.twist_sub = self.create_subscription(TwistStamped, '/mavros/local_position/twist', self._on_twist, pose_qos)        
         self.global_pos_sub = self.create_subscription(NavSatFix, '/mavros/global_position/global', self._on_global_position, pose_qos)
-
         self.compass_sub = self.create_subscription(Float64, '/mavros/global_position/compass_hdg', self._on_compass, pose_qos)
 
-        self.vel_pub = self.create_publisher( TwistStamped, '/mavros/setpoint_velocity/cmd_vel', 10)
-        self.setpoint_timer = self.create_timer(0.15, self._publish_setpoint)
+        # Initialise subscriptions from target detection node
+        self.target_odometry_sub = self.create_subscription(Odometry, '/odometry/filtered', self._on_target_odometry, 10)
+        self.tracking_enable_sub = self.create_subscription(Bool, '/tracking_enable', self._on_tracking_enable, 10)
 
+        # Initialise MAVROS publishers and control loop
+        self.vel_pub = self.create_publisher(TwistStamped, '/mavros/setpoint_velocity/cmd_vel', 10)
+        self.setpoint_timer = self.create_timer(0.01, self._publish_setpoint) # <- control loop
+
+        # INitialise MAVROS clients
         self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
         self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.takeoff_client = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
         self.message_interval_client = self.create_client(MessageInterval, '/mavros/set_message_interval')
 
-        # Initialise additional subscriptions
-        self.target_pose_sub = self.create_subscription(PoseStamped, '/target_pose', self._on_target_pose, 10)
-        self.tracking_enable_sub = self.create_subscription(Bool, '/tracking_enable', self._on_tracking_enable, 10)
 
+        # ---------------- QUADCOPTER STATE ----------------
         # Initialise node variables
         self.state = State()
         self.pose = PoseStamped()
-        self.target_pose = PoseStamped()
+        self.twist = TwistStamped()
+        self.target_odometry = Odometry()
         self.global_pos = NavSatFix()
         self.compass_hdg = 0.0
         
         # Initialise controller variables
-        self.target_altitude = 5.0
-        self.kp = 0.9
-        self.ki = 0.08
-        self.kd = -0.1
+        self.target_altitude = 10.0
+        self.kp = 0.7
+        self.ki = 0.0
+        self.kd = 0.0
         self.x_error_int = 0.0
         self.y_error_int = 0.0
         self.prev_x_meas = 0.0
         self.prev_y_meas = 0.0
         self.prev_time = self.get_clock().now()
+
+        self.x_p = 0.0
+        self.x_i = 0.0
+        self.x_d = 0.0
+        self.y_p = 0.0
+        self.y_i = 0.0
+        self.y_d = 0.0
 
         # Initialise flight .csv log
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -78,7 +81,9 @@ class ChaserController(Node):
         self.csv_file = open(self.csv_filename, 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow([
-            'timestamp', 'quad_x', 'quad_y', 'quad_z', 'target_x', 'target_y', 'target_z'
+            'timestamp', 'quad_x', 'quad_y', 'quad_z', 'quad_vx', 'quad_vy', 'quad_vz', 
+            'target_x', 'target_y', 'target_z', 'target_vx', 'target_vy', 'target_vz',
+            'x_p', 'x_i', 'x_d', 'y_p', 'y_i', 'y_d'
         ])
         self.get_logger().info(f'CSV logging initialized: {self.csv_filename}')
 
@@ -109,9 +114,10 @@ class ChaserController(Node):
         self.get_logger().info('Auto Lander (callbacks) started')
 
     def _set_message_intervals(self):
-        """Set MAVROS message intervals for global position and compass to 30Hz"""
-        self._set_single_message_interval(32, 30.0, "Global Position") 
-        self._set_single_message_interval(74, 30.0, "Compass Heading")
+        """Set MAVROS message intervals for global position and compass to 100.0Hz"""
+        self._set_single_message_interval(32, 100.0, "Local Position") 
+        self._set_single_message_interval(33, 100.0, "Global Position") 
+        self._set_single_message_interval(74, 100.0, "Compass Heading")
 
     def _set_single_message_interval(self, message_id, rate, description):
         """Set a single message interval"""
@@ -174,14 +180,17 @@ class ChaserController(Node):
             self.get_logger().info(f'Takeoff complete at {alt:.2f} m - Starting 60s safety timer')
             self._enable_tracking()
 
+    def _on_twist(self, msg: TwistStamped):
+        self.pose = msg
+
     def _on_global_position(self, msg: NavSatFix):
         self.global_pos = msg
 
     def _on_compass(self, msg: Float64):
         self.compass_hdg = float(msg.data)
 
-    def _on_target_pose(self, msg: PoseStamped):
-        self.target_pose = msg
+    def _on_target_odometry(self, msg: Odometry):
+        self.target_odometry = msg
 
     def _on_tracking_enable(self, msg: Bool):
         """Handle manual tracking enable/disable commands"""
@@ -322,7 +331,7 @@ class ChaserController(Node):
         # Check 120-second timer after takeoff
         if self._takeoff_complete_time is not None:
             elapsed_since_takeoff = current_time - self._takeoff_complete_time
-            if elapsed_since_takeoff >= 120.0:
+            if elapsed_since_takeoff >= 80.0:
                 self.get_logger().warn('120 seconds elapsed since takeoff - Initiating RTL')
                 self._initiate_rtl('120-second timer expired')
                 return
@@ -370,20 +379,8 @@ class ChaserController(Node):
 
 
     def _publish_setpoint(self):
-        
-        # Don't send velocity commands if RTL has been initiated
+        # Don't write to CSV nor send commands if rtl initiated
         if self._rtl_initiated:
-            current_time = self.get_clock().now().nanoseconds / 1e9
-            self.csv_writer.writerow([
-                current_time,
-                self.pose.pose.position.x,
-                self.pose.pose.position.y, 
-                self.pose.pose.position.z,
-                self.target_pose.pose.position.x,
-                self.target_pose.pose.position.y,
-                self.target_pose.pose.position.z
-            ])
-            self.csv_file.flush()
             return
             
         msg = Controller(self)
@@ -394,9 +391,21 @@ class ChaserController(Node):
             self.pose.pose.position.x,
             self.pose.pose.position.y, 
             self.pose.pose.position.z,
-            self.target_pose.pose.position.x,
-            self.target_pose.pose.position.y,
-            self.target_pose.pose.position.z
+            self.twist.twist.linear.x,
+            self.twist.twist.linear.y,
+            self.twist.twist.linear.z,
+            self.target_odometry.pose.pose.position.x,
+            self.target_odometry.pose.pose.position.y,
+            self.target_odometry.pose.pose.position.z,
+            self.target_odometry.twist.twist.linear.x,
+            self.target_odometry.twist.twist.linear.y,
+            self.target_odometry.twist.twist.linear.z,
+            self.x_p,
+            self.x_i,
+            self.x_d,
+            self.y_p,
+            self.y_i,
+            self.y_d
         ])
         self.csv_file.flush()
 
@@ -408,7 +417,7 @@ class ChaserController(Node):
             self.get_logger().info(f'CSV file closed: {self.csv_filename}')
         super().destroy_node()
 
-
+# ---------------- MAIN ----------------
 def main(args=None):
     rclpy.init(args=args)
     node = ChaserController()
