@@ -5,6 +5,7 @@ https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Colcon-Tutori
 
 ## Running
 **General Notes**
+
 Each application will need to be run in separate terminal windows.
 
 If after running `source install/setup.bash` no ROS2 commands are found, you will also need to run `source /opt/ros/humble/setup.bash`
