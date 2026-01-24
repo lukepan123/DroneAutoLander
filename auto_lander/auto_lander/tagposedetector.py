@@ -2,12 +2,12 @@
 import os
 
 import rclpy
-from rclpy.time import Time
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 import tf_transformations
+import tf2_ros
 
 from cv_bridge import CvBridge
 import cv2
@@ -100,14 +100,12 @@ class ArUCoNode(Node):
         
         # ---------------- PUBLISHERS AND SUBSCRIPTIONS ----------------
         # Initialise MAVROS subscription
+        qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.pose = PoseStamped()
-        self.old_target_pose = PoseWithCovarianceStamped()
-        pose_qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
-        self.pose_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self.local_pose_callback, pose_qos)
+        self.pose_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self.local_pose_callback, qos)
 
         # Publishers
-        self.target_pose_publisher = self.create_publisher(PoseWithCovarianceStamped, '/target_pose', 10)
-        self.target_twist_publisher = self.create_publisher(TwistWithCovarianceStamped, '/target_twist', 10)
+        self.tf_cam_to_target_broadcaster = tf2_ros.TransformBroadcaster(self)
         self.bridge = CvBridge()
         self.webcam_publisher = self.create_publisher(Image, "/image", 10)
 
@@ -116,16 +114,10 @@ class ArUCoNode(Node):
         # AruCo Detector Params
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
         self.aruco_params = cv2.aruco.DetectorParameters()
-        # self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        # self.aruco_params.cornerRefinementWinSize = 5
-        # self.aruco_params.cornerRefinementMaxIterations = 30
-        # self.aruco_params.cornerRefinementMinAccuracy = 0.01
+        self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
 
-        # Target Velocity state variables
-        self.prev_gray = None
-        self.prev_corners = None
-        self.prev_stamp = None
 
         # Initialize frame saving
         self.frame_count = 0
@@ -231,13 +223,9 @@ class ArUCoNode(Node):
     
     def local_pose_callback(self, msg: PoseStamped):
         self.pose = msg
-    
-    def altitude_callback(self, msg):
-        """Get current quadcopter height from MAVROS altimeter"""
-        self.current_altitude = msg.data
 
     def image_callback(self, msg):
-        """Process image and detect tag, calculate pose and twist"""
+        """Process image and detect tag, calculate pose and publish tf_transform"""
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
 
         # Ensure inference size matches IR (handles topic frames of any size)
@@ -248,12 +236,11 @@ class ArUCoNode(Node):
 
         # Inference (ArUCo detection via OpenCV)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Change to greyscale before inference step
-
-        # Detect the markers
         corners, ids, rejected = self.detector.detectMarkers(gray_frame)
 
+        # Begin pose and twist estimation if tag is detected
         if ids is not None:  
-            # Camera properties
+            # Camera properties (TODO: move to top)
             fx = self.image_width / (2 * np.tan(self.camera_fov_horizontal / 2))
             fy = self.image_height / (2 * np.tan(self.camera_fov_vertical / 2))
             camera_matrix = np.array([
@@ -264,9 +251,9 @@ class ArUCoNode(Node):
 
             dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
 
+            # --------- TARGET POSE (solvePNP) ---------
             # Determine the pose of each marker
             TAG_SIZES = {35: 0.489}
-
             for i, marker_id in enumerate(ids):
                 tag_id = int(marker_id[0])
 
@@ -304,15 +291,10 @@ class ArUCoNode(Node):
                         marker_length * 0.5
                     )
 
-                    # Convert camera pose to a target pose (camera coords to world coords)
-                    pose_msg = self.target_posestamped(rvec, tvec)
-                    if pose_msg is not None:
-                        self.target_pose_publisher.publish(pose_msg)
-
-                    # Estimate velocity
-                    twist_msg = self.target_twiststamped(gray_frame, corners, tvec, camera_matrix)
-                    if twist_msg is not None:
-                        self.target_twist_publisher.publish(twist_msg)
+                    # Broadcast target position relative to camera frame
+                    transform_msg = self.cam_to_target_transformstamped(rvec, tvec)
+                    if transform_msg is not None:
+                        self.tf_cam_to_target_broadcaster.sendTransform(transform_msg)
 
 
         # Show the output image after ArUCo detection (if debug window enabled)
@@ -344,217 +326,30 @@ class ArUCoNode(Node):
 
 
     # ---------------- HELPER FUNCTIONS ----------------        
-    def target_posestamped(self, rvec, tvec):
-        # To figure out where the target is in the world, we need to the following set of transformations:
-        # world -> quad -> camera -> target
-
-        # Header for pose
-        target_pose = PoseWithCovarianceStamped()
-        target_pose.header.stamp = self.get_clock().now().to_msg()
-        target_pose.header.frame_id = 'map'
-
-        # Check that mavros data is up to date
-        now = self.get_clock().now()
-
-        if self.pose is None:
-            self.get_logger().warn("No MAVROS pose received yet")
-            return None
-
-        pose_time = Time.from_msg(self.pose.header.stamp)
-        age = (now - pose_time).nanoseconds * 1e-9  # seconds
-        MAX_POSE_AGE = 0.2  # seconds (tune this)
-
-        if age < 0.0:
-            # self.get_logger().warn(
-            #     f"MAVROS pose is from the future (age={age:.3f}s), skipping"
-            # )
-            return None
-
-        if age > MAX_POSE_AGE:
-            # self.get_logger().warn(
-            #     f"MAVROS pose too old (age={age:.3f}s), skipping"
-            # )
-            return None
+    def cam_to_target_transformstamped(self, rvec, tvec):
+        # Broadcast the cam_to_target tf transform
 
         # From ArUCo tag, find the camera --> target transform (4x4)
-        T_cam_to_target = np.eye(4)
-        T_cam_to_target[:3, 3] = tvec.reshape(3) # position
+        t_cam_to_target = tvec.reshape(3) # position
         R_cam_to_target, _ = cv2.Rodrigues(rvec)
-        T_cam_to_target[:3, :3] = R_cam_to_target # rotation
+        T_cam_to_target = np.eye(4)
+        T_cam_to_target[:3, :3] = R_cam_to_target
+        q_cam_to_target = tf_transformations.quaternion_from_matrix(T_cam_to_target)
 
-        # From quad setup, we know the quad -> camera transform (4x4)
-        T_quad_to_cam = np.eye(4)
-        T_quad_to_cam[:3, 3] = np.array([0.0, 0.0, -0.1249]) # position
-        T_quad_to_cam[:3, :3] = np.array([
-            [ 0, -1,  0],
-            [-1,  0,  0],
-            [ 0,  0, -1]
-        ]) # rotation
+        # Header for pose
+        tf_cam_to_target = TransformStamped()
+        tf_cam_to_target.header.stamp = self.get_clock().now().to_msg()
+        tf_cam_to_target.header.frame_id = "camera_link"
+        tf_cam_to_target.child_frame_id = "target_link"
+        tf_cam_to_target.transform.translation.x = t_cam_to_target[0]
+        tf_cam_to_target.transform.translation.y = t_cam_to_target[1]
+        tf_cam_to_target.transform.translation.z = t_cam_to_target[2]
+        tf_cam_to_target.transform.rotation.x = q_cam_to_target[0]
+        tf_cam_to_target.transform.rotation.y = q_cam_to_target[1]
+        tf_cam_to_target.transform.rotation.z = q_cam_to_target[2]
+        tf_cam_to_target.transform.rotation.w = q_cam_to_target[3]
 
-        # From MAVROS, we know the map -> quad transform (4x4)
-        T_map_to_quad = np.eye(4)
-        T_map_to_quad[:3, 3] = np.array([self.pose.pose.position.x, self.pose.pose.position.y, self.pose.pose.position.z]) # position
-        q_map_to_quad = [self.pose.pose.orientation.x, self.pose.pose.orientation.y, self.pose.pose.orientation.z, self.pose.pose.orientation.w]       
-        T_map_to_quad[:3, :3] = tf_transformations.quaternion_matrix(q_map_to_quad)[:3, :3] # rotation
-
-        # Now using all the transforms, we can obtain the map -> target transform
-        T_map_to_target = T_map_to_quad @ T_quad_to_cam @ T_cam_to_target
-
-        # Extract translation
-        t_map_to_target = T_map_to_target[:3, 3]
-
-        # Clean rotation matrix
-        R_map_to_target = T_map_to_target[:3, :3]
-
-        if not np.isfinite(R_map_to_target).all():
-            self.get_logger().warn("Rotation matrix contains NaN/Inf, skipping frame")
-            return None
-        
-        U, _, Vt = np.linalg.svd(R_map_to_target)
-        R_map_to_target = U @ Vt
-
-        # Ensure proper rotation (det = +1)
-        if np.linalg.det(R_map_to_target) < 0:
-            U[:, -1] *= -1
-            R_map_to_target = U @ Vt
-
-        # Rebuild a clean 4x4 transform
-        T_map_to_target[:3, :3] = R_map_to_target
-        q_map_to_target = tf_transformations.quaternion_from_matrix(T_map_to_target)
-
-        # Translation (camera frame, meters)
-        target_pose.pose.pose.position.x = float(t_map_to_target[0])
-        target_pose.pose.pose.position.y = float(t_map_to_target[1])
-        target_pose.pose.pose.position.z = float(t_map_to_target[2])
-        target_pose.pose.pose.orientation.x = q_map_to_target[0]
-        target_pose.pose.pose.orientation.y = q_map_to_target[1]
-        target_pose.pose.pose.orientation.z = q_map_to_target[2]
-        target_pose.pose.pose.orientation.w = q_map_to_target[3]
-
-        # Covariance
-        cov = np.zeros((6, 6))
-        # Position variance (meters^2)
-        cov[0, 0] = 0.3   # x
-        cov[1, 1] = 0.3   # y
-        cov[2, 2] = 0.3   # z
-        # Orientation variance (rad^2)
-        cov[3, 3] = 0.2    # roll
-        cov[4, 4] = 0.2    # pitch
-        cov[5, 5] = 0.2    # yaw
-
-        target_pose.pose.covariance = cov.flatten().tolist()
-
-        return target_pose
-    
-    def target_twiststamped(self, gray, corners, tvec, camera_matrix):
-        # To figure out how fast the target is travelling, we use an optical flow algorithim on the corners of the ARUCO tags
-
-        # Header for twist
-        target_twist = TwistWithCovarianceStamped()
-        target_twist.header.stamp = self.get_clock().now().to_msg()
-        target_twist.header.frame_id = 'map'
-
-        stamp = Time.from_msg(target_twist.header.stamp)
-
-        # Initialise previous frame states on first run
-        if self.prev_gray is None:
-            self.prev_gray = gray
-            self.prev_corners = corners
-            self.prev_stamp = stamp
-            return None
-
-        dt = (stamp - self.prev_stamp).nanoseconds * 1e-9
-        if dt < 1e-3:
-            return None
-
-        # Stack all corners into Nx1x2 array
-        p0 = np.concatenate(self.prev_corners, axis=1).reshape(-1, 1, 2).astype(np.float32)
-
-        p1, status, _ = cv2.calcOpticalFlowPyrLK(
-            self.prev_gray,
-            gray,
-            p0,
-            None,
-            winSize=(21, 21),
-            maxLevel=3,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
-        )
-
-        if p1 is None:
-            return None
-
-        good_old = p0[status == 1]
-        good_new = p1[status == 1]
-
-        if len(good_old) < 4:
-            return None
-
-        pixel_vel = (good_new - good_old) / dt
-        mean_pixel_vel = np.mean(pixel_vel, axis=0).reshape(2)
-
-        print(mean_pixel_vel)
-
-        # Update state
-        self.prev_gray = gray
-        self.prev_corners = corners
-        self.prev_stamp = stamp
-
-        if mean_pixel_vel is not None:
-            depth_z = max(0.0, abs(float(tvec[2])))
-            vx = mean_pixel_vel[0] * depth_z / camera_matrix[0, 0]
-            vy = mean_pixel_vel[1] * depth_z / camera_matrix[1, 1] #negative to correct result out of calcOpticalFlowPyrLK
-            v_cam = np.array([vx, vy, 0.0])
-
-            # Check that mavros data is up to date
-            now = self.get_clock().now()
-
-            if self.pose is None:
-                self.get_logger().warn("No MAVROS pose received yet")
-                return None
-
-            pose_time = Time.from_msg(self.pose.header.stamp)
-            age = (now - pose_time).nanoseconds * 1e-9  # seconds
-            MAX_POSE_AGE = 0.2  # seconds (tune this)
-
-            if age < 0.0:
-                # self.get_logger().warn(
-                #     f"MAVROS pose is from the future (age={age:.3f}s), skipping"
-                # )
-                return None
-
-            if age > MAX_POSE_AGE:
-                # self.get_logger().warn(
-                #     f"MAVROS pose too old (age={age:.3f}s), skipping"
-                # )
-                return None
-        
-            # Rotate into map frame
-            q_map_to_quad = [self.pose.pose.orientation.x, self.pose.pose.orientation.y, self.pose.pose.orientation.z, self.pose.pose.orientation.w]       
-            R_map_to_quad = tf_transformations.quaternion_matrix(q_map_to_quad)[:3, :3] # rotation
-
-            R_quad_to_cam = np.array([
-                [ 0, -1,  0],
-                [-1,  0,  0],
-                [ 0,  0, -1]
-            ])
-
-            R_map_to_cam = R_map_to_quad @ R_quad_to_cam
-            v_map = R_map_to_cam @ v_cam
-
-            target_twist.twist.twist.linear.x = float(v_map[0])
-            target_twist.twist.twist.linear.y = float(v_map[1])
-            target_twist.twist.twist.linear.z = float(v_map[2])
-
-            print(v_map[1])
-
-            # Covariance tuned for optical flow
-            cov = np.zeros((6, 6))
-            cov[0, 0] = 0.2
-            cov[1, 1] = 0.2
-            cov[2, 2] = 0.3
-            target_twist.twist.covariance = cov.flatten().tolist()
-
-            return target_twist
+        return tf_cam_to_target
 
     def create_video_from_frames(self):
         """Create video from saved frames"""
@@ -623,7 +418,6 @@ class ArUCoNode(Node):
                     
         except Exception as e:
             self.get_logger().error(f"Error creating video: {e}")
-
 
 # ---------------- MAIN ----------------
 def main(args=None):

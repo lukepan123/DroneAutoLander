@@ -16,11 +16,14 @@ def Controller(node):
         node.prev_time = now
 
         # Determine target coordinates based on target position and velcoity
-        lookout_factor = 0.0
+        lookout_factor = 1.0
 
-        x_target = lookout_factor * node.target_odometry.twist.twist.linear.x + node.target_odometry.pose.pose.position.x
-        y_target = lookout_factor * node.target_odometry.twist.twist.linear.y + node.target_odometry.pose.pose.position.y
-        z_target = node.target_odometry.pose.pose.position.z + 1.0
+        x_target = lookout_factor * node.target_vel[0] + node.target_pose[0]
+        y_target = lookout_factor * node.target_vel[1] + node.target_pose[1]
+        z_target = node.target_odometry.pose.pose.position.z + 0.5
+
+        # node.get_logger().info(f'x {node.target_vel[0]}')
+        # node.get_logger().info(f'y {node.target_vel[1]}')
 
         # Position error
         x_error = x_target - node.pose.pose.position.x
@@ -37,9 +40,9 @@ def Controller(node):
         node.y_error_int = max(min(node.y_error_int, max_int), -max_int)
 
         # Derivative
-        dx_error = (node.target_odometry.twist.twist.linear.x - node.twist.twist.linear.x)
-        dy_error = (node.target_odometry.twist.twist.linear.y - node.twist.twist.linear.y)
-        dz_error = (node.target_odometry.twist.twist.linear.z - node.twist.twist.linear.z)
+        dx_error = (node.target_vel[0] - node.twist.twist.linear.x)
+        dy_error = (node.target_vel[1] - node.twist.twist.linear.y)
+        dz_error = (node.target_vel[2] - node.twist.twist.linear.z)
 
         node.x_p = node.kp * x_error
         node.x_i = node.ki * node.x_error_int
@@ -54,7 +57,7 @@ def Controller(node):
         # PID output
         vx = node.kp * x_error + node.ki * node.x_error_int + node.kd * dx_error
         vy = node.kp * y_error + node.ki * node.y_error_int + node.kd * dy_error
-        vz = 0.04 * z_error
+        vz = -0.3 # 0.04 * z_error
 
         # Velocity saturation
         max_vel = 8.0
@@ -62,9 +65,9 @@ def Controller(node):
         vy = max(min(vy, max_vel), -max_vel)
         vz = max(min(vz, max_vel), -max_vel)
 
-        # msg.twist.linear.x = float(vx)
-        # msg.twist.linear.y = float(vy)
-        # msg.twist.linear.z = float(vz)
+        msg.twist.linear.x = float(vx)
+        msg.twist.linear.y = float(vy)
+        msg.twist.linear.z = float(vz)
             
         node.vel_pub.publish(msg)
 

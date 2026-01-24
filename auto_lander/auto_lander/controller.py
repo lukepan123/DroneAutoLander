@@ -5,12 +5,14 @@ import numpy as np
 from datetime import datetime
 
 import rclpy
+from rclpy.time import Time
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.executors import MultiThreadedExecutor
+import tf2_ros
 
 from std_msgs.msg import Float64, Bool
-from geometry_msgs.msg import PoseStamped, TwistStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import State
@@ -29,19 +31,31 @@ class ChaserController(Node):
 
         pose_qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.pose_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._on_pose, pose_qos)
-        self.twist_sub = self.create_subscription(TwistStamped, '/mavros/local_position/twist', self._on_twist, pose_qos)        
+        self.twist_sub = self.create_subscription(TwistStamped, '/mavros/local_position/velocity_local', self._on_twist, pose_qos)        
         self.global_pos_sub = self.create_subscription(NavSatFix, '/mavros/global_position/global', self._on_global_position, pose_qos)
         self.compass_sub = self.create_subscription(Float64, '/mavros/global_position/compass_hdg', self._on_compass, pose_qos)
 
-        # Initialise subscriptions from target detection node
+        # Initialise target frame listener
+        self.tf_map_target_buffer = tf2_ros.Buffer()
+        self.tf_map_target_listener = tf2_ros.TransformListener(self.tf_map_target_buffer, self)
+        self.timer = self.create_timer(0.1, self._tf_map_to_target_callback)
+
+        # Initialise publisher and subscription to target odometry UKF
+        self.target_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/target_pose', 10)
         self.target_odometry_sub = self.create_subscription(Odometry, '/odometry/filtered', self._on_target_odometry, 10)
         self.tracking_enable_sub = self.create_subscription(Bool, '/tracking_enable', self._on_tracking_enable, 10)
+        
+        # LP Filters on target pose/vel
+        self.target_pose = None
+        self.target_vel = None
+        self.target_pose_lp = LowPassFilter(30.0)
+        self.target_vel_lp = LowPassFilter(10.0)
 
         # Initialise MAVROS publishers and control loop
         self.vel_pub = self.create_publisher(TwistStamped, '/mavros/setpoint_velocity/cmd_vel', 10)
-        self.setpoint_timer = self.create_timer(0.01, self._publish_setpoint) # <- control loop
+        self.setpoint_timer = self.create_timer(0.01, self._control_loop) # <- control loop
 
-        # INitialise MAVROS clients
+        # Initialise MAVROS clients
         self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
         self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.takeoff_client = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
@@ -81,7 +95,7 @@ class ChaserController(Node):
         self.csv_file = open(self.csv_filename, 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow([
-            'timestamp', 'quad_x', 'quad_y', 'quad_z', 'quad_vx', 'quad_vy', 'quad_vz', 
+            'timestamp', 'quad_x', 'quad_y', 'quad_z', 'quad_vx', 'quad_vy', 'quad_vz', 'quad_omgx', 'quad_omgy', 'quad_omgz', 
             'target_x', 'target_y', 'target_z', 'target_vx', 'target_vy', 'target_vz',
             'x_p', 'x_i', 'x_d', 'y_p', 'y_i', 'y_d'
         ])
@@ -181,7 +195,7 @@ class ChaserController(Node):
             self._enable_tracking()
 
     def _on_twist(self, msg: TwistStamped):
-        self.pose = msg
+        self.twist = msg
 
     def _on_global_position(self, msg: NavSatFix):
         self.global_pos = msg
@@ -377,12 +391,64 @@ class ChaserController(Node):
         else:
             self.get_logger().error(f'RTL command rejected by FCU (reason: {reason})')
 
+    def _tf_map_to_target_callback(self):
+        try:
+            map_to_target_transform = self.tf_map_target_buffer.lookup_transform(
+            'map',
+            'target_link',
+            rclpy.time.Time()   # latest available transform
+        )
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            return
+        
+        pose_msg = PoseWithCovarianceStamped()
 
-    def _publish_setpoint(self):
+        # Header
+        pose_msg.header.stamp = map_to_target_transform.header.stamp
+        pose_msg.header.frame_id = map_to_target_transform.header.frame_id
+
+        # Position
+        pose_msg.pose.pose.position.x = map_to_target_transform.transform.translation.x
+        pose_msg.pose.pose.position.y = map_to_target_transform.transform.translation.y
+        pose_msg.pose.pose.position.z = map_to_target_transform.transform.translation.z
+
+        # Orientation
+        pose_msg.pose.pose.orientation = map_to_target_transform.transform.rotation
+
+        # Covariance (you MUST set this for EKF stability)
+        cov = np.zeros((6, 6))
+        cov[0, 0] = 0.1   # x
+        cov[1, 1] = 0.1   # y
+        cov[2, 2] = 0.1   # z
+        cov[3, 3] = 0.1   # roll
+        cov[4, 4] = 0.1   # pitch
+        cov[5, 5] = 0.1   # yaw
+
+        pose_msg.pose.covariance = cov.flatten().tolist()
+
+        self.target_pose_pub.publish(pose_msg)
+
+    def _control_loop(self):
         # Don't write to CSV nor send commands if rtl initiated
         if self._rtl_initiated:
             return
-            
+
+        # Update LP Filters
+        stamp = Time.from_msg(self.target_odometry.header.stamp)
+
+        target_pose_raw = np.array([
+            self.target_odometry.pose.pose.position.x, 
+            self.target_odometry.pose.pose.position.y, 
+            self.target_odometry.pose.pose.position.z])
+        self.target_pose = self.target_pose_lp.update(target_pose_raw, stamp)
+
+        target_vel_raw = np.array([
+            self.target_odometry.twist.twist.linear.x, 
+            self.target_odometry.twist.twist.linear.y, 
+            self.target_odometry.twist.twist.linear.z])
+        self.target_vel = self.target_vel_lp.update(target_vel_raw, stamp)
+        
+        # Run control loop
         msg = Controller(self)
 
         current_time = self.get_clock().now().nanoseconds / 1e9
@@ -394,12 +460,15 @@ class ChaserController(Node):
             self.twist.twist.linear.x,
             self.twist.twist.linear.y,
             self.twist.twist.linear.z,
-            self.target_odometry.pose.pose.position.x,
-            self.target_odometry.pose.pose.position.y,
-            self.target_odometry.pose.pose.position.z,
-            self.target_odometry.twist.twist.linear.x,
-            self.target_odometry.twist.twist.linear.y,
-            self.target_odometry.twist.twist.linear.z,
+            self.twist.twist.angular.x,
+            self.twist.twist.angular.y,
+            self.twist.twist.angular.z,
+            self.target_pose[0],
+            self.target_pose[1],
+            self.target_pose[2],
+            self.target_vel[0],
+            self.target_vel[1],
+            self.target_vel[2],
             self.x_p,
             self.x_i,
             self.x_d,
@@ -416,6 +485,32 @@ class ChaserController(Node):
             self.csv_file.close()
             self.get_logger().info(f'CSV file closed: {self.csv_filename}')
         super().destroy_node()
+
+class LowPassFilter:
+    def __init__(self, cutoff_hz):
+        self.cutoff = cutoff_hz
+        self.prev_values = None
+        self.prev_stamp = None
+
+    def update(self, values, stamp):
+        # Initialise if first time
+        if self.prev_values is None:
+            self.prev_values = values.copy()
+            self.prev_stamp = stamp
+            return values
+
+        dt = (stamp - self.prev_stamp).nanoseconds * 1e-9
+        if dt <= 0.0:
+            return self.prev_values
+
+        tau = 1.0 / (2.0 * np.pi * self.cutoff)
+        alpha = dt / (tau + dt)
+
+        filtered_values = self.prev_values + alpha * (values - self.prev_values)
+
+        self.prev_values = filtered_values.copy()
+        self.prev_stamp = stamp
+        return filtered_values
 
 # ---------------- MAIN ----------------
 def main(args=None):
