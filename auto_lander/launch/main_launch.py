@@ -27,13 +27,13 @@ def generate_launch_description():
             {'image_source': 'topic'},
             {'show_debug_window': True},
             {'enable_debug_publish': False},
-            {'create_video': False}
+            {'create_video': True}
         ]
     )
 
     # Run target pose UKF filter node
     ukf_params = {
-        'frequency': 100.0,
+        'frequency': 60.0,
         'sensor_timeout': 0.2,
         'two_d_mode': False,
 

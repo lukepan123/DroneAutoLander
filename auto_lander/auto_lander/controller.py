@@ -18,7 +18,7 @@ from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode, MessageInterval
 
-from .implimented_controllers import Controller
+from .implimented_controllers import Controller, MPCController
 
 class ChaserController(Node):
     def __init__(self):
@@ -44,23 +44,16 @@ class ChaserController(Node):
         self.target_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/target_pose', 10)
         self.target_odometry_sub = self.create_subscription(Odometry, '/odometry/filtered', self._on_target_odometry, 10)
         self.tracking_enable_sub = self.create_subscription(Bool, '/tracking_enable', self._on_tracking_enable, 10)
+        self.target_found_sub = self.create_subscription(Bool, '/target_found', self._on_target_found, 10)
+
+        self.vel_pub = self.create_publisher(TwistStamped, '/mavros/setpoint_velocity/cmd_vel', 10)
         
         # LP Filters on target pose/vel
         self.target_pose = None
         self.target_vel = None
-        self.target_pose_lp = LowPassFilter(30.0)
-        self.target_vel_lp = LowPassFilter(10.0)
-
-        # Initialise MAVROS publishers and control loop
-        self.vel_pub = self.create_publisher(TwistStamped, '/mavros/setpoint_velocity/cmd_vel', 10)
-        self.setpoint_timer = self.create_timer(0.01, self._control_loop) # <- control loop
-
-        # Initialise MAVROS clients
-        self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
-        self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
-        self.takeoff_client = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
-        self.message_interval_client = self.create_client(MessageInterval, '/mavros/set_message_interval')
-
+        self.target_pose_lp = LowPassFilter(0.8)
+        self.target_vel_lp = LowPassFilter(0.5)
+        self.target_found = False
 
         # ---------------- QUADCOPTER STATE ----------------
         # Initialise node variables
@@ -72,7 +65,7 @@ class ChaserController(Node):
         self.compass_hdg = 0.0
         
         # Initialise controller variables
-        self.target_altitude = 10.0
+        self.target_altitude = 15.0
         self.kp = 0.7
         self.ki = 0.0
         self.kd = 0.0
@@ -89,6 +82,19 @@ class ChaserController(Node):
         self.y_i = 0.0
         self.y_d = 0.0
 
+        # Initialize MPC
+        self.mpc_controller = MPCController(self)
+
+        # Initialise MAVROS publishers and control loop
+        
+        self.setpoint_timer = self.create_timer(0.10, self._control_loop) # <- control loop (10Hz)
+
+        # Initialise MAVROS clients
+        self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
+        self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
+        self.takeoff_client = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
+        self.message_interval_client = self.create_client(MessageInterval, '/mavros/set_message_interval')
+
         # Initialise flight .csv log
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.csv_filename = f"controller_{timestamp}.csv"
@@ -97,7 +103,8 @@ class ChaserController(Node):
         self.csv_writer.writerow([
             'timestamp', 'quad_x', 'quad_y', 'quad_z', 'quad_vx', 'quad_vy', 'quad_vz', 'quad_omgx', 'quad_omgy', 'quad_omgz', 
             'target_x', 'target_y', 'target_z', 'target_vx', 'target_vy', 'target_vz',
-            'x_p', 'x_i', 'x_d', 'y_p', 'y_i', 'y_d'
+            'target_lpx', 'target_lpy', 'target_lpz', 'target_lpvx', 'target_lpvy', 'target_lpvz'
+            # 'x_p', 'x_i', 'x_d', 'y_p', 'y_i', 'y_d'
         ])
         self.get_logger().info(f'CSV logging initialized: {self.csv_filename}')
 
@@ -214,6 +221,9 @@ class ChaserController(Node):
         else:
             self._disable_tracking_manual()
         self.get_logger().info(f'Manual tracking override: {"ENABLED" if msg.data else "DISABLED"}')
+
+    def _on_target_found(self, msg: Bool):
+        self.target_found = msg.data
     # -------------------------------------------------------------
 
 
@@ -345,7 +355,7 @@ class ChaserController(Node):
         # Check 120-second timer after takeoff
         if self._takeoff_complete_time is not None:
             elapsed_since_takeoff = current_time - self._takeoff_complete_time
-            if elapsed_since_takeoff >= 80.0:
+            if elapsed_since_takeoff >= 60.0:
                 self.get_logger().warn('120 seconds elapsed since takeoff - Initiating RTL')
                 self._initiate_rtl('120-second timer expired')
                 return
@@ -415,14 +425,20 @@ class ChaserController(Node):
         # Orientation
         pose_msg.pose.pose.orientation = map_to_target_transform.transform.rotation
 
-        # Covariance (you MUST set this for EKF stability)
+        # Covariance (you MUST set this for UKF stability)
+
+        # Increase this when angular velcoity is high!
+        cov_multiplier_x = 1 + 5 * np.sqrt(self.twist.twist.angular.y**2 + self.twist.twist.angular.z**2)
+        cov_multiplier_y = 1 + 5 * np.sqrt(self.twist.twist.angular.x**2 + self.twist.twist.angular.z**2)
+        cov_multiplier_z = 1 + 5 * np.sqrt(self.twist.twist.angular.x**2 + self.twist.twist.angular.y**2)
+
         cov = np.zeros((6, 6))
-        cov[0, 0] = 0.1   # x
-        cov[1, 1] = 0.1   # y
-        cov[2, 2] = 0.1   # z
-        cov[3, 3] = 0.1   # roll
-        cov[4, 4] = 0.1   # pitch
-        cov[5, 5] = 0.1   # yaw
+        cov[0, 0] = 0.15 * cov_multiplier_x   # x
+        cov[1, 1] = 0.15 * cov_multiplier_y   # y
+        cov[2, 2] = 0.15 * cov_multiplier_x   # z
+        cov[3, 3] = 0.4   # roll
+        cov[4, 4] = 0.4   # pitch
+        cov[5, 5] = 0.2   # yaw
 
         pose_msg.pose.covariance = cov.flatten().tolist()
 
@@ -434,7 +450,7 @@ class ChaserController(Node):
             return
 
         # Update LP Filters
-        stamp = Time.from_msg(self.target_odometry.header.stamp)
+        stamp = self.get_clock().now()
 
         target_pose_raw = np.array([
             self.target_odometry.pose.pose.position.x, 
@@ -449,7 +465,10 @@ class ChaserController(Node):
         self.target_vel = self.target_vel_lp.update(target_vel_raw, stamp)
         
         # Run control loop
-        msg = Controller(self)
+        # msg = Controller(self)
+
+        # Inside your control loop / timer callback
+        msg = self.mpc_controller.compute_control(self)
 
         current_time = self.get_clock().now().nanoseconds / 1e9
         self.csv_writer.writerow([
@@ -463,18 +482,24 @@ class ChaserController(Node):
             self.twist.twist.angular.x,
             self.twist.twist.angular.y,
             self.twist.twist.angular.z,
+            self.target_odometry.pose.pose.position.x,
+            self.target_odometry.pose.pose.position.y,
+            self.target_odometry.pose.pose.position.z,
+            self.target_odometry.twist.twist.linear.x,
+            self.target_odometry.twist.twist.linear.y,
+            self.target_odometry.twist.twist.linear.z,
             self.target_pose[0],
             self.target_pose[1],
             self.target_pose[2],
             self.target_vel[0],
             self.target_vel[1],
             self.target_vel[2],
-            self.x_p,
-            self.x_i,
-            self.x_d,
-            self.y_p,
-            self.y_i,
-            self.y_d
+            # self.x_p,
+            # self.x_i,
+            # self.x_d,
+            # self.y_p,
+            # self.y_i,
+            # self.y_d
         ])
         self.csv_file.flush()
 

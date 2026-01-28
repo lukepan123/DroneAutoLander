@@ -46,9 +46,9 @@ The following settings should be changed on Ardupilot to improve MAVROS Publishi
 
 *In LINK:*
 
-> Stream rate Link 1: 50.0
+> Stream rate Link 1: 30.0
 > 
-> Stream rate Link 2: 50.0
+> Stream rate Link 2: 30.0
 > 
 > Baud Rate of New Links: 115200
 
@@ -60,6 +60,9 @@ The following settings should be changed on Ardupilot to improve MAVROS Publishi
 
 **4. Run MAVROS**
 
+    source /opt/ros/humble/setup.bash
+    cd ros2_ws
+    source install/setup.bash
     ros2 run mavros mavros_node \
     --ros-args \
     -p fcu_url:=udp://:14555@ \
@@ -99,6 +102,6 @@ Only needed to calibrate camera once to determine camera matrix.
 
 **6. Run Gazebo Rover Bridge (if you want to move rover)**
 
-    gz topic -t "/cmd_vel" -m gz.msgs.Twist -p "linear: {x: 0.5}, angular: {z: 0.5}"
+    gz topic -t "/cmd_rover_vel" -m gz.msgs.Twist -p "linear: {x: 0.5}, angular: {z: 0.5}"
 
 This will move the rover with the given linear and angular velocity commands. These are in m/s and can be changed to suit whatever is needed.

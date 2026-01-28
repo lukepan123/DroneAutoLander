@@ -5,6 +5,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
+from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped, TransformStamped
 import tf_transformations
 import tf2_ros
@@ -105,9 +106,11 @@ class ArUCoNode(Node):
         self.pose_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self.local_pose_callback, qos)
 
         # Publishers
-        self.tf_cam_to_target_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self.tf_cam_to_tag_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self.tf_tag_to_target_broadcaster = tf2_ros.TransformBroadcaster(self)
         self.bridge = CvBridge()
         self.webcam_publisher = self.create_publisher(Image, "/image", 10)
+        self.target_found_publisher = self.create_publisher(Bool, "/target_found", 10)
 
 
         # ---------------- INITIALISATION ----------------
@@ -251,9 +254,23 @@ class ArUCoNode(Node):
 
             dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
 
+            self.target_found_publisher.publish(Bool(data=True))
+
             # --------- TARGET POSE (solvePNP) ---------
+            # Define tag sizes and position on rover (i.e. where is the rover from the POV of the tag?)
+            TAG_SIZES = {
+                35: 0.455,
+                27: 0.067,
+                0 : 0.067
+            }
+
+            TAG_POSITIONS = {
+                35: [0.0, 0.3100, 0.0], #x, y, z
+                27: [0.0, 0.0000, 0.0],
+                0 : [0.0, 0.6200, 0.0]
+            }
+
             # Determine the pose of each marker
-            TAG_SIZES = {35: 0.489}
             for i, marker_id in enumerate(ids):
                 tag_id = int(marker_id[0])
 
@@ -292,10 +309,13 @@ class ArUCoNode(Node):
                     )
 
                     # Broadcast target position relative to camera frame
-                    transform_msg = self.cam_to_target_transformstamped(rvec, tvec)
-                    if transform_msg is not None:
-                        self.tf_cam_to_target_broadcaster.sendTransform(transform_msg)
-
+                    cam_to_tag_tf_msg = self.cam_to_tag_transformstamped(tag_id, rvec, tvec)
+                    tag_to_target_tf_msg = self.tag_to_target_transformstamped(tag_id, TAG_POSITIONS)
+                    if cam_to_tag_tf_msg is not None:
+                        self.tf_cam_to_tag_broadcaster.sendTransform(cam_to_tag_tf_msg)
+                        self.tf_tag_to_target_broadcaster.sendTransform(tag_to_target_tf_msg)
+        else:
+            self.target_found_publisher.publish(Bool(data=False))
 
         # Show the output image after ArUCo detection (if debug window enabled)
         if self.show_debug_window:
@@ -326,31 +346,51 @@ class ArUCoNode(Node):
 
 
     # ---------------- HELPER FUNCTIONS ----------------        
-    def cam_to_target_transformstamped(self, rvec, tvec):
-        # Broadcast the cam_to_target tf transform
+    def cam_to_tag_transformstamped(self, tag_id, rvec, tvec):
+        # Broadcast the cam_to_tag tf transform
 
-        # From ArUCo tag, find the camera --> target transform (4x4)
-        t_cam_to_target = tvec.reshape(3) # position
-        R_cam_to_target, _ = cv2.Rodrigues(rvec)
-        T_cam_to_target = np.eye(4)
-        T_cam_to_target[:3, :3] = R_cam_to_target
-        q_cam_to_target = tf_transformations.quaternion_from_matrix(T_cam_to_target)
+        # From ArUCo tag, find the camera --> tag transform (4x4)
+        t_cam_to_tag = tvec.reshape(3) # position
+        R_cam_to_tag, _ = cv2.Rodrigues(rvec)
+        T_cam_to_tag = np.eye(4)
+        T_cam_to_tag[:3, :3] = R_cam_to_tag
+        q_cam_to_tag = tf_transformations.quaternion_from_matrix(T_cam_to_tag)
 
         # Header for pose
-        tf_cam_to_target = TransformStamped()
-        tf_cam_to_target.header.stamp = self.get_clock().now().to_msg()
-        tf_cam_to_target.header.frame_id = "camera_link"
-        tf_cam_to_target.child_frame_id = "target_link"
-        tf_cam_to_target.transform.translation.x = t_cam_to_target[0]
-        tf_cam_to_target.transform.translation.y = t_cam_to_target[1]
-        tf_cam_to_target.transform.translation.z = t_cam_to_target[2]
-        tf_cam_to_target.transform.rotation.x = q_cam_to_target[0]
-        tf_cam_to_target.transform.rotation.y = q_cam_to_target[1]
-        tf_cam_to_target.transform.rotation.z = q_cam_to_target[2]
-        tf_cam_to_target.transform.rotation.w = q_cam_to_target[3]
+        tf_cam_to_tag = TransformStamped()
+        tf_cam_to_tag.header.stamp = self.get_clock().now().to_msg()
+        tf_cam_to_tag.header.frame_id = "camera_link"
+        tf_cam_to_tag.child_frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
+        tf_cam_to_tag.transform.translation.x = t_cam_to_tag[0]
+        tf_cam_to_tag.transform.translation.y = t_cam_to_tag[1]
+        tf_cam_to_tag.transform.translation.z = t_cam_to_tag[2]
+        tf_cam_to_tag.transform.rotation.x = q_cam_to_tag[0]
+        tf_cam_to_tag.transform.rotation.y = q_cam_to_tag[1]
+        tf_cam_to_tag.transform.rotation.z = q_cam_to_tag[2]
+        tf_cam_to_tag.transform.rotation.w = q_cam_to_tag[3]
 
-        return tf_cam_to_target
+        return tf_cam_to_tag
+    
+    def tag_to_target_transformstamped(self, tag_id, tag_positions):
+        # Broadcast the tag_to_target tf transform
+        t_tag_to_target = np.array(tag_positions[tag_id])
+        q_tag_to_target = tf_transformations.quaternion_from_euler(0.0, 0.0, 0.0)
 
+        # Header for pose
+        tf_tag_to_target = TransformStamped()
+        tf_tag_to_target.header.stamp = self.get_clock().now().to_msg()
+        tf_tag_to_target.header.frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
+        tf_tag_to_target.child_frame_id = "target_link"
+        tf_tag_to_target.transform.translation.x = t_tag_to_target[0]
+        tf_tag_to_target.transform.translation.y = t_tag_to_target[1]
+        tf_tag_to_target.transform.translation.z = t_tag_to_target[2]
+        tf_tag_to_target.transform.rotation.x = q_tag_to_target[0]
+        tf_tag_to_target.transform.rotation.y = q_tag_to_target[1]
+        tf_tag_to_target.transform.rotation.z = q_tag_to_target[2]
+        tf_tag_to_target.transform.rotation.w = q_tag_to_target[3]
+
+        return tf_tag_to_target
+    
     def create_video_from_frames(self):
         """Create video from saved frames"""
         if not (self.save_frames or self.create_video) or not self.saved_frames:
