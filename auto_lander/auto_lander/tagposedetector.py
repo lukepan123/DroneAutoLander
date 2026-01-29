@@ -3,10 +3,9 @@ import os
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import TransformStamped
 import tf_transformations
 import tf2_ros
 
@@ -33,7 +32,7 @@ def get_workspace_root():
 
 class ArUCoNode(Node):
     def __init__(self):
-        super().__init__("yolo_image_node")
+        super().__init__("target_detection_node")
 
         # ---------------- PARAMETERS ----------------
         # Publish the image topic from the camera after processing
@@ -97,14 +96,20 @@ class ArUCoNode(Node):
 
         self.camera_fov_horizontal = 0.8  # radians (≈114.6°) – tune for your camera
         self.camera_fov_vertical = 2 * np.arctan(np.tan(self.camera_fov_horizontal / 2) / (self.image_width/self.image_height))
+
+        # Generate the camera matrix
+        fx = self.image_width / (2 * np.tan(self.camera_fov_horizontal / 2))
+        fy = self.image_height / (2 * np.tan(self.camera_fov_vertical / 2))
+        self.camera_matrix = np.array([
+            [fx, 0, self.image_width/2],
+            [0, fy, self.image_height/2 ],
+            [0, 0, 1],
+        ], dtype=np.float64)
+
+        self.dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
         
         
         # ---------------- PUBLISHERS AND SUBSCRIPTIONS ----------------
-        # Initialise MAVROS subscription
-        qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
-        self.pose = PoseStamped()
-        self.pose_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self.local_pose_callback, qos)
-
         # Publishers
         self.tf_cam_to_tag_broadcaster = tf2_ros.TransformBroadcaster(self)
         self.tf_tag_to_target_broadcaster = tf2_ros.TransformBroadcaster(self)
@@ -223,9 +228,6 @@ class ArUCoNode(Node):
                 self.get_logger().warning("Failed to read frame from webcam.")
         else:
             self.get_logger().warning("Webcam not opened.")
-    
-    def local_pose_callback(self, msg: PoseStamped):
-        self.pose = msg
 
     def image_callback(self, msg):
         """Process image and detect tag, calculate pose and publish tf_transform"""
@@ -239,21 +241,11 @@ class ArUCoNode(Node):
 
         # Inference (ArUCo detection via OpenCV)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Change to greyscale before inference step
+        stamp = self.get_clock().now().to_msg() # Timestamp before image processing, because thats when the image was taken
         corners, ids, rejected = self.detector.detectMarkers(gray_frame)
 
         # Begin pose and twist estimation if tag is detected
         if ids is not None:  
-            # Camera properties (TODO: move to top)
-            fx = self.image_width / (2 * np.tan(self.camera_fov_horizontal / 2))
-            fy = self.image_height / (2 * np.tan(self.camera_fov_vertical / 2))
-            camera_matrix = np.array([
-                [fx, 0, self.image_width/2],
-                [0, fy, self.image_height/2 ],
-                [0, 0, 1],
-            ], dtype=np.float64)
-
-            dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
-
             self.target_found_publisher.publish(Bool(data=True))
 
             # --------- TARGET POSE (solvePNP) ---------
@@ -292,25 +284,26 @@ class ArUCoNode(Node):
                 success, rvec, tvec = cv2.solvePnP(
                     object_points,
                     image_points,
-                    camera_matrix,
-                    dist_coeffs,
+                    self.camera_matrix,
+                    self.dist_coeffs,
                     flags=cv2.SOLVEPNP_IPPE_SQUARE
                 )
 
                 if success:
                     # Draw pose axes for debugging
-                    cv2.drawFrameAxes(
-                        frame,
-                        camera_matrix,
-                        dist_coeffs,
-                        rvec,
-                        tvec,
-                        marker_length * 0.5
-                    )
+                    if self.show_debug_window:
+                        cv2.drawFrameAxes(
+                            frame,
+                            self.camera_matrix,
+                            self.dist_coeffs,
+                            rvec,
+                            tvec,
+                            marker_length * 0.5
+                        )
 
                     # Broadcast target position relative to camera frame
-                    cam_to_tag_tf_msg = self.cam_to_tag_transformstamped(tag_id, rvec, tvec)
-                    tag_to_target_tf_msg = self.tag_to_target_transformstamped(tag_id, TAG_POSITIONS)
+                    cam_to_tag_tf_msg = self.cam_to_tag_transformstamped(stamp, tag_id, rvec, tvec)
+                    tag_to_target_tf_msg = self.tag_to_target_transformstamped(stamp, tag_id, TAG_POSITIONS)
                     if cam_to_tag_tf_msg is not None:
                         self.tf_cam_to_tag_broadcaster.sendTransform(cam_to_tag_tf_msg)
                         self.tf_tag_to_target_broadcaster.sendTransform(tag_to_target_tf_msg)
@@ -346,19 +339,24 @@ class ArUCoNode(Node):
 
 
     # ---------------- HELPER FUNCTIONS ----------------        
-    def cam_to_tag_transformstamped(self, tag_id, rvec, tvec):
+    def cam_to_tag_transformstamped(self, stamp, tag_id, rvec, tvec):
         # Broadcast the cam_to_tag tf transform
 
         # From ArUCo tag, find the camera --> tag transform (4x4)
-        t_cam_to_tag = tvec.reshape(3) # position
-        R_cam_to_tag, _ = cv2.Rodrigues(rvec)
-        T_cam_to_tag = np.eye(4)
-        T_cam_to_tag[:3, :3] = R_cam_to_tag
-        q_cam_to_tag = tf_transformations.quaternion_from_matrix(T_cam_to_tag)
+        try:
+            t_cam_to_tag = tvec.reshape(3) # position
+            R_cam_to_tag, _ = cv2.Rodrigues(rvec)
+            T_cam_to_tag = np.eye(4)
+            T_cam_to_tag[:3, :3] = R_cam_to_tag
+            q_cam_to_tag = tf_transformations.quaternion_from_matrix(T_cam_to_tag)
+        
+        except Exception as e:
+            self.get_logger().error(f"cam_to_tag transform failed: {e}")
+            return None
 
         # Header for pose
         tf_cam_to_tag = TransformStamped()
-        tf_cam_to_tag.header.stamp = self.get_clock().now().to_msg()
+        tf_cam_to_tag.header.stamp = stamp
         tf_cam_to_tag.header.frame_id = "camera_link"
         tf_cam_to_tag.child_frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
         tf_cam_to_tag.transform.translation.x = t_cam_to_tag[0]
@@ -371,14 +369,14 @@ class ArUCoNode(Node):
 
         return tf_cam_to_tag
     
-    def tag_to_target_transformstamped(self, tag_id, tag_positions):
+    def tag_to_target_transformstamped(self, stamp, tag_id, tag_positions):
         # Broadcast the tag_to_target tf transform
         t_tag_to_target = np.array(tag_positions[tag_id])
-        q_tag_to_target = tf_transformations.quaternion_from_euler(0.0, 0.0, 0.0)
+        q_tag_to_target = tf_transformations.quaternion_from_euler(0.0, 0.0, -1.570796326) # Turns out all the tags were 90deg off...
 
         # Header for pose
         tf_tag_to_target = TransformStamped()
-        tf_tag_to_target.header.stamp = self.get_clock().now().to_msg()
+        tf_tag_to_target.header.stamp = stamp
         tf_tag_to_target.header.frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
         tf_tag_to_target.child_frame_id = "target_link"
         tf_tag_to_target.transform.translation.x = t_tag_to_target[0]

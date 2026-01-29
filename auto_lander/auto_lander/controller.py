@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-import math
 import csv
 import numpy as np
 from datetime import datetime
 
 import rclpy
-from rclpy.time import Time
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.executors import MultiThreadedExecutor
 import tf2_ros
+import tf_transformations
 
-from std_msgs.msg import Float64, Bool
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamped
+from std_msgs.msg import Bool
+from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode, MessageInterval
 
-from .implimented_controllers import Controller, MPCController
+from filterpy.kalman import UnscentedKalmanFilter
+from filterpy.kalman import MerweScaledSigmaPoints
+
+from .implimented_controllers import MPCController
 
 class ChaserController(Node):
     def __init__(self):
@@ -29,65 +30,48 @@ class ChaserController(Node):
         state_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
         self.state_sub = self.create_subscription(State, '/mavros/state', self._on_state, state_qos)
 
-        pose_qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
-        self.pose_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self._on_pose, pose_qos)
-        self.twist_sub = self.create_subscription(TwistStamped, '/mavros/local_position/velocity_local', self._on_twist, pose_qos)        
-        self.global_pos_sub = self.create_subscription(NavSatFix, '/mavros/global_position/global', self._on_global_position, pose_qos)
-        self.compass_sub = self.create_subscription(Float64, '/mavros/global_position/compass_hdg', self._on_compass, pose_qos)
+        odom_qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        self.odometry_sub = self.create_subscription(Odometry, '/mavros/global_position/local', self._on_odometry, odom_qos)      
 
-        # Initialise target frame listener
+        # Initialise target localisation
         self.tf_map_target_buffer = tf2_ros.Buffer()
         self.tf_map_target_listener = tf2_ros.TransformListener(self.tf_map_target_buffer, self)
-        self.timer = self.create_timer(0.1, self._tf_map_to_target_callback)
+        self.filter = UKF(0.04)
+        self.UKF_timer = self.create_timer(0.04, self._tf_map_to_target_callback)
 
         # Initialise publisher and subscription to target odometry UKF
-        self.target_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/target_pose', 10)
-        self.target_odometry_sub = self.create_subscription(Odometry, '/odometry/filtered', self._on_target_odometry, 10)
         self.tracking_enable_sub = self.create_subscription(Bool, '/tracking_enable', self._on_tracking_enable, 10)
         self.target_found_sub = self.create_subscription(Bool, '/target_found', self._on_target_found, 10)
 
+        # Publisher for quadcopter velcoity commands
         self.vel_pub = self.create_publisher(TwistStamped, '/mavros/setpoint_velocity/cmd_vel', 10)
         
-        # LP Filters on target pose/vel
-        self.target_pose = None
-        self.target_vel = None
-        self.target_pose_lp = LowPassFilter(0.8)
-        self.target_vel_lp = LowPassFilter(0.5)
+        # ---------------- QUADCOPTER STATE ----------------
+        # LP Filters on target position/velocity
+        self.target_position = None
+        self.target_velocity = None
+        self.target_position_lp = LowPassFilter(0.8)
+        self.target_velocity_lp = LowPassFilter(0.5)
+
+        self.target_velocity_mag = 0.0
+        self.target_yaw = 0.0
+        self.target_yaw_rate = 0.0
         self.target_found = False
 
-        # ---------------- QUADCOPTER STATE ----------------
         # Initialise node variables
         self.state = State()
-        self.pose = PoseStamped()
-        self.twist = TwistStamped()
+        self.odometry = Odometry()
         self.target_odometry = Odometry()
-        self.global_pos = NavSatFix()
-        self.compass_hdg = 0.0
+        self.yaw = 0.0
         
         # Initialise controller variables
         self.target_altitude = 15.0
-        self.kp = 0.7
-        self.ki = 0.0
-        self.kd = 0.0
-        self.x_error_int = 0.0
-        self.y_error_int = 0.0
-        self.prev_x_meas = 0.0
-        self.prev_y_meas = 0.0
         self.prev_time = self.get_clock().now()
 
-        self.x_p = 0.0
-        self.x_i = 0.0
-        self.x_d = 0.0
-        self.y_p = 0.0
-        self.y_i = 0.0
-        self.y_d = 0.0
-
-        # Initialize MPC
-        self.mpc_controller = MPCController(self)
-
-        # Initialise MAVROS publishers and control loop
-        
-        self.setpoint_timer = self.create_timer(0.10, self._control_loop) # <- control loop (10Hz)
+        # Initialize MPC and control loop
+        self.control_rate = 0.15
+        self.mpc_controller = MPCController(self.control_rate)
+        self.setpoint_timer = self.create_timer(self.control_rate, self._control_loop) # <- control loop (6.66Hz)
 
         # Initialise MAVROS clients
         self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
@@ -102,9 +86,8 @@ class ChaserController(Node):
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow([
             'timestamp', 'quad_x', 'quad_y', 'quad_z', 'quad_vx', 'quad_vy', 'quad_vz', 'quad_omgx', 'quad_omgy', 'quad_omgz', 
-            'target_x', 'target_y', 'target_z', 'target_vx', 'target_vy', 'target_vz',
+            'target_x', 'target_y', 'target_z', 'target_vx', 'target_vy', 'target_vz', 'target_yaw',
             'target_lpx', 'target_lpy', 'target_lpz', 'target_lpvx', 'target_lpvy', 'target_lpvz'
-            # 'x_p', 'x_i', 'x_d', 'y_p', 'y_i', 'y_d'
         ])
         self.get_logger().info(f'CSV logging initialized: {self.csv_filename}')
 
@@ -168,6 +151,7 @@ class ChaserController(Node):
         else:
             self.get_logger().warn(f'{description} interval setting failed (ID: {message_id}, Rate: {rate}Hz)')
 
+    # Helper functions for subscriptions
     def _on_state(self, msg: State):
         self.state = msg
 
@@ -178,40 +162,16 @@ class ChaserController(Node):
         if self.state.armed and not self._armed_confirmed:
             self._armed_confirmed = True
             self._armed_time = self.get_clock().now().nanoseconds / 1e9
-            
-            compass_rad = math.radians(self.compass_hdg)
-            
-            target_x = self.pose.pose.position.x + 7.0 * math.sin(compass_rad)
-            target_y = self.pose.pose.position.y + 7.0 * math.cos(compass_rad)
-            
-            self.estimated_state = np.array([target_x, target_y])
-            
-            self.get_logger().info(f'Armed confirmed by FCU. Compass: {self.compass_hdg:.1f}°')
-            self.get_logger().info(f'Estimated target at: ({target_x:.2f}, {target_y:.2f})')
 
-
-    # Helper functions for subscriptions
-    def _on_pose(self, msg: PoseStamped):
-        self.pose = msg
-        alt = msg.pose.position.z
+    def _on_odometry(self, msg: Odometry):
+        self.odometry = msg
+        alt = msg.pose.pose.position.z
         
         if self._armed_confirmed and not self._tko_reached and alt > (self.target_altitude - 0.5):
             self._tko_reached = True
             self._takeoff_complete_time = self.get_clock().now().nanoseconds / 1e9
             self.get_logger().info(f'Takeoff complete at {alt:.2f} m - Starting 60s safety timer')
             self._enable_tracking()
-
-    def _on_twist(self, msg: TwistStamped):
-        self.twist = msg
-
-    def _on_global_position(self, msg: NavSatFix):
-        self.global_pos = msg
-
-    def _on_compass(self, msg: Float64):
-        self.compass_hdg = float(msg.data)
-
-    def _on_target_odometry(self, msg: Odometry):
-        self.target_odometry = msg
 
     def _on_tracking_enable(self, msg: Bool):
         """Handle manual tracking enable/disable commands"""
@@ -361,8 +321,8 @@ class ChaserController(Node):
                 return
         
         # Check boundary conditions (30x30m square)
-        x = self.pose.pose.position.x
-        y = self.pose.pose.position.y
+        x = self.odometry.pose.pose.position.x
+        y = self.odometry.pose.pose.position.y
         
         if abs(x) > self.boundary_limit or abs(y) > self.boundary_limit:
             self.get_logger().warn(f'Boundary violation: position ({x:.1f}, {y:.1f}) - Initiating RTL')
@@ -403,46 +363,60 @@ class ChaserController(Node):
 
     def _tf_map_to_target_callback(self):
         try:
-            map_to_target_transform = self.tf_map_target_buffer.lookup_transform(
-            'map',
-            'target_link',
-            rclpy.time.Time()   # latest available transform
-        )
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            tf_msg = self.tf_map_target_buffer.lookup_transform(
+                'map',
+                'target_link',
+                rclpy.time.Time()
+            )
+        except Exception:
             return
-        
-        pose_msg = PoseWithCovarianceStamped()
 
-        # Header
-        pose_msg.header.stamp = map_to_target_transform.header.stamp
-        pose_msg.header.frame_id = map_to_target_transform.header.frame_id
+        # Extract pose
+        t = tf_msg.transform.translation
+        q = tf_msg.transform.rotation
 
-        # Position
-        pose_msg.pose.pose.position.x = map_to_target_transform.transform.translation.x
-        pose_msg.pose.pose.position.y = map_to_target_transform.transform.translation.y
-        pose_msg.pose.pose.position.z = map_to_target_transform.transform.translation.z
+        roll, pitch, yaw = tf_transformations.euler_from_quaternion([
+            q.x, q.y, q.z, q.w
+        ])
 
-        # Orientation
-        pose_msg.pose.pose.orientation = map_to_target_transform.transform.rotation
+        z = np.array([
+            t.x,
+            t.y,
+            t.z,
+            yaw
+        ])
 
-        # Covariance (you MUST set this for UKF stability)
+        # Predict → Update (correct order)
+        self.filter.ukf.predict()
+        self.filter.ukf.update(z)
 
-        # Increase this when angular velcoity is high!
-        cov_multiplier_x = 1 + 5 * np.sqrt(self.twist.twist.angular.y**2 + self.twist.twist.angular.z**2)
-        cov_multiplier_y = 1 + 5 * np.sqrt(self.twist.twist.angular.x**2 + self.twist.twist.angular.z**2)
-        cov_multiplier_z = 1 + 5 * np.sqrt(self.twist.twist.angular.x**2 + self.twist.twist.angular.y**2)
+        x = self.filter.ukf.x
 
-        cov = np.zeros((6, 6))
-        cov[0, 0] = 0.15 * cov_multiplier_x   # x
-        cov[1, 1] = 0.15 * cov_multiplier_y   # y
-        cov[2, 2] = 0.15 * cov_multiplier_x   # z
-        cov[3, 3] = 0.4   # roll
-        cov[4, 4] = 0.4   # pitch
-        cov[5, 5] = 0.2   # yaw
+        # Publish filtered pose
+        self.target_odometry.header.stamp = tf_msg.header.stamp
+        self.target_odometry.header.frame_id = 'map'
 
-        pose_msg.pose.covariance = cov.flatten().tolist()
+        self.target_odometry.pose.pose.position.x = x[0]
+        self.target_odometry.pose.pose.position.y = x[1]
+        self.target_odometry.pose.pose.position.z = x[2]
 
-        self.target_pose_pub.publish(pose_msg)
+        quat = tf_transformations.quaternion_from_euler(0.0, 0.0, x[4])
+        self.target_odometry.pose.pose.orientation.x = quat[0]
+        self.target_odometry.pose.pose.orientation.y = quat[1]
+        self.target_odometry.pose.pose.orientation.z = quat[2]
+        self.target_odometry.pose.pose.orientation.w = quat[3]
+
+        vx = x[3] * np.cos(x[4])
+        vy = x[3] * np.sin(x[4])
+
+        self.target_velocity_mag = x[3]
+        self.target_yaw = x[4]
+        self.target_yaw_rate = x[5]
+
+        self.target_odometry.twist.twist.linear.x = vx
+        self.target_odometry.twist.twist.linear.y = vy
+        self.target_odometry.twist.twist.linear.z = 0.0
+
 
     def _control_loop(self):
         # Don't write to CSV nor send commands if rtl initiated
@@ -452,54 +426,51 @@ class ChaserController(Node):
         # Update LP Filters
         stamp = self.get_clock().now()
 
-        target_pose_raw = np.array([
+        target_position_raw = np.array([
             self.target_odometry.pose.pose.position.x, 
             self.target_odometry.pose.pose.position.y, 
             self.target_odometry.pose.pose.position.z])
-        self.target_pose = self.target_pose_lp.update(target_pose_raw, stamp)
+        self.target_position = self.target_position_lp.update(target_position_raw, stamp)
 
-        target_vel_raw = np.array([
+        target_velocity_raw = np.array([
             self.target_odometry.twist.twist.linear.x, 
             self.target_odometry.twist.twist.linear.y, 
             self.target_odometry.twist.twist.linear.z])
-        self.target_vel = self.target_vel_lp.update(target_vel_raw, stamp)
+        self.target_velocity = self.target_velocity_lp.update(target_velocity_raw, stamp)
+
+        q = self.odometry.pose.pose.orientation
+        _, _, self.yaw = tf_transformations.euler_from_quaternion([
+            q.x, q.y, q.z, q.w
+        ])
         
         # Run control loop
-        # msg = Controller(self)
-
-        # Inside your control loop / timer callback
         msg = self.mpc_controller.compute_control(self)
 
         current_time = self.get_clock().now().nanoseconds / 1e9
         self.csv_writer.writerow([
             current_time,
-            self.pose.pose.position.x,
-            self.pose.pose.position.y, 
-            self.pose.pose.position.z,
-            self.twist.twist.linear.x,
-            self.twist.twist.linear.y,
-            self.twist.twist.linear.z,
-            self.twist.twist.angular.x,
-            self.twist.twist.angular.y,
-            self.twist.twist.angular.z,
+            self.odometry.pose.pose.position.x,
+            self.odometry.pose.pose.position.y, 
+            self.odometry.pose.pose.position.z,
+            self.odometry.twist.twist.linear.x,
+            self.odometry.twist.twist.linear.y,
+            self.odometry.twist.twist.linear.z,
+            self.odometry.twist.twist.angular.x,
+            self.odometry.twist.twist.angular.y,
+            self.odometry.twist.twist.angular.z,
             self.target_odometry.pose.pose.position.x,
             self.target_odometry.pose.pose.position.y,
             self.target_odometry.pose.pose.position.z,
             self.target_odometry.twist.twist.linear.x,
             self.target_odometry.twist.twist.linear.y,
             self.target_odometry.twist.twist.linear.z,
-            self.target_pose[0],
-            self.target_pose[1],
-            self.target_pose[2],
-            self.target_vel[0],
-            self.target_vel[1],
-            self.target_vel[2],
-            # self.x_p,
-            # self.x_i,
-            # self.x_d,
-            # self.y_p,
-            # self.y_i,
-            # self.y_d
+            self.target_yaw,
+            self.target_position[0],
+            self.target_position[1],
+            self.target_position[2],
+            self.target_velocity[0],
+            self.target_velocity[1],
+            self.target_velocity[2],
         ])
         self.csv_file.flush()
 
@@ -510,6 +481,7 @@ class ChaserController(Node):
             self.csv_file.close()
             self.get_logger().info(f'CSV file closed: {self.csv_filename}')
         super().destroy_node()
+
 
 class LowPassFilter:
     def __init__(self, cutoff_hz):
@@ -536,6 +508,88 @@ class LowPassFilter:
         self.prev_values = filtered_values.copy()
         self.prev_stamp = stamp
         return filtered_values
+    
+
+class UKF:
+    def __init__(self, dt):
+        self.dt = dt
+        self.dim_x = 6
+        self.dim_z = 4
+
+        points = MerweScaledSigmaPoints(
+            n=self.dim_x,
+            alpha=0.3,
+            beta=2.0,
+            kappa=0.0
+        )
+
+        self.ukf = UnscentedKalmanFilter(
+            dim_x=self.dim_x,
+            dim_z=self.dim_z,
+            fx=self.fx,
+            hx=self.hx,
+            dt=dt,
+            points=points
+        )
+
+        # State: [px, py, pz, v, yaw, yaw_rate]
+        self.ukf.x = np.zeros(self.dim_x)
+
+        # Covariance
+        self.ukf.P = np.diag([
+            0.2, 0.2, 0.2,     # position
+            0.5,               # velocity
+            0.2,               # yaw
+            0.5                # yaw_rate
+        ])
+
+        # Process noise
+        self.ukf.Q = np.diag([
+            0.003, 0.003, 0.003,
+            0.005,
+            0.003,
+            0.005
+        ])
+
+        # Measurement noise (vision)
+        self.ukf.R = np.diag([
+            0.10, 0.10, 0.15,   # position
+            0.05                # yaw only
+        ])
+
+    def fx(self, x, dt):
+        px, py, pz, v, yaw, yaw_rate = x
+
+        # State propagation
+        px += v * np.cos(yaw) * dt
+        py += v * np.sin(yaw) * dt
+        pz = pz
+        yaw += yaw_rate * dt
+
+        yaw = self._wrap_angle(yaw)
+
+        return np.array([
+            px,
+            py,
+            pz,
+            v,
+            yaw,
+            yaw_rate
+        ])
+
+    # Measurement model
+    def hx(self, x):
+        px, py, pz, _, yaw, _ = x
+
+        return np.array([
+            px, py, pz,
+            yaw     # roll & pitch unused
+        ])
+
+    @staticmethod
+    def _wrap_angle(a):
+        return (a + np.pi) % (2 * np.pi) - np.pi
+
 
 # ---------------- MAIN ----------------
 def main(args=None):

@@ -1,104 +1,10 @@
 #!/usr/bin/env python3
-import math
 import numpy as np
 from geometry_msgs.msg import TwistStamped
 import casadi as ca
-import rclpy
-from rclpy.time import Time
-
-def Controller(node):
-    msg = TwistStamped()
-    msg.header.stamp = node.get_clock().now().to_msg()
-    msg.header.frame_id = 'base_link'
-           
-    if node._tracking_enabled:
-        # Time step
-        now = node.get_clock().now()
-        dt = (now - node.prev_time).nanoseconds * 1e-9
-        dt = max(dt, 1e-3)
-        node.prev_time = now
-
-        # Determine target coordinates based on target position and velcoity
-        lookout_factor = 1.0
-
-        lookout_x = node.target_odometry.twist.twist.linear.x
-        lookout_y = node.target_odometry.twist.twist.linear.y
-
-        # node.get_logger().info(f'rot {euler_map_to_target[2]}')
-
-        x_target = lookout_factor * lookout_x + node.target_pose[0]
-        y_target = lookout_factor * lookout_y + node.target_pose[1]
-        z_target = node.target_odometry.pose.pose.position.z + 0.5
-
-        # node.get_logger().info(f'x {x_target}, y {y_target}, x_add {lookout_x}, y_add {lookout_y}')
-
-        # Position error
-        x_error = x_target - node.pose.pose.position.x
-        y_error = y_target - node.pose.pose.position.y
-        z_error = z_target - node.pose.pose.position.z
-
-        yaw_error = 0
-
-        # Integrate error
-        node.x_error_int += x_error * dt
-        node.y_error_int += y_error * dt
-
-        # Anti-windup clamp
-        max_int = 2.0
-        node.x_error_int = max(min(node.x_error_int, max_int), -max_int)
-        node.y_error_int = max(min(node.y_error_int, max_int), -max_int)
-
-        # Derivative
-        dx_error = (node.target_vel[0] - node.twist.twist.linear.x)
-        dy_error = (node.target_vel[1] - node.twist.twist.linear.y)
-        dz_error = (node.target_vel[2] - node.twist.twist.linear.z)
-
-        node.x_p = node.kp * x_error
-        node.x_i = node.ki * node.x_error_int
-        node.x_d = node.kd * dx_error
-        node.y_p = node.kp * y_error
-        node.y_i = node.ki * node.y_error_int
-        node.y_d = node.kd * dy_error
-
-        # Make gains more sensitive as drone gets closer to rover
-        node.kp = max(min((node.target_altitude + z_error)/7 * 2.5,1.7),0.2)
-
-        # PID output
-        vx = node.kp * x_error + node.ki * node.x_error_int + node.kd * dx_error
-        vy = node.kp * y_error + node.ki * node.y_error_int + node.kd * dy_error
-        if node.pose.pose.position.z < 0.7:
-            vz = -5.0
-        else:
-            vz = -0.2 # 0.04 * z_error
-
-        omg_z = yaw_error
-
-        # Velocity saturation
-        max_vel = 8.0
-        vx = max(min(vx, max_vel), -max_vel)
-        vy = max(min(vy, max_vel), -max_vel)
-        vz = max(min(vz, max_vel), -max_vel)
-
-        omg_z = max(min(omg_z, max_vel), -max_vel)
-
-        msg.twist.linear.x = float(vx)
-        msg.twist.linear.y = float(vy)
-        msg.twist.linear.z = float(vz)
-        msg.twist.angular.z = float(omg_z)
-            
-        node.vel_pub.publish(msg)
-
-        # print("X_drone", node.pose.pose.position.x, "Y_drone", node.pose.pose.position.y, "Z_drone", node.pose.pose.position.z)
-        # print("X_targ", node.target_odometry.pose.pose.position.x, "Y_targ", node.target_odometry.pose.pose.position.y, "Z_targ", node.target_odometry.pose.pose.position.z)
-        # print("X_err", x_error, "Y_err", y_error, "Z_targ")
-        # print("X_com", vx, "Y_com", vy)
-        #error_mag = np.sqrt(np.power(x_error, 2) + np.power(y_error, 2))
-        #print("Distance Error: ", error_mag)
-
-    return msg
 
 class MPCController:
-    def __init__(self, node):
+    def __init__(self, dt):
         # State variables: 
         x  = ca.SX.sym('x')
         y  = ca.SX.sym('y')
@@ -106,31 +12,33 @@ class MPCController:
         vx = ca.SX.sym('vx')
         vy = ca.SX.sym('vy')
         vz = ca.SX.sym('vz')
+        yaw = ca.SX.sym('yaw')
+        vyaw   = ca.SX.sym('vyaw')   # yaw rate
 
-        states = ca.vertcat(x, y, z, vx, vy, vz)
-        self.n_states = states.size1()  # should be 6
+        states = ca.vertcat(x, y, z, vx, vy, vz, yaw, vyaw)
+        self.n_states = states.size1()  # should be 8
+        self.rover_n_states = 6         # number of rover states (x,y,z,yaw,v,yaw_rate(w))
 
         # Control variable: u (velocity commands)
         x_vel     = ca.SX.sym('x_vel')
         y_vel     = ca.SX.sym('y_vel')
         z_vel     = ca.SX.sym('z_vel')
-        u = ca.vertcat(x_vel, y_vel, z_vel)
-        self.n_controls = u.size1()     # should be 3
+        yaw_vel     = ca.SX.sym('yaw_vel')
+        u = ca.vertcat(x_vel, y_vel, z_vel, yaw_vel)
+        self.n_controls = u.size1()     # should be 4
 
-        # 6 parameters: initial drone state (x0,y0,z0,vx0,vy0,vz0) + target position (x_target,y_target,z_target)
-        P = ca.SX.sym('P', self.n_states + 3)
+        # P = [quad_state(8), rover_state(5)]
+        P = ca.SX.sym('P', self.n_states + self.rover_n_states)
 
         # Define the number of discretization points
-        now = node.get_clock().now()
-        #self.dt = (now - node.prev_time).nanoseconds * 1e-9
-        self.dt = 0.1#max(self.dt, 1e-3)    # Get dt between each cycle
-        node.prev_time = now
-        self.N = 20                     # Prediction horizon (number of control intervals)
+        self.dt = dt
+        self.N = 15      # Prediction horizon (number of control intervals)
 
         # Decision variables for the entire horizon
         # X will be of size (n_states x (N+1)) and U of size (n_controls x N)
         X = ca.SX.sym('X', self.n_states, self.N+1)
         U = ca.SX.sym('U', self.n_controls, self.N)
+
     
         # Define the discrete dynamics function using simple Euler integration:
         self.f = ca.Function(
@@ -139,13 +47,16 @@ class MPCController:
             [states + self.dt * self.drone_dynamics(states, u)]
         )
 
+        # Initial rover state
+        xr = P[self.n_states:self.n_states + self.rover_n_states]
+
         # We choose weights for the cost function:
-        Q_x = 50.0        # Weight for drone x error
-        Q_y = 50.0        # Weight for drone y error
-        Q_z = 0.005       # Weight for drone z error
-        R_x = 50.0       # Weight on x_dot control effort
-        R_y = 50.0       # Weight on y_dot control effort
-        R_z = 0.5       # Weight on z_dot control effort
+        Q_pos = 50.0
+        Q_z   = 0.5
+        Q_yaw = 10.0
+        Q_vel = 50.0
+        R_v   = 100.0
+        R_r   = 40.0
 
         # Initialize objective (cost function) and constraints
         obj = 0         # Accumulated cost
@@ -157,22 +68,43 @@ class MPCController:
         # Loop over each control interval to build the cost and dynamics constraints
         for k in range(self.N):
             # Cost function: Penalize errors in drone position, yaw, and control effort.
-            obj += (Q_x * (X[0, k] - P[self.n_states + 0])**2 + 
-                    Q_y * (X[1, k] - P[self.n_states + 1])**2 + 
-                    Q_z * (X[2, k] - P[self.n_states + 2])**2 + 
-                    R_x * U[0, k]**2 + 
-                    R_y * U[1, k]**2 + 
-                    R_z * U[2, k]**2
+            err_x = X[0,k] - xr[0]
+            err_y = X[1,k] - xr[1]
+            err_z = X[2,k] - xr[2]
+
+            err_yaw = ca.atan2(
+                ca.sin(X[6,k] - xr[3]),
+                ca.cos(X[6,k] - xr[3])
+            )
+
+            vx_ref = xr[4] * ca.cos(xr[3])
+            vy_ref = xr[4] * ca.sin(xr[3])
+
+            obj += (
+                Q_pos * err_x**2 +
+                Q_pos * err_y**2 +
+                Q_z   * err_z**2 +
+                Q_yaw * err_yaw**2 +
+                Q_vel * (X[3,k] - vx_ref)**2 + (X[4,k] - vy_ref)**2 +
+                R_v   * (U[0,k]**2 + U[1,k]**2 + U[2,k]**2) +
+                R_r   * U[3,k]**2
             )
             
             # Dynamics constraint: next state equals the discrete dynamics from current state and control.
             x_next = self.f(X[:, k], U[:, k])
+            xr = xr + self.dt * self.rover_dynamics(xr)
+            xr[3] = ca.atan2(ca.sin(xr[3]), ca.cos(xr[3])) # check angle hasnt overspilled
             g.append(X[:, k+1] - x_next)
 
         # Optionally, add a terminal cost on the final state (i.e. dont ignore the long term effects)
-        obj += 100.0 * (Q_x * (X[0, self.N] - P[self.n_states + 0])**2 +
-                Q_y * (X[1, self.N] - P[self.n_states + 1])**2 +
-                Q_z * (X[2, self.N] - P[self.n_states + 2])**2
+        obj += 100.0 * (
+            Q_pos * (X[0, self.N] - xr[0])**2 +
+            Q_pos * (X[1, self.N] - xr[1])**2 +
+            Q_z * (X[2, self.N] - xr[2])**2 +
+            Q_yaw * ca.atan2(
+                ca.sin(X[6, self.N] - xr[3]),
+                ca.cos(X[6, self.N] - xr[3])
+            )**2
         )
 
         # Define limits for control input and output
@@ -185,6 +117,8 @@ class MPCController:
         y_vel_max =  3.0
         z_vel_min = -3.0
         z_vel_max =  3.0
+        yaw_vel_min = -5.0
+        yaw_vel_max =  5.0
 
         # The decision vector consists of:
         #  - First: states, shaped as (n_states*(N+1),)
@@ -209,9 +143,11 @@ class MPCController:
             self.lbx[idx + 0] = x_vel_min
             self.lbx[idx + 1] = y_vel_min
             self.lbx[idx + 2] = z_vel_min
+            self.lbx[idx + 3] = yaw_vel_min
             self.ubx[idx + 0] = x_vel_max
             self.ubx[idx + 1] = y_vel_max
             self.ubx[idx + 2] = z_vel_max
+            self.ubx[idx + 3] = yaw_vel_max
 
         # Concatenate all constraints into one vector.
         g_concat = ca.vertcat(*g)
@@ -230,26 +166,52 @@ class MPCController:
         }
 
         # Create an NLP solver instance using IPOPT.
-        opts = {'ipopt.print_level': 0, 'print_time': 0}
+        opts = {
+            'ipopt.print_level': 0,
+            'print_time': 0,
+            'ipopt.max_iter': 40,
+            'ipopt.tol': 1e-3
+        }
         self.solver = ca.nlpsol('solver', 'ipopt', nlp_problem, opts)
 
         # Initial guess for the decision variables
         self.init_guess = np.zeros(int(opt_vars.numel()))
         self.prev_sol = None
 
-    # Drone Dynamical Model
-    def drone_dynamics(self, states, u):
+    # Drone Dynamical Model  
+    def drone_dynamics(self, s, u):
         # Since ardupilot FCU uses a internal rate PID, we only have access to the velocity setpoints, so we can use basic kinematic equations to model the system
         # Computes the time derivative of the state vector
-        tau = 0.5
-        x_dot = states[3]
-        vx_dot = (u[0] - states[3])/tau
-        y_dot = states[4]
-        vy_dot = (u[1] - states[4])/tau
-        z_dot = states[5]
-        vz_dot = (u[2] - states[5])/tau
+        tau_v = 0.5
+        tau_r = 0.3
 
-        return ca.vertcat(x_dot, y_dot, z_dot, vx_dot, vy_dot, vz_dot)
+        return ca.vertcat(
+            s[3],                         # x_dot
+            s[4],                         # y_dot
+            s[5],                         # z_dot
+            (u[0] - s[3]) / tau_v,        # vx_dot
+            (u[1] - s[4]) / tau_v,        # vy_dot
+            (u[2] - s[5]) / tau_v,        # vz_dot
+            s[7],                         # psi_dot
+            (u[3] - s[7]) / tau_r         # r_dot
+        )
+    
+    def rover_dynamics(self, xr):
+        x   = xr[0]
+        y   = xr[1]
+        z   = xr[2]
+        yaw = xr[3]
+        v   = xr[4]
+        w   = xr[5]
+
+        return ca.vertcat(
+            v * ca.cos(yaw),   # x_dot
+            v * ca.sin(yaw),   # y_dot
+            0.0,               # z_dot (ground rover)
+            w,                 # yaw_dot
+            0.0,               # v_dot
+            0.0                # w_dot
+        )
  
     def compute_control(self, node):
         msg = TwistStamped()
@@ -258,22 +220,27 @@ class MPCController:
 
         if node._tracking_enabled:
             if node.target_found == False:
-                target_z = min(node.pose.pose.position.z + 1.0, 15.0)
+                target_z = min(node.odometry.pose.pose.position.z + 1.0, 15.0)
             else:
-                target_z = node.target_pose[2] + 1.0
+                target_z = node.target_position[2] + 1.0
 
             # Solve the NMPC for the current state x_current
-            look_ahead = 1.0
-            x_current = np.array([
-                node.pose.pose.position.x,
-                node.pose.pose.position.y,
-                node.pose.pose.position.z,
-                node.twist.twist.linear.x,
-                node.twist.twist.linear.y,
-                node.twist.twist.linear.z,
-                node.target_pose[0] + look_ahead * node.target_vel[0],
-                node.target_pose[1] + look_ahead * node.target_vel[1],
+            x_current = ca.DM([
+                node.odometry.pose.pose.position.x,
+                node.odometry.pose.pose.position.y,
+                node.odometry.pose.pose.position.z,
+                node.odometry.twist.twist.linear.x,
+                node.odometry.twist.twist.linear.y,
+                node.odometry.twist.twist.linear.z,
+                node.yaw,
+                node.odometry.twist.twist.angular.z,
+
+                node.target_position[0],
+                node.target_position[1],
                 target_z,
+                node.target_yaw,
+                node.target_velocity_mag,
+                node.target_yaw_rate
             ])
 
             if self.prev_sol is None:
@@ -296,7 +263,7 @@ class MPCController:
             msg.twist.linear.x = float(u_current[0])
             msg.twist.linear.y = float(u_current[1])
             msg.twist.linear.z = float(u_current[2])
-            msg.twist.angular.z = 0.0
+            # msg.twist.angular.z = float(u_current[3])
 
             node.vel_pub.publish(msg)
 
