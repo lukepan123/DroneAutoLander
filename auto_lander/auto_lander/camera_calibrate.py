@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-import os
-
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float64, Float64
-from geometry_msgs.msg import PoseStamped
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
-import glob
 
 
 class CameraCalibrate(Node):

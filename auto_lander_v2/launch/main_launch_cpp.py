@@ -4,18 +4,18 @@ from launch_ros.actions import Node
 def generate_launch_description():
     # ----- Create tf frames -----
     # Static transform from "base_link" to "camera_link"
-    # base_to_camera_tf_node = Node(
-    #     package='tf2_ros',
-    #     executable='static_transform_publisher',
-    #     name='base_to_camera_tf',
-    #     output='screen',
-    #     arguments=[
-    #         '0.0', '0.0', '-0.1249',                # x, y, z translation
-    #         '-1.570796326', '0.0', '3.1415926535',   # roll, pitch, yaw (radians)
-    #         'base_link',                            # parent frame
-    #         'camera_link'                           # child frame
-    #     ]
-    # )
+    base_to_camera_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_to_camera_tf',
+        output='screen',
+        arguments=[
+            '0.0', '0.0', '-0.1249',                # x, y, z translation
+            '-1.570796326', '0.0', '3.1415926535',   # roll, pitch, yaw (radians)
+            'base_link',                            # parent frame
+            'camera_link'                           # child frame
+        ]
+    )
     
     # Run target pose detector node
     tag_pose_detector = Node(
@@ -34,13 +34,13 @@ def generate_launch_description():
     # Run main controller node
     controller = Node(
         package='auto_lander',
-        executable='controller',
+        executable='controller_state_orchestrator',
         name='controller_node',
         output='screen'
     )
 
     return LaunchDescription([
-        # base_to_camera_tf_node,
+        base_to_camera_tf_node,
         tag_pose_detector,
         controller
     ])

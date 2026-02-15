@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 import os
+import sys
+import signal
+from datetime import datetime
+
+import cv2
+import numpy as np
+from cv_bridge import CvBridge
+import tf2_ros
+import tf_transformations
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
 from geometry_msgs.msg import TransformStamped
-import tf_transformations
-import tf2_ros
-
-from cv_bridge import CvBridge
-import cv2
-
-import numpy as np
-from datetime import datetime
-import signal
-import sys
 
 # Get the workspace root directory
 def get_workspace_root():
@@ -32,9 +31,9 @@ def get_workspace_root():
 
 class ArUCoNode(Node):
     def __init__(self):
-        super().__init__("target_detection_node")
+        super().__init__("landing_pad_detection_node")
 
-        # ---------------- PARAMETERS ----------------
+        # ---- PARAMETERS ----
         # Publish the image topic from the camera after processing
         self.declare_parameter("enable_debug_publish", False)
         self.enable_debug_publish = (
@@ -87,47 +86,70 @@ class ArUCoNode(Node):
         self.get_logger().info(f"Video recording parameters: save_frames={self.save_frames}, create_video={self.create_video}, video_fps={self.video_fps}")
         self.get_logger().info(f"Output directory: '{self.output_dir}' (empty means workspace root)")
 
+        # ---- CAMERA PARAMETERS ----
         # Must match the IR input size you exported (default IRIS is 640 x 480)
-        self.declare_parameter("imgsz_width", 640)
-        self.image_width = int(self.get_parameter("imgsz_width").get_parameter_value().integer_value)
+        self.declare_parameter("imgsz_width", 320)
+        self._image_width = int(self.get_parameter("imgsz_width").get_parameter_value().integer_value)
         
-        self.declare_parameter("imgsz_height", 480)
-        self.image_height = int(self.get_parameter("imgsz_height").get_parameter_value().integer_value)
+        self.declare_parameter("imgsz_height", 240)
+        self._image_height = int(self.get_parameter("imgsz_height").get_parameter_value().integer_value)
 
-        self.camera_fov_horizontal = 0.8  # radians (≈114.6°) – tune for your camera
-        self.camera_fov_vertical = 2 * np.arctan(np.tan(self.camera_fov_horizontal / 2) / (self.image_width/self.image_height))
+        self._camera_fov_horizontal = 0.8  # radians (≈114.6°) – tune for your camera
+        self._camera_fov_vertical = 2 * np.arctan(np.tan(self._camera_fov_horizontal / 2) / (self._image_width/self._image_height))
 
         # Generate the camera matrix
-        fx = self.image_width / (2 * np.tan(self.camera_fov_horizontal / 2))
-        fy = self.image_height / (2 * np.tan(self.camera_fov_vertical / 2))
-        self.camera_matrix = np.array([
-            [fx, 0, self.image_width/2],
-            [0, fy, self.image_height/2 ],
+        fx = self._image_width / (2 * np.tan(self._camera_fov_horizontal / 2))
+        fy = self._image_height / (2 * np.tan(self._camera_fov_vertical / 2))
+        self._camera_matrix = np.array([
+            [fx, 0, self._image_width/2],
+            [0, fy, self._image_height/2 ],
             [0, 0, 1],
         ], dtype=np.float64)
 
-        self.dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
-        
-        
-        # ---------------- PUBLISHERS AND SUBSCRIPTIONS ----------------
-        # Publishers
-        self.tf_cam_to_tag_broadcaster = tf2_ros.TransformBroadcaster(self)
-        self.tf_tag_to_target_broadcaster = tf2_ros.TransformBroadcaster(self)
-        self.bridge = CvBridge()
-        self.webcam_publisher = self.create_publisher(Image, "/image", 10)
-        self.target_found_publisher = self.create_publisher(Bool, "/target_found", 10)
+        self._dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
 
+        # ---- TAG PARAMETERS ----
+        self._TAG_SIZES = {
+                35: 0.455,
+                27: 0.067,
+                0 : 0.067
+            }
 
-        # ---------------- INITIALISATION ----------------
-        # AruCo Detector Params
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
-        self.aruco_params = cv2.aruco.DetectorParameters()
-        self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self._TAG_POSITIONS = {
+            35: [0.0, 0.3100, 0.0], #x, y, z
+            27: [0.0, 0.0000, 0.0],
+            0 : [0.0, 0.6200, 0.0]
+        }
 
-        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+        self._object_points = {}
+        for tag_id, size in self._TAG_SIZES.items():
+            half = size / 2.0
+            self._object_points[tag_id] = np.array([
+                [-half,  half, 0],
+                [ half,  half, 0],
+                [ half, -half, 0],
+                [-half, -half, 0],
+            ], dtype=np.float32)
 
+        # ---- PUBLISHERS ----
+        self._bridge = CvBridge()
+        self._webcam_publisher = self.create_publisher(Image, "/image", 10)
+        self._landing_pad_found_publisher = self.create_publisher(Bool, "/landing_pad/found", 10)
 
-        # Initialize frame saving
+        # ---- TF2 ----
+        self._tf_cam_to_tag_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self._tf_tag_to_landing_pad_broadcaster = tf2_ros.TransformBroadcaster(self)
+
+        # ---- OPENCV ----
+        self._aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
+        self._aruco_params = cv2.aruco.DetectorParameters()
+        # self.aruco_params.adaptiveThreshWinSizeMin = 3
+        # self.aruco_params.adaptiveThreshWinSizeMax = 23
+        # self.aruco_params.adaptiveThreshWinSizeStep = 10
+        self._aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self.detector = cv2.aruco.ArucoDetector(self._aruco_dict, self._aruco_params)
+
+        # ---- INITIALISATION ----
         self.frame_count = 0
         self.saved_frames = []
         
@@ -194,8 +216,8 @@ class ArUCoNode(Node):
             else:
                 # Set camera properties
                 self.cap.set(cv2.CAP_PROP_FPS, 30)
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.image_width)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.image_height)
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._image_width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._image_height)
                 
                 # Log actual camera properties
                 actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -210,8 +232,7 @@ class ArUCoNode(Node):
                 1.0 / 30.0, self.webcam_timer_callback
             )  # 30 Hz
 
-
-    # ---------------- SUBSCRIPTION FUNCTION CALLBACKS ----------------
+    # ---- CALLBACK IMPLEMENTATIONS ----
     def webcam_timer_callback(self):
         """Read image from webcam and publish to /image topic"""
         if hasattr(self, "cap") and self.cap is not None and self.cap.isOpened():
@@ -219,9 +240,9 @@ class ArUCoNode(Node):
             if ret:
                 # Resize to IR input size (square) – must match export
                 frame = cv2.resize(
-                    frame, (self.imgsz, self.imgsz), interpolation=cv2.INTER_NEAREST
+                    frame, (self._image_width, self._image_height), interpolation=cv2.INTER_NEAREST
                 )
-                msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+                msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
 
                 self.image_callback(msg)
             else:
@@ -231,84 +252,65 @@ class ArUCoNode(Node):
 
     def image_callback(self, msg):
         """Process image and detect tag, calculate pose and publish tf_transform"""
-        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        stamp = self.get_clock().now().to_msg() # Timestamp before image processing, because thats when the image was taken
 
         # Ensure inference size matches IR (handles topic frames of any size)
-        if frame.shape[0] != self.image_height or frame.shape[1] != self.image_width:
-            frame = cv2.resize(
-                frame, (self.image_width, self.image_height), interpolation=cv2.INTER_LINEAR
-            )
+        if frame.shape[0] != self._image_height or frame.shape[1] != self._image_width:
+            frame = cv2.resize(frame, (self._image_width, self._image_height), interpolation=cv2.INTER_LINEAR)
 
         # Inference (ArUCo detection via OpenCV)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Change to greyscale before inference step
-        stamp = self.get_clock().now().to_msg() # Timestamp before image processing, because thats when the image was taken
-        corners, ids, rejected = self.detector.detectMarkers(gray_frame)
+        corners, ids, _ = self.detector.detectMarkers(gray_frame)
 
-        # Begin pose and twist estimation if tag is detected
-        if ids is not None:  
-            self.target_found_publisher.publish(Bool(data=True))
-
-            # --------- TARGET POSE (solvePNP) ---------
-            # Define tag sizes and position on rover (i.e. where is the rover from the POV of the tag?)
-            TAG_SIZES = {
-                35: 0.455,
-                27: 0.067,
-                0 : 0.067
-            }
-
-            TAG_POSITIONS = {
-                35: [0.0, 0.3100, 0.0], #x, y, z
-                27: [0.0, 0.0000, 0.0],
-                0 : [0.0, 0.6200, 0.0]
-            }
-
-            # Determine the pose of each marker
-            for i, marker_id in enumerate(ids):
-                tag_id = int(marker_id[0])
-
-                if tag_id not in TAG_SIZES:
-                    continue # ignore tags that we dont expect
-
-                marker_length = TAG_SIZES[tag_id]
-                half = marker_length / 2.0
-
-                object_points = np.array([
-                    [-half,  half, 0],  # top-left
-                    [ half,  half, 0],  # top-right
-                    [ half, -half, 0],  # bottom-right
-                    [-half, -half, 0],  # bottom-left
-                ], dtype=np.float32)
-
-                image_points = corners[i][0].astype(np.float32)
-
-                success, rvec, tvec = cv2.solvePnP(
-                    object_points,
-                    image_points,
-                    self.camera_matrix,
-                    self.dist_coeffs,
-                    flags=cv2.SOLVEPNP_IPPE_SQUARE
-                )
-
-                if success:
-                    # Draw pose axes for debugging
-                    if self.show_debug_window:
-                        cv2.drawFrameAxes(
-                            frame,
-                            self.camera_matrix,
-                            self.dist_coeffs,
-                            rvec,
-                            tvec,
-                            marker_length * 0.5
-                        )
-
-                    # Broadcast target position relative to camera frame
-                    cam_to_tag_tf_msg = self.cam_to_tag_transformstamped(stamp, tag_id, rvec, tvec)
-                    tag_to_target_tf_msg = self.tag_to_target_transformstamped(stamp, tag_id, TAG_POSITIONS)
-                    if cam_to_tag_tf_msg is not None:
-                        self.tf_cam_to_tag_broadcaster.sendTransform(cam_to_tag_tf_msg)
-                        self.tf_tag_to_target_broadcaster.sendTransform(tag_to_target_tf_msg)
+        # Check that the tag_id is recognisedfor tag_id_arr in ids:
+        landing_pad_found = False
+        if ids is not None:
+            for tag_id_arr in ids:
+                tag_id = int(tag_id_arr[0])
+                if tag_id in self._object_points:
+                    landing_pad_found = True
+                    self._landing_pad_found_publisher.publish(Bool(data=True))
+                    break
         else:
-            self.target_found_publisher.publish(Bool(data=False))
+            self._landing_pad_found_publisher.publish(Bool(data=False))
+
+        # If tag is recognised, then execute pose calculations
+        if landing_pad_found == True:
+            # Compute areas
+            areas = [cv2.contourArea(c[0].astype(np.float32)) for c in corners]
+            idx = int(np.argmax(areas))      # index of largest detected marker
+            tag_id = int(ids[idx][0])
+
+            image_points = corners[idx][0].astype(np.float32)
+            object_points = self._object_points[tag_id]
+
+            success, rvec, tvec = cv2.solvePnP(
+                object_points,
+                image_points,
+                self._camera_matrix,
+                self._dist_coeffs,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE
+            )
+
+            if success:
+                # Draw pose axes for debugging
+                if self.show_debug_window:
+                    cv2.drawFrameAxes(
+                        frame,
+                        self._camera_matrix,
+                        self._dist_coeffs,
+                        rvec,
+                        tvec,
+                        self._TAG_SIZES[tag_id] * 0.5
+                    )
+
+                # Broadcast landing_pad position relative to camera frame
+                cam_to_tag_tf_msg = self.cam_to_tag_transformstamped(stamp, tag_id, rvec, tvec)
+                tag_to_landing_pad_tf_msg = self.tag_to_landing_pad_transformstamped(stamp, tag_id, self._TAG_POSITIONS)
+                if cam_to_tag_tf_msg is not None:
+                    self._tf_cam_to_tag_broadcaster.sendTransform(cam_to_tag_tf_msg)
+                    self._tf_tag_to_landing_pad_broadcaster.sendTransform(tag_to_landing_pad_tf_msg)
 
         # Show the output image after ArUCo detection (if debug window enabled)
         if self.show_debug_window:
@@ -334,14 +336,11 @@ class ArUCoNode(Node):
                 self.get_logger().warning("Frame saving enabled but frames_dir not initialized")
 
         if self.enable_debug_publish:
-            msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-            self.webcam_publisher.publish(msg)
+            msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            self._webcam_publisher.publish(msg)
 
-
-    # ---------------- HELPER FUNCTIONS ----------------        
+    # ---- HELPER FUNCTIONS ---- 
     def cam_to_tag_transformstamped(self, stamp, tag_id, rvec, tvec):
-        # Broadcast the cam_to_tag tf transform
-
         # From ArUCo tag, find the camera --> tag transform (4x4)
         try:
             t_cam_to_tag = tvec.reshape(3) # position
@@ -369,25 +368,25 @@ class ArUCoNode(Node):
 
         return tf_cam_to_tag
     
-    def tag_to_target_transformstamped(self, stamp, tag_id, tag_positions):
-        # Broadcast the tag_to_target tf transform
-        t_tag_to_target = np.array(tag_positions[tag_id])
-        q_tag_to_target = tf_transformations.quaternion_from_euler(0.0, 0.0, -1.570796326) # Turns out all the tags were 90deg off...
+    def tag_to_landing_pad_transformstamped(self, stamp, tag_id, tag_positions):
+        # Broadcast the tag_to_landing_pad tf transform
+        t_tag_to_landing_pad = np.array(tag_positions[tag_id])
+        q_tag_to_landing_pad = tf_transformations.quaternion_from_euler(0.0, 0.0, -1.570796326) # Turns out all the tags were 90deg off...
 
         # Header for pose
-        tf_tag_to_target = TransformStamped()
-        tf_tag_to_target.header.stamp = stamp
-        tf_tag_to_target.header.frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
-        tf_tag_to_target.child_frame_id = "target_link"
-        tf_tag_to_target.transform.translation.x = t_tag_to_target[0]
-        tf_tag_to_target.transform.translation.y = t_tag_to_target[1]
-        tf_tag_to_target.transform.translation.z = t_tag_to_target[2]
-        tf_tag_to_target.transform.rotation.x = q_tag_to_target[0]
-        tf_tag_to_target.transform.rotation.y = q_tag_to_target[1]
-        tf_tag_to_target.transform.rotation.z = q_tag_to_target[2]
-        tf_tag_to_target.transform.rotation.w = q_tag_to_target[3]
+        tf_tag_to_landing_pad = TransformStamped()
+        tf_tag_to_landing_pad.header.stamp = stamp
+        tf_tag_to_landing_pad.header.frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
+        tf_tag_to_landing_pad.child_frame_id = "landing_pad_link"
+        tf_tag_to_landing_pad.transform.translation.x = t_tag_to_landing_pad[0]
+        tf_tag_to_landing_pad.transform.translation.y = t_tag_to_landing_pad[1]
+        tf_tag_to_landing_pad.transform.translation.z = t_tag_to_landing_pad[2]
+        tf_tag_to_landing_pad.transform.rotation.x = q_tag_to_landing_pad[0]
+        tf_tag_to_landing_pad.transform.rotation.y = q_tag_to_landing_pad[1]
+        tf_tag_to_landing_pad.transform.rotation.z = q_tag_to_landing_pad[2]
+        tf_tag_to_landing_pad.transform.rotation.w = q_tag_to_landing_pad[3]
 
-        return tf_tag_to_target
+        return tf_tag_to_landing_pad
     
     def create_video_from_frames(self):
         """Create video from saved frames"""
@@ -409,7 +408,7 @@ class ArUCoNode(Node):
             self.get_logger().info(f"Video dimensions: {width}x{height}")
             
             # Define codec and create VideoWriter
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fourcc = cv2.VideoWriter.fourcc(*'mp4v')
             video_writer = cv2.VideoWriter(
                 self.video_filename, 
                 fourcc, 
@@ -457,7 +456,7 @@ class ArUCoNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error creating video: {e}")
 
-# ---------------- MAIN ----------------
+# ---- MAIN ----
 def main(args=None):
     rclpy.init(args=args)
     node = ArUCoNode()

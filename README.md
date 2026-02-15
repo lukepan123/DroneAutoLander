@@ -25,14 +25,29 @@ To rebuild package:
 This will launch the gazebo simulation for the given world name (in this case `iris_runway_new.sdf`). 
 If models are edited, this will need to be refreshed.
 
-**2. Run Gazebo Camera Bridge**
+**2a. Run Gazebo Camera Bridge**
 
     source /opt/ros/humble/setup.bash
     cd ros2_ws
     source install/setup.bash
-    ros2 run ros_gz_bridge parameter_bridge /world/iris_runway_new/model/iris_with_gimbal/link/camera_link/sensor/camera/image@sensor_msgs/msg/Image@gz.msgs.Image --ros-args -r /world/iris_runway_new/model/iris_with_gimbal/link/camera_link/sensor/camera/image:=/camera/image_raw
+    ros2 run ros_gz_bridge parameter_bridge /world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image@sensor_msgs/msg/Image@gz.msgs.Image --ros-args -r /world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image:=/camera/image_raw
+
+    ros2 run ros_gz_image image_bridge /world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image@sensor_msgs/msg/Image@gz.msgs.Image /camera/image_raw
 
 This will run the gazebo camera bridge, linking the gazebo camera images to the camera ROS2 node.
+
+**2b. Run Gazebo Gimbal Bridge**
+
+    source /opt/ros/humble/setup.bash
+    cd ros2_ws
+    source install/setup.bash
+    ros2 run ros_gz_bridge parameter_bridge \
+    /gimbal/cmd_roll@std_msgs/msg/Float64@gz.msgs.Double \
+    /gimbal/cmd_pitch@std_msgs/msg/Float64@gz.msgs.Double \
+    /gimbal/cmd_yaw_vel@std_msgs/msg/Float64@gz.msgs.Double \
+    /gimbal/yaw@sensor_msgs/msg/JointState@gz.msgs.Model
+
+This will run the gazebo gimbal bridge, linking the ROS2 topics to the gazebo gimbal topics.
 
 **3a. Run ArduPilot SITL**
 

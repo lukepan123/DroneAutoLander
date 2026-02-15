@@ -23,7 +23,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'tagposedetector = auto_lander.tagposedetector:main',
+            'landing_pad_detector = auto_lander.landing_pad_detector:main',
             'controller = auto_lander.controller:main',
             'camera_calibrate = auto_lander.camera_calibrate:main'
         ],

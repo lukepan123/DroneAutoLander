@@ -1,131 +1,168 @@
 #!/usr/bin/env python3
 import csv
-import numpy as np
 from datetime import datetime
+
+import numpy as np
+from filterpy.kalman import MerweScaledSigmaPoints, UnscentedKalmanFilter
+import tf_transformations
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.time import Time
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy)
 import tf2_ros
-import tf_transformations
-
-from std_msgs.msg import Bool
-from geometry_msgs.msg import TwistStamped
+from std_msgs.msg import Bool, Float64
+from sensor_msgs.msg import JointState
+from geometry_msgs.msg import TwistStamped, TransformStamped
 from nav_msgs.msg import Odometry
-from mavros_msgs.msg import State
-from mavros_msgs.srv import CommandBool, CommandTOL, SetMode, MessageInterval
+from mavros_msgs.msg import (State, AttitudeTarget)
+from mavros_msgs.srv import (CommandBool, CommandTOL, SetMode, MessageInterval)
 
-from filterpy.kalman import UnscentedKalmanFilter
-from filterpy.kalman import MerweScaledSigmaPoints
-
-from .implimented_controllers import MPCController
+from .mpc_controller import MPCController
+from .pid_controller import PIDController
 
 class ChaserController(Node):
     def __init__(self):
         super().__init__('chaser_controller')
+        # ---- STATE VARIABLES ----
+        # ---- Global State Variables ----
+        self.controller_state = 0
 
-        # ---------------- PUBLISHERS AND SUBSCRIPTIONS ----------------
-        # Initialise MAVROS subscriptions
-        state_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
-        self.state_sub = self.create_subscription(State, '/mavros/state', self._on_state, state_qos)
+        self._max_runtime = 90.0
+        self._boundary_limit = 30.0
 
-        odom_qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
-        self.odometry_sub = self.create_subscription(Odometry, '/mavros/global_position/local', self._on_odometry, odom_qos)      
-
-        # Initialise target localisation
-        self.tf_map_target_buffer = tf2_ros.Buffer()
-        self.tf_map_target_listener = tf2_ros.TransformListener(self.tf_map_target_buffer, self)
-        self.filter = UKF(0.04)
-        self.UKF_timer = self.create_timer(0.04, self._tf_map_to_target_callback)
-
-        # Initialise publisher and subscription to target odometry UKF
-        self.tracking_enable_sub = self.create_subscription(Bool, '/tracking_enable', self._on_tracking_enable, 10)
-        self.target_found_sub = self.create_subscription(Bool, '/target_found', self._on_target_found, 10)
-
-        # Publisher for quadcopter velcoity commands
-        self.vel_pub = self.create_publisher(TwistStamped, '/mavros/setpoint_velocity/cmd_vel', 10)
-        
-        # ---------------- QUADCOPTER STATE ----------------
-        # LP Filters on target position/velocity
-        self.target_position = None
-        self.target_velocity = None
-        self.target_position_lp = LowPassFilter(0.8)
-        self.target_velocity_lp = LowPassFilter(0.5)
-
-        self.target_velocity_mag = 0.0
-        self.target_yaw = 0.0
-        self.target_yaw_rate = 0.0
-        self.target_found = False
-
-        # Initialise node variables
         self.state = State()
         self.odometry = Odometry()
-        self.target_odometry = Odometry()
+        self.roll = 0.0
+        self.pitch = 0.0
         self.yaw = 0.0
-        
-        # Initialise controller variables
-        self.target_altitude = 15.0
-        self.prev_time = self.get_clock().now()
 
-        # Initialize MPC and control loop
-        self.control_rate = 0.15
-        self.mpc_controller = MPCController(self.control_rate)
-        self.setpoint_timer = self.create_timer(self.control_rate, self._control_loop) # <- control loop (6.66Hz)
+        self.landing_pad_odometry = Odometry()
+        self.landing_pad_position = [0,0,0]
+        self.landing_pad_velocity = [0,0,0]
+        self._landing_pad_position_lp = LowPassFilter(0.8)
+        self._landing_pad_velocity_lp = LowPassFilter(0.5)
+        self.landing_pad_velocity_mag = 0.0
+        self.landing_pad_yaw = 0.0
+        self.landing_pad_yaw_rate = 0.0
 
-        # Initialise MAVROS clients
-        self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
-        self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
-        self.takeoff_client = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
-        self.message_interval_client = self.create_client(MessageInterval, '/mavros/set_message_interval')
+        self.cam_roll = 0.0
+        self.cam_pitch = 0.0
+        self.cam_yaw = 0.0
+        self.cam_yaw_des = 0.0
+        self.cam_yaw_vel = 0.0
+        self.yaw_increm = 0.2
 
-        # Initialise flight .csv log
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.csv_filename = f"controller_{timestamp}.csv"
-        self.csv_file = open(self.csv_filename, 'w', newline='')
-        self.csv_writer = csv.writer(self.csv_file)
-        self.csv_writer.writerow([
-            'timestamp', 'quad_x', 'quad_y', 'quad_z', 'quad_vx', 'quad_vy', 'quad_vz', 'quad_omgx', 'quad_omgy', 'quad_omgz', 
-            'target_x', 'target_y', 'target_z', 'target_vx', 'target_vy', 'target_vz', 'target_yaw',
-            'target_lpx', 'target_lpy', 'target_lpz', 'target_lpvx', 'target_lpvy', 'target_lpvz'
-        ])
-        self.get_logger().info(f'CSV logging initialized: {self.csv_filename}')
-
-        # Initialise arming and landing variables
-        self._guided_requested = False
-        self._guided_confirmed = False
-
+        # ---- State 0000 (Pre-arm) Variables ----
+        self._mode_requested = False
+        self._mode_confirmed = False
+        self._mode = 'GUIDED'
         self._arm_requested = False
         self._armed_confirmed = False
+        self._armed_time = None
 
+        # ---- State 1000 (Take-off) Variables ----
         self._tko_requested = False
         self._tko_reached = False
+        self._tko_complete_time = None
+        self._tko_altitude_SP = 10.0
 
-        self._tracking_enabled = False
-        self._tracking_manual_override = False
-        self._armed_time = None
-        self._takeoff_complete_time = None
+        # ---- State 2000 (Searching for Landing Pad) Variables ----
+        self._landing_pad_found = False
+        self._landing_pad_first_seen_time = None
+        self._landing_pad_visual_time_SP = 10.0
+
+        # ---- State 3000 (Maintaining Landing Pad Lock) Variables ----
+        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 10.0
+        self._landing_pad_lost_time = None
+        self._landing_pad_lost_time_SP = 5.0
+
+        # ---- State 4000 (Beginning Landing Descent) Variables ---- 
+
+        # ---- State 5000 (Landing Confirmed) Variables ---- 
+
+        # ---- State 6000 (Landing Abort) Variables ---- 
+
+        # ---- State 7000 (RTL) Variables ----
         self._rtl_initiated = False
 
-        self.boundary_limit = 25.0  # 15m from center in any direction
-        
-        self.orchestrator = self.create_timer(0.2, self._orchestrate)
-        self.safety_timer = self.create_timer(1.0, self._check_safety_conditions)
+        # ---- CONTROL CLASS INITIALISATIONS ----
+        self._UKF_timer_rate = 0.05
+        self._UKF_filter = UKF(self._UKF_timer_rate)
+        #self._mpc_controller = MPCController()
+        self._pid_controller = PIDController()
 
-        # Set MAVROS message intervals
+        # ---- SUBSCRIPTIONS ----
+        _state_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        self._state_sub = self.create_subscription(State, '/mavros/state', self._fcu_state_callback, _state_qos)
+
+        _odom_qos = QoSProfile( reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        self._odometry_sub = self.create_subscription(Odometry, '/mavros/global_position/local', self._odometry_callback, _odom_qos)
+        self._twist_sub = self.create_subscription(TwistStamped, '/mavros/local_position/velocity_local', self._twist_callback, _odom_qos)
+
+        self._landing_pad_found_sub = self.create_subscription(Bool, '/landing_pad/found', self._landing_pad_found_callback, 10)
+
+        self._gimbal_yaw_sub = self.create_subscription(JointState, '/gimbal/yaw', self._gimbal_yaw_callback, 10)
+
+        # ---- PUBLISHERS ----
+        self.att_pub = self.create_publisher(AttitudeTarget, '/mavros/setpoint_raw/attitude', 10)
+
+        self._gimbal_roll_publisher = self.create_publisher(Float64, "/gimbal/cmd_roll", 10)
+        self._gimbal_pitch_publisher = self.create_publisher(Float64, "/gimbal/cmd_pitch", 10)
+        self._gimbal_yaw_vel_publisher = self.create_publisher(Float64, "/gimbal/cmd_yaw_vel", 10)
+
+        # ---- TF2 ----
+        self._tf_map_landing_pad_buffer = tf2_ros.Buffer()
+        self._tf_map_landing_pad_listener = tf2_ros.TransformListener(self._tf_map_landing_pad_buffer, self)
+
+        self._tf_quad_to_gimbal_base_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self._tf_gimbal_base_to_gimbal_yaw_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self._tf_gimbal_yaw_to_gimbal_roll_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self._tf_gimbal_roll_to_gimbal_pitch_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self._tf_gimbal_pitch_to_cam_broadcaster = tf2_ros.TransformBroadcaster(self)
+  
+        # ---- CLIENTS ----
+        self._set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
+        self._arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
+        self._takeoff_client = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
+        self._message_interval_client = self.create_client(MessageInterval, '/mavros/set_message_interval')
+
+        # ---- CONTROL TIMERS ----
+        self._UKF_timer = self.create_timer(self._UKF_timer_rate, self._ukf_loop)
+        self._safety_timer_rate = 1.0
+        self._safety_timer = self.create_timer(self._safety_timer_rate, self._safety_loop)
+        self._gimbal_timer_rate = 0.02
+        self._gimbal_timer = self.create_timer(self._gimbal_timer_rate, self._gimbal_loop)
+        self._control_timer_rate = 0.04
+        self._control_timer = self.create_timer(self._control_timer_rate, self._control_loop)
+
+        #  ---- DIAGNOSTICS AND LOGGING ----
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._csv_filename = f"controller_{timestamp}.csv"
+        self._csv_file = open(self._csv_filename, 'w', newline='')
+        self._csv_writer = csv.writer(self._csv_file)
+        self._csv_writer.writerow([
+            'timestamp',
+            'quad_x', 'quad_y', 'quad_z', 'quad_vx', 'quad_vy', 'quad_vz',
+            'quad_yaw',
+            'quad_omgx', 'quad_omgy', 'quad_omgz',
+            'landing_pad_x', 'landing_pad_y', 'landing_pad_z', 'landing_pad_vx', 'landing_pad_vy', 'landing_pad_vz', 
+            'landing_pad_yaw',
+            'landing_pad_lpx', 'landing_pad_lpy', 'landing_pad_lpz', 'landing_pad_lpvx', 'landing_pad_lpvy', 'landing_pad_lpvz'
+        ])
+        self.get_logger().info(f'CSV logging initialized: {self._csv_filename}')
+
         self._set_message_intervals()
-
         self.get_logger().info('Auto Lander (callbacks) started')
 
+    # ---- CALLBACK IMPLEMENTATIONS ----
     def _set_message_intervals(self):
         """Set MAVROS message intervals for global position and compass to 100.0Hz"""
-        self._set_single_message_interval(32, 100.0, "Local Position") 
-        self._set_single_message_interval(33, 100.0, "Global Position") 
-        self._set_single_message_interval(74, 100.0, "Compass Heading")
 
     def _set_single_message_interval(self, message_id, rate, description):
         """Set a single message interval"""
-        if not self.message_interval_client.wait_for_service(timeout_sec=5.0):
+        if not self._message_interval_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warn(f'MessageInterval service not ready for {description}')
             return
             
@@ -133,7 +170,7 @@ class ChaserController(Node):
         req.message_id = message_id
         req.message_rate = rate
         
-        fut = self.message_interval_client.call_async(req)
+        fut = self._message_interval_client.call_async(req)
         fut.add_done_callback(lambda f, desc=description, mid=message_id, r=rate: self._on_message_interval_done(f, desc, mid, r))
         
         self.get_logger().info(f'Setting {description} (ID: {message_id}) to {rate}Hz...')
@@ -151,101 +188,78 @@ class ChaserController(Node):
         else:
             self.get_logger().warn(f'{description} interval setting failed (ID: {message_id}, Rate: {rate}Hz)')
 
-    # Helper functions for subscriptions
-    def _on_state(self, msg: State):
+    def _fcu_state_callback(self, msg: State):
         self.state = msg
 
-        if self.state.mode == 'GUIDED' and not self._guided_confirmed:
-            self._guided_confirmed = True
-            self.get_logger().info('GUIDED confirmed by FCU.')
+        if self.state.mode == self._mode and not self._mode_confirmed:
+            self._mode_confirmed = True
+            self.get_logger().info(f'{self._mode} confirmed by FCU.')
 
         if self.state.armed and not self._armed_confirmed:
             self._armed_confirmed = True
             self._armed_time = self.get_clock().now().nanoseconds / 1e9
 
-    def _on_odometry(self, msg: Odometry):
+    def _odometry_callback(self, msg: Odometry):
         self.odometry = msg
         alt = msg.pose.pose.position.z
+
+        q = self.odometry.pose.pose.orientation
+        self.roll, self.pitch, self.yaw = tf_transformations.euler_from_quaternion([
+            q.x, q.y, q.z, q.w
+        ])
         
-        if self._armed_confirmed and not self._tko_reached and alt > (self.target_altitude - 0.5):
+        if self._armed_confirmed and not self._tko_reached and alt > (self._tko_altitude_SP - 0.5):
             self._tko_reached = True
-            self._takeoff_complete_time = self.get_clock().now().nanoseconds / 1e9
-            self.get_logger().info(f'Takeoff complete at {alt:.2f} m - Starting 60s safety timer')
-            self._enable_tracking()
+            self._tko_complete_time = self.get_clock().now().nanoseconds / 1e9
+            self.get_logger().info(f'Takeoff complete at {alt:.2f} m - Starting {self._max_runtime}s safety timer')
 
-    def _on_tracking_enable(self, msg: Bool):
-        """Handle manual tracking enable/disable commands"""
-        self._tracking_manual_override = msg.data
-        if msg.data:
-            self._enable_tracking_manual()
-        else:
-            self._disable_tracking_manual()
-        self.get_logger().info(f'Manual tracking override: {"ENABLED" if msg.data else "DISABLED"}')
+    def _twist_callback(self, msg: TwistStamped):
+        self.odometry.twist.twist.angular.x = msg.twist.angular.x
+        self.odometry.twist.twist.angular.y = msg.twist.angular.y
+        self.odometry.twist.twist.angular.z = msg.twist.angular.z
 
-    def _on_target_found(self, msg: Bool):
-        self.target_found = msg.data
-    # -------------------------------------------------------------
+    def _landing_pad_found_callback(self, msg: Bool):
+        self._landing_pad_found = msg.data
 
+    def _gimbal_yaw_callback(self, msg: JointState):
+        self.cam_yaw = (msg.position[0] + np.pi) % (2*np.pi) - np.pi
 
-    def _orchestrate(self):
-        if not self.state.connected:
-            return
+        self.cam_yaw_vel = 10.0 * ((self.cam_yaw_des - self.cam_yaw + np.pi) % (2*np.pi) - np.pi)
+        self._gimbal_yaw_vel_publisher.publish(Float64(data=self.cam_yaw_vel))
 
-        if not self._guided_confirmed:
-            if not self._guided_requested:
-                self._request_guided()
-            return
-
-        if not self._armed_confirmed:
-            if not self._arm_requested:
-                self._request_arm()
-            return
-
-        if self._armed_confirmed and self._armed_time is not None and not self._tko_requested:
-            elapsed = self.get_clock().now().nanoseconds / 1e9 - self._armed_time
-            if elapsed < 5.0:
-                if not hasattr(self, '_armed_wait_logged') or not self._armed_wait_logged:
-                    self.get_logger().info("Armed. Waiting 5s before takeoff...")
-                    self._armed_wait_logged = True
-                return
-            else:
-                self._request_takeoff()
-                self._armed_wait_logged = False
-                return
-
-    def _request_guided(self):
-        if not self.set_mode_client.wait_for_service(timeout_sec=0.5):
+    def _request_mode(self):
+        if not self._set_mode_client.wait_for_service(timeout_sec=0.5):
             self.get_logger().warn('SetMode service not ready yet.')
             return
-        self._guided_requested = True
+        self._mode_requested = True
         req = SetMode.Request()
-        req.custom_mode = 'GUIDED'
-        fut = self.set_mode_client.call_async(req)
+        req.custom_mode = self._mode
+        fut = self._set_mode_client.call_async(req)
         fut.add_done_callback(self._on_set_mode_done)
-        self.get_logger().info('Requesting GUIDED...')
+        self.get_logger().info(f'Requesting {self._mode}...')
 
     def _on_set_mode_done(self, fut):
         try:
             res = fut.result()
         except Exception as e:
             self.get_logger().error(f'SetMode exception: {e}')
-            self._guided_requested = False
+            self._mode_requested = False
             return
 
         if getattr(res, 'mode_sent', False):
-            self.get_logger().info('GUIDED command accepted (awaiting FCU report).')
+            self.get_logger().info(f'{self._mode} command accepted (awaiting FCU report).')
         else:
-            self.get_logger().error('GUIDED command rejected by FCU.')
-            self._guided_requested = False
+            self.get_logger().error(f'{self._mode} command rejected by FCU.')
+            self._mode_requested = False
 
     def _request_arm(self):
-        if not self.arming_client.wait_for_service(timeout_sec=0.5):
+        if not self._arming_client.wait_for_service(timeout_sec=0.5):
             self.get_logger().warn('Arming service not ready yet.')
             return
         self._arm_requested = True
         req = CommandBool.Request()
         req.value = True
-        fut = self.arming_client.call_async(req)
+        fut = self._arming_client.call_async(req)
         fut.add_done_callback(self._on_arm_done)
         self.get_logger().info('Requesting ARM...')
 
@@ -264,15 +278,15 @@ class ChaserController(Node):
             self._arm_requested = False
 
     def _request_takeoff(self):
-        if not self.takeoff_client.wait_for_service(timeout_sec=0.5):
+        if not self._takeoff_client.wait_for_service(timeout_sec=0.5):
             self.get_logger().warn('Takeoff service not ready yet.')
             return
         self._tko_requested = True
         req = CommandTOL.Request()
-        req.altitude = float(self.target_altitude)
-        fut = self.takeoff_client.call_async(req)
+        req.altitude = float(self._tko_altitude_SP)
+        fut = self._takeoff_client.call_async(req)
         fut.add_done_callback(self._on_takeoff_done)
-        self.get_logger().info(f'Requesting takeoff to {self.target_altitude:.1f} m...')
+        self.get_logger().info(f'Requesting takeoff to {self._tko_altitude_SP:.1f} m...')
 
     def _on_takeoff_done(self, fut):
         try:
@@ -288,47 +302,6 @@ class ChaserController(Node):
             self.get_logger().error('Takeoff rejected by FCU.')
             self._tko_requested = False
 
-    def _enable_tracking(self):
-        if not self._tracking_enabled:
-            self._tracking_enabled = True
-            self.get_logger().info('Tracking enabled (automatic - takeoff complete).')
-
-    def _enable_tracking_manual(self):
-        """Enable tracking manually via topic command"""
-        if not self._tracking_enabled:
-            self._tracking_enabled = True
-            self.get_logger().info('Tracking enabled (manual override).')
-
-    def _disable_tracking_manual(self):
-        """Disable tracking manually via topic command"""
-        if self._tracking_enabled:
-            self._tracking_enabled = False
-            self.get_logger().info('Tracking disabled (manual override).')
-
-    def _check_safety_conditions(self):
-        """Check safety conditions and initiate RTL if necessary"""
-        if self._rtl_initiated or not self._tko_reached:
-            return
-            
-        current_time = self.get_clock().now().nanoseconds / 1e9
-        
-        # Check 120-second timer after takeoff
-        if self._takeoff_complete_time is not None:
-            elapsed_since_takeoff = current_time - self._takeoff_complete_time
-            if elapsed_since_takeoff >= 60.0:
-                self.get_logger().warn('120 seconds elapsed since takeoff - Initiating RTL')
-                self._initiate_rtl('120-second timer expired')
-                return
-        
-        # Check boundary conditions (30x30m square)
-        x = self.odometry.pose.pose.position.x
-        y = self.odometry.pose.pose.position.y
-        
-        if abs(x) > self.boundary_limit or abs(y) > self.boundary_limit:
-            self.get_logger().warn(f'Boundary violation: position ({x:.1f}, {y:.1f}) - Initiating RTL')
-            self._initiate_rtl(f'boundary violation at ({x:.1f}, {y:.1f})')
-            return
-
     def _initiate_rtl(self, reason):
         """Initiate return to land mode and disable tracking"""
         if self._rtl_initiated:
@@ -339,13 +312,13 @@ class ChaserController(Node):
         
         self.get_logger().warn(f'SAFETY: Initiating RTL due to {reason}')
         
-        if not self.set_mode_client.wait_for_service(timeout_sec=1.0):
+        if not self._set_mode_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().error('SetMode service not available for RTL!')
             return
             
         req = SetMode.Request()
         req.custom_mode = 'RTL'
-        fut = self.set_mode_client.call_async(req)
+        fut = self._set_mode_client.call_async(req)
         fut.add_done_callback(lambda f: self._on_rtl_done(f, reason))
 
     def _on_rtl_done(self, fut, reason):
@@ -361,13 +334,14 @@ class ChaserController(Node):
         else:
             self.get_logger().error(f'RTL command rejected by FCU (reason: {reason})')
 
-    def _tf_map_to_target_callback(self):
+    def _ukf_loop(self):
+        start = self.get_clock().now()
+
+        # Predict UKF first
+        self._UKF_filter.ukf.predict()
+
         try:
-            tf_msg = self.tf_map_target_buffer.lookup_transform(
-                'map',
-                'target_link',
-                rclpy.time.Time()
-            )
+            tf_msg = self._tf_map_landing_pad_buffer.lookup_transform('map', 'landing_pad_link', Time())
         except Exception:
             return
 
@@ -375,79 +349,274 @@ class ChaserController(Node):
         t = tf_msg.transform.translation
         q = tf_msg.transform.rotation
 
-        roll, pitch, yaw = tf_transformations.euler_from_quaternion([
-            q.x, q.y, q.z, q.w
+        roll, pitch, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+        state = np.array([t.x, t.y, t.z, yaw])
+
+        # Update measurement noise
+        cov_adj_x = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.y**2 + self.odometry.twist.twist.angular.z**2))
+        cov_adj_y = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.z**2))
+        cov_adj_z = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.y**2))
+
+        self._UKF_filter.ukf.R = np.diag([
+            0.2 * cov_adj_x, 0.2 * cov_adj_y, 0.2 * cov_adj_z,   # position
+            0.05 * cov_adj_z # yaw only
         ])
 
-        z = np.array([
-            t.x,
-            t.y,
-            t.z,
-            yaw
-        ])
+        # Update UKF
+        self._UKF_filter.ukf.update(state)
 
-        # Predict → Update (correct order)
-        self.filter.ukf.predict()
-        self.filter.ukf.update(z)
-
-        x = self.filter.ukf.x
+        x = self._UKF_filter.ukf.x
 
         # Publish filtered pose
-        self.target_odometry.header.stamp = tf_msg.header.stamp
-        self.target_odometry.header.frame_id = 'map'
+        self.landing_pad_odometry.header.stamp = tf_msg.header.stamp
+        self.landing_pad_odometry.header.frame_id = 'map'
 
-        self.target_odometry.pose.pose.position.x = x[0]
-        self.target_odometry.pose.pose.position.y = x[1]
-        self.target_odometry.pose.pose.position.z = x[2]
+        self.landing_pad_odometry.pose.pose.position.x = x[0]
+        self.landing_pad_odometry.pose.pose.position.y = x[1]
+        self.landing_pad_odometry.pose.pose.position.z = x[2]
 
         quat = tf_transformations.quaternion_from_euler(0.0, 0.0, x[4])
-        self.target_odometry.pose.pose.orientation.x = quat[0]
-        self.target_odometry.pose.pose.orientation.y = quat[1]
-        self.target_odometry.pose.pose.orientation.z = quat[2]
-        self.target_odometry.pose.pose.orientation.w = quat[3]
+        self.landing_pad_odometry.pose.pose.orientation.x = quat[0]
+        self.landing_pad_odometry.pose.pose.orientation.y = quat[1]
+        self.landing_pad_odometry.pose.pose.orientation.z = quat[2]
+        self.landing_pad_odometry.pose.pose.orientation.w = quat[3]
 
         vx = x[3] * np.cos(x[4])
         vy = x[3] * np.sin(x[4])
 
-        self.target_velocity_mag = x[3]
-        self.target_yaw = x[4]
-        self.target_yaw_rate = x[5]
+        self.landing_pad_velocity_mag = x[3]
+        self.landing_pad_yaw = x[4]
+        self.landing_pad_yaw_rate = x[5]
 
-        self.target_odometry.twist.twist.linear.x = vx
-        self.target_odometry.twist.twist.linear.y = vy
-        self.target_odometry.twist.twist.linear.z = 0.0
-
-
-    def _control_loop(self):
-        # Don't write to CSV nor send commands if rtl initiated
-        if self._rtl_initiated:
-            return
+        self.landing_pad_odometry.twist.twist.linear.x = vx
+        self.landing_pad_odometry.twist.twist.linear.y = vy
+        self.landing_pad_odometry.twist.twist.linear.z = 0.0
 
         # Update LP Filters
-        stamp = self.get_clock().now()
+        stamp = Time.from_msg(self.landing_pad_odometry.header.stamp)
 
-        target_position_raw = np.array([
-            self.target_odometry.pose.pose.position.x, 
-            self.target_odometry.pose.pose.position.y, 
-            self.target_odometry.pose.pose.position.z])
-        self.target_position = self.target_position_lp.update(target_position_raw, stamp)
+        landing_pad_position_raw = np.array([
+            self.landing_pad_odometry.pose.pose.position.x, 
+            self.landing_pad_odometry.pose.pose.position.y, 
+            self.landing_pad_odometry.pose.pose.position.z])
+        self.landing_pad_position = self._landing_pad_position_lp.update(landing_pad_position_raw, stamp)
 
-        target_velocity_raw = np.array([
-            self.target_odometry.twist.twist.linear.x, 
-            self.target_odometry.twist.twist.linear.y, 
-            self.target_odometry.twist.twist.linear.z])
-        self.target_velocity = self.target_velocity_lp.update(target_velocity_raw, stamp)
+        landing_pad_velocity_raw = np.array([
+            self.landing_pad_odometry.twist.twist.linear.x, 
+            self.landing_pad_odometry.twist.twist.linear.y, 
+            self.landing_pad_odometry.twist.twist.linear.z])
+        self.landing_pad_velocity = self._landing_pad_velocity_lp.update(landing_pad_velocity_raw, stamp)
 
-        q = self.odometry.pose.pose.orientation
-        _, _, self.yaw = tf_transformations.euler_from_quaternion([
-            q.x, q.y, q.z, q.w
-        ])
+        # Check for timer overruns
+        end = self.get_clock().now()
+        elapsed = (end - start).nanoseconds / 1e6  # ms
+        if elapsed > self._UKF_timer_rate * 1000:
+            self.get_logger().warn(f"UKF loop took {elapsed:.2f} ms!")
+    
+    def _gimbal_loop(self):
+        stamp = self.get_clock().now().to_msg()
+
+        self._gimbal_pitch_publisher.publish(Float64(data=self.cam_pitch))
+        self._gimbal_roll_publisher.publish(Float64(data=self.cam_roll))
+
+        # Header for quad to gimbal_base
+        q_quad_to_gimbal_base = tf_transformations.quaternion_from_euler(1.57079632679, 0.0, 1.57079632679)
         
-        # Run control loop
-        msg = self.mpc_controller.compute_control(self)
+        tf_quad_to_gimbal_base = TransformStamped()
+        tf_quad_to_gimbal_base.header.stamp = stamp
+        tf_quad_to_gimbal_base.header.frame_id = "base_link"
+        tf_quad_to_gimbal_base.child_frame_id = "gimbal_base_link"
+        tf_quad_to_gimbal_base.transform.translation.x = 0.0
+        tf_quad_to_gimbal_base.transform.translation.y = -0.01
+        tf_quad_to_gimbal_base.transform.translation.z = -0.124923
+        tf_quad_to_gimbal_base.transform.rotation.x = q_quad_to_gimbal_base[0]
+        tf_quad_to_gimbal_base.transform.rotation.y = q_quad_to_gimbal_base[1]
+        tf_quad_to_gimbal_base.transform.rotation.z = q_quad_to_gimbal_base[2]
+        tf_quad_to_gimbal_base.transform.rotation.w = q_quad_to_gimbal_base[3]
 
+        self._tf_quad_to_gimbal_base_broadcaster.sendTransform(tf_quad_to_gimbal_base)
+
+        # Header for gimbal_base to gimbal_yaw
+        q_gimbal_base_to_gimbal_yaw = tf_transformations.quaternion_from_euler(0.0, self.cam_yaw, 0.0)
+        
+        tf_gimbal_base_to_gimbal_yaw = TransformStamped()
+        tf_gimbal_base_to_gimbal_yaw.header.stamp = stamp
+        tf_gimbal_base_to_gimbal_yaw.header.frame_id = "gimbal_base_link"
+        tf_gimbal_base_to_gimbal_yaw.child_frame_id = "gimbal_yaw_link"
+        tf_gimbal_base_to_gimbal_yaw.transform.translation.x = 0.0105
+        tf_gimbal_base_to_gimbal_yaw.transform.translation.y = 0.065
+        tf_gimbal_base_to_gimbal_yaw.transform.translation.z = -0.182
+        tf_gimbal_base_to_gimbal_yaw.transform.rotation.x = q_gimbal_base_to_gimbal_yaw[0]
+        tf_gimbal_base_to_gimbal_yaw.transform.rotation.y = q_gimbal_base_to_gimbal_yaw[1]
+        tf_gimbal_base_to_gimbal_yaw.transform.rotation.z = q_gimbal_base_to_gimbal_yaw[2]
+        tf_gimbal_base_to_gimbal_yaw.transform.rotation.w = q_gimbal_base_to_gimbal_yaw[3]
+
+        self._tf_gimbal_base_to_gimbal_yaw_broadcaster.sendTransform(tf_gimbal_base_to_gimbal_yaw)
+
+        # Header for gimbal_yaw to gimbal_roll
+        q_gimbal_yaw_to_gimbal_roll = tf_transformations.quaternion_from_euler(0.0, 0.0, self.cam_roll)
+
+        tf_gimbal_yaw_to_gimbal_roll = TransformStamped()
+        tf_gimbal_yaw_to_gimbal_roll.header.stamp = stamp
+        tf_gimbal_yaw_to_gimbal_roll.header.frame_id = "gimbal_yaw_link"
+        tf_gimbal_yaw_to_gimbal_roll.child_frame_id = "gimbal_roll_link"
+        tf_gimbal_yaw_to_gimbal_roll.transform.translation.x = 0.0099
+        tf_gimbal_yaw_to_gimbal_roll.transform.translation.y = 0.002
+        tf_gimbal_yaw_to_gimbal_roll.transform.translation.z = -0.05
+        tf_gimbal_yaw_to_gimbal_roll.transform.rotation.x = q_gimbal_yaw_to_gimbal_roll[0]
+        tf_gimbal_yaw_to_gimbal_roll.transform.rotation.y = q_gimbal_yaw_to_gimbal_roll[1]
+        tf_gimbal_yaw_to_gimbal_roll.transform.rotation.z = q_gimbal_yaw_to_gimbal_roll[2]
+        tf_gimbal_yaw_to_gimbal_roll.transform.rotation.w = q_gimbal_yaw_to_gimbal_roll[3]
+
+        self._tf_gimbal_yaw_to_gimbal_roll_broadcaster.sendTransform(tf_gimbal_yaw_to_gimbal_roll)
+
+        # Header for gimbal_roll to gimbal_pitch
+        q_gimbal_roll_to_gimbal_pitch = tf_transformations.quaternion_from_euler(self.cam_pitch, 0.0, 0.0)
+
+        tf_gimbal_roll_to_gimbal_pitch = TransformStamped()
+        tf_gimbal_roll_to_gimbal_pitch.header.stamp = stamp
+        tf_gimbal_roll_to_gimbal_pitch.header.frame_id = "gimbal_roll_link"
+        tf_gimbal_roll_to_gimbal_pitch.child_frame_id = "gimbal_pitch_link"
+        tf_gimbal_roll_to_gimbal_pitch.transform.translation.x = 0.045
+        tf_gimbal_roll_to_gimbal_pitch.transform.translation.y = 0.0021
+        tf_gimbal_roll_to_gimbal_pitch.transform.translation.z = 0.0199
+        tf_gimbal_roll_to_gimbal_pitch.transform.rotation.x = q_gimbal_roll_to_gimbal_pitch[0]
+        tf_gimbal_roll_to_gimbal_pitch.transform.rotation.y = q_gimbal_roll_to_gimbal_pitch[1]
+        tf_gimbal_roll_to_gimbal_pitch.transform.rotation.z = q_gimbal_roll_to_gimbal_pitch[2]
+        tf_gimbal_roll_to_gimbal_pitch.transform.rotation.w = q_gimbal_roll_to_gimbal_pitch[3]
+
+        self._tf_gimbal_roll_to_gimbal_pitch_broadcaster.sendTransform(tf_gimbal_roll_to_gimbal_pitch)
+
+        # Header for gimbal_pitch to camera_link
+        q_gimbal_pitch_to_cam = tf_transformations.quaternion_from_euler(0.0, 0.0, 3.1415259)
+
+        tf_gimbal_pitch_to_cam = TransformStamped()
+        tf_gimbal_pitch_to_cam.header.stamp = stamp
+        tf_gimbal_pitch_to_cam.header.frame_id = "gimbal_pitch_link"
+        tf_gimbal_pitch_to_cam.child_frame_id = "camera_link"
+        tf_gimbal_pitch_to_cam.transform.translation.x = 0.0
+        tf_gimbal_pitch_to_cam.transform.translation.y = 0.0
+        tf_gimbal_pitch_to_cam.transform.translation.z = 0.0
+        tf_gimbal_pitch_to_cam.transform.rotation.x = q_gimbal_pitch_to_cam[0]
+        tf_gimbal_pitch_to_cam.transform.rotation.y = q_gimbal_pitch_to_cam[1]
+        tf_gimbal_pitch_to_cam.transform.rotation.z = q_gimbal_pitch_to_cam[2]
+        tf_gimbal_pitch_to_cam.transform.rotation.w = q_gimbal_pitch_to_cam[3]
+
+        self._tf_gimbal_pitch_to_cam_broadcaster.sendTransform(tf_gimbal_pitch_to_cam)
+
+    def _control_loop(self):
+        start = self.get_clock().now()
+
+        # ---- State 0000 (Pre-arm) - Below conditions need to be met ALWAYS so we check regardless of state
+        if not self.state.connected:
+            self.controller_state = 0
+            return
+
+        if not self._mode_confirmed:
+            if not self._mode_confirmed:
+                self._request_mode()
+            self.controller_state = 0
+            return
+
+        if not self._armed_confirmed:
+            if not self._arm_requested:
+                self._request_arm()
+            self.controller_state = 0
+            return
+        
+        # If RTL initiated, exit early
+        if self._rtl_initiated:
+            self.controller_state = 7000
+            return
+        
+        if self._armed_confirmed and self._armed_time is not None and not self._tko_requested:
+            self.controller_state = 1000
+
+        # ---- State 1000 (Start Takeoff)
+        if self.controller_state == 1000:
+            elapsed = self.get_clock().now().nanoseconds / 1e9 - self._armed_time
+            if elapsed < 5.0:
+                if not hasattr(self, '_armed_wait_logged') or not self._armed_wait_logged:
+                    self.get_logger().info("Armed. Waiting 5s before takeoff...")
+                    self._armed_wait_logged = True
+                return
+            else:
+                self._request_takeoff()
+                self._armed_wait_logged = False
+                self.controller_state = 1100
+                return
+
+        # ---- State 1100 (Wait for Takeoff to finish)
+        if self.controller_state == 1100 and self._tko_reached:
+            self.controller_state = 2000
+
+        # ---- State 2000 (Searching for Landing Pad)
+        if self.controller_state == 2000:
+            if self._landing_pad_found and self._landing_pad_first_seen_time is None:
+                self._landing_pad_first_seen_time = self.get_clock().now().nanoseconds / 1e9
+                self.get_logger().info(f"Landing Pad found, starting {self._landing_pad_visual_time_SP} sec timer...")
+                self.controller_state = 2500
+
+        # ---- State 2500 (Maintain Landing Pad Visual Lock)
+        if self.controller_state == 2500:
+            now = self.get_clock().now().nanoseconds / 1e9
+            if (now - self._landing_pad_first_seen_time) > self._landing_pad_visual_time_SP:
+                self.get_logger().info(f"Landing Pad visual hold ok, starting {self._landing_pad_locked_time_SP} sec timer...")
+                self.controller_state = 3000
+        
+        # ---- State 3000 (Move over and Maintain Landing Pad Lock)
+        if self.controller_state == 3000:
+            now = self.get_clock().now().nanoseconds / 1e9
+            if self._landing_pad_found:
+                self._landing_pad_lost_time = None
+                if (now - self._landing_pad_first_seen_time) > self._landing_pad_locked_time_SP:
+                    self.get_logger().info("Landing Pad Acquired")
+                    self.controller_state = 4000
+            else:
+                if self._landing_pad_lost_time is None:
+                    self._landing_pad_lost_time = now
+                else:
+                    if (now - self._landing_pad_lost_time) > self._landing_pad_lost_time_SP:
+                        self._landing_pad_first_seen_time = None
+                        self._landing_pad_lost_time = None
+                        self.get_logger().info("Landing Pad Lost!")
+                        self.controller_state = 2000
+
+        # ---- State 4000 (Landing)
+        # if self.controller_state == 4000:
+
+        # ---- Run Gimbal ----
+        if self.controller_state < 2000:
+            self.cam_pitch = np.pi/2
+            self.cam_yaw   = 0.0
+        elif self.controller_state == 2000:
+            self.cam_pitch = -self.pitch + np.pi/3
+            # Sweep yaw
+            if self.cam_yaw <= (-np.pi + 0.01):
+                self.yaw_increm = 0.2
+            elif self.cam_yaw >= (np.pi - 0.01):
+                self.yaw_increm = -0.2
+            self.cam_yaw_des = self.cam_yaw_des + self.yaw_increm
+        else:
+            dx = self.landing_pad_position[0] - self.odometry.pose.pose.position.x
+            dy = self.landing_pad_position[1] - self.odometry.pose.pose.position.y
+            dz = - self.odometry.pose.pose.position.z
+
+            horizontal_distance = np.sqrt(dx*dx + dy*dy)
+
+            self.cam_roll = - self.roll * np.cos(self.cam_yaw + self.yaw) - self.pitch * np.sin(self.cam_yaw + self.yaw)
+            self.cam_pitch = np.arctan2(-dz, horizontal_distance) - self.pitch * np.cos(self.cam_yaw + self.yaw) - self.roll * np.sin(self.cam_yaw + self.yaw)
+            self.cam_yaw_des = np.arctan2(dy, dx) - self.yaw
+            self.cam_yaw_des = (self.cam_yaw_des + np.pi) % (2*np.pi) - np.pi # normalise
+
+        # ---- Run MPC ----
+        if self.controller_state == 2000 or self.controller_state == 3000 or self.controller_state == 4000:
+        #    msg = self._mpc_controller.compute_control(self)
+            msg = self._pid_controller.update(self)
+
+        # ---- Data logging ----
         current_time = self.get_clock().now().nanoseconds / 1e9
-        self.csv_writer.writerow([
+        self._csv_writer.writerow([
             current_time,
             self.odometry.pose.pose.position.x,
             self.odometry.pose.pose.position.y, 
@@ -455,34 +624,64 @@ class ChaserController(Node):
             self.odometry.twist.twist.linear.x,
             self.odometry.twist.twist.linear.y,
             self.odometry.twist.twist.linear.z,
+            self.yaw,
             self.odometry.twist.twist.angular.x,
             self.odometry.twist.twist.angular.y,
             self.odometry.twist.twist.angular.z,
-            self.target_odometry.pose.pose.position.x,
-            self.target_odometry.pose.pose.position.y,
-            self.target_odometry.pose.pose.position.z,
-            self.target_odometry.twist.twist.linear.x,
-            self.target_odometry.twist.twist.linear.y,
-            self.target_odometry.twist.twist.linear.z,
-            self.target_yaw,
-            self.target_position[0],
-            self.target_position[1],
-            self.target_position[2],
-            self.target_velocity[0],
-            self.target_velocity[1],
-            self.target_velocity[2],
+            self.landing_pad_odometry.pose.pose.position.x,
+            self.landing_pad_odometry.pose.pose.position.y,
+            self.landing_pad_odometry.pose.pose.position.z,
+            self.landing_pad_odometry.twist.twist.linear.x,
+            self.landing_pad_odometry.twist.twist.linear.y,
+            self.landing_pad_odometry.twist.twist.linear.z,
+            self.landing_pad_yaw,
+            self.landing_pad_position[0],
+            self.landing_pad_position[1],
+            self.landing_pad_position[2],
+            self.landing_pad_velocity[0],
+            self.landing_pad_velocity[1],
+            self.landing_pad_velocity[2],
         ])
-        self.csv_file.flush()
+        self._csv_file.flush()
 
+        # Check for timer overruns
+        end = self.get_clock().now()
+        elapsed = (end - start).nanoseconds / 1e6  # ms
+        if elapsed > self._control_timer_rate * 1000:
+            self.get_logger().warn(f"Control loop took {elapsed:.2f} ms!")
+
+    def _safety_loop(self):
+        """Check safety conditions and initiate RTL if necessary"""
+        if self._rtl_initiated or not self._tko_reached:
+            return
+            
+        current_time = self.get_clock().now().nanoseconds / 1e9
+        
+        # Check timer after takeoff
+        if self._tko_complete_time is not None:
+            elapsed_since_takeoff = current_time - self._tko_complete_time
+            if elapsed_since_takeoff >= self._max_runtime:
+                self.get_logger().warn(f'{self._max_runtime} seconds elapsed since takeoff - Initiating RTL')
+                self._initiate_rtl(f'{self._max_runtime}-second timer expired')
+                return
+        
+        # Check boundary conditions
+        x = self.odometry.pose.pose.position.x
+        y = self.odometry.pose.pose.position.y
+        
+        if abs(x) > self._boundary_limit or abs(y) > self._boundary_limit:
+            self.get_logger().warn(f'Boundary violation: position ({x:.1f}, {y:.1f}) - Initiating RTL')
+            self._initiate_rtl(f'boundary violation at ({x:.1f}, {y:.1f})')
+            return
 
     def destroy_node(self):
         """Clean up CSV file when node is destroyed"""
         if hasattr(self, 'csv_file'):
-            self.csv_file.close()
-            self.get_logger().info(f'CSV file closed: {self.csv_filename}')
+            self._csv_file.close()
+            self.get_logger().info(f'CSV file closed: {self._csv_filename}')
         super().destroy_node()
 
-
+# ---- HELPER CLASSES ----
 class LowPassFilter:
     def __init__(self, cutoff_hz):
         self.cutoff = cutoff_hz
@@ -545,15 +744,15 @@ class UKF:
 
         # Process noise
         self.ukf.Q = np.diag([
-            0.003, 0.003, 0.003,
-            0.005,
-            0.003,
-            0.005
+            0.001, 0.001, 0.001,
+            0.002,
+            0.001,
+            0.002
         ])
 
         # Measurement noise (vision)
         self.ukf.R = np.diag([
-            0.10, 0.10, 0.15,   # position
+            0.2, 0.2, 0.2,   # position
             0.05                # yaw only
         ])
 
@@ -591,7 +790,7 @@ class UKF:
         return (a + np.pi) % (2 * np.pi) - np.pi
 
 
-# ---------------- MAIN ----------------
+# ---- MAIN ----
 def main(args=None):
     rclpy.init(args=args)
     node = ChaserController()
