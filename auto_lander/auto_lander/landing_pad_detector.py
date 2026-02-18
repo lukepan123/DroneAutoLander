@@ -88,13 +88,13 @@ class ArUCoNode(Node):
 
         # ---- CAMERA PARAMETERS ----
         # Must match the IR input size you exported (default IRIS is 640 x 480)
-        self.declare_parameter("imgsz_width", 320)
+        self.declare_parameter("imgsz_width", 640)
         self._image_width = int(self.get_parameter("imgsz_width").get_parameter_value().integer_value)
         
-        self.declare_parameter("imgsz_height", 240)
+        self.declare_parameter("imgsz_height", 480)
         self._image_height = int(self.get_parameter("imgsz_height").get_parameter_value().integer_value)
 
-        self._camera_fov_horizontal = 0.8  # radians (≈114.6°) – tune for your camera
+        self._camera_fov_horizontal = 2.0  # radians (≈114.6°) – tune for your camera
         self._camera_fov_vertical = 2 * np.arctan(np.tan(self._camera_fov_horizontal / 2) / (self._image_width/self._image_height))
 
         # Generate the camera matrix

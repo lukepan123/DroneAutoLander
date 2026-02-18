@@ -27,7 +27,8 @@ def generate_launch_description():
             {'image_source': 'topic'},
             {'show_debug_window': True},
             {'enable_debug_publish': False},
-            {'create_video': False}
+            {'create_video': False},
+            {'use_sim_time': True}
         ]
     )
 
@@ -36,7 +37,10 @@ def generate_launch_description():
         package='auto_lander',
         executable='controller',
         name='controller_node',
-        output='screen'
+        output='screen',
+        parameters=[
+            {'use_sim_time': True}
+        ]
     )
 
     return LaunchDescription([

@@ -19,6 +19,7 @@ from nav_msgs.msg import Odometry
 from mavros_msgs.msg import (State, AttitudeTarget)
 from mavros_msgs.srv import (CommandBool, CommandTOL, SetMode, MessageInterval)
 
+from .ukf import UKF
 from .mpc_controller import MPCController
 from .pid_controller import PIDController
 
@@ -44,6 +45,7 @@ class ChaserController(Node):
         self._landing_pad_position_lp = LowPassFilter(0.8)
         self._landing_pad_velocity_lp = LowPassFilter(0.5)
         self.landing_pad_velocity_mag = 0.0
+        self.landing_pad_accel_mag = 0.0
         self.landing_pad_yaw = 0.0
         self.landing_pad_yaw_rate = 0.0
 
@@ -54,7 +56,7 @@ class ChaserController(Node):
         self.cam_yaw_vel = 0.0
         self.yaw_increm = 0.2
 
-        # ---- State 0000 (Pre-arm) Variables ----
+        # ---- State 0xxx (Pre-arm) Variables ----
         self._mode_requested = False
         self._mode_confirmed = False
         self._mode = 'GUIDED'
@@ -62,33 +64,33 @@ class ChaserController(Node):
         self._armed_confirmed = False
         self._armed_time = None
 
-        # ---- State 1000 (Take-off) Variables ----
+        # ---- State 1xxx (Take-off) Variables ----
         self._tko_requested = False
         self._tko_reached = False
         self._tko_complete_time = None
-        self._tko_altitude_SP = 10.0
+        self._tko_altitude_SP = 5.0
 
-        # ---- State 2000 (Searching for Landing Pad) Variables ----
+        # ---- State 2xxx (Searching for Landing Pad) Variables ----
         self._landing_pad_found = False
         self._landing_pad_first_seen_time = None
         self._landing_pad_visual_time_SP = 10.0
 
-        # ---- State 3000 (Maintaining Landing Pad Lock) Variables ----
+        # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
         self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 10.0
         self._landing_pad_lost_time = None
         self._landing_pad_lost_time_SP = 5.0
 
-        # ---- State 4000 (Beginning Landing Descent) Variables ---- 
+        # ---- State 4xxx (Beginning Landing Descent) Variables ---- 
 
-        # ---- State 5000 (Landing Confirmed) Variables ---- 
+        # ---- State 5xxx (Landing Confirmed) Variables ---- 
 
-        # ---- State 6000 (Landing Abort) Variables ---- 
+        # ---- State 6xxx (Landing Abort) Variables ---- 
 
-        # ---- State 7000 (RTL) Variables ----
+        # ---- State 7xxx (RTL) Variables ----
         self._rtl_initiated = False
 
         # ---- CONTROL CLASS INITIALISATIONS ----
-        self._UKF_timer_rate = 0.05
+        self._UKF_timer_rate = 0.03
         self._UKF_filter = UKF(self._UKF_timer_rate)
         #self._mpc_controller = MPCController()
         self._pid_controller = PIDController()
@@ -103,14 +105,14 @@ class ChaserController(Node):
 
         self._landing_pad_found_sub = self.create_subscription(Bool, '/landing_pad/found', self._landing_pad_found_callback, 10)
 
-        self._gimbal_yaw_sub = self.create_subscription(JointState, '/gimbal/yaw', self._gimbal_yaw_callback, 10)
+        #self._gimbal_yaw_sub = self.create_subscription(JointState, '/gimbal/yaw', self._gimbal_yaw_callback, 10)
 
         # ---- PUBLISHERS ----
         self.att_pub = self.create_publisher(AttitudeTarget, '/mavros/setpoint_raw/attitude', 10)
 
-        self._gimbal_roll_publisher = self.create_publisher(Float64, "/gimbal/cmd_roll", 10)
+        # self._gimbal_roll_publisher = self.create_publisher(Float64, "/gimbal/cmd_roll", 10)
         self._gimbal_pitch_publisher = self.create_publisher(Float64, "/gimbal/cmd_pitch", 10)
-        self._gimbal_yaw_vel_publisher = self.create_publisher(Float64, "/gimbal/cmd_yaw_vel", 10)
+        # self._gimbal_yaw_vel_publisher = self.create_publisher(Float64, "/gimbal/cmd_yaw_vel", 10)
 
         # ---- TF2 ----
         self._tf_map_landing_pad_buffer = tf2_ros.Buffer()
@@ -221,11 +223,11 @@ class ChaserController(Node):
     def _landing_pad_found_callback(self, msg: Bool):
         self._landing_pad_found = msg.data
 
-    def _gimbal_yaw_callback(self, msg: JointState):
-        self.cam_yaw = (msg.position[0] + np.pi) % (2*np.pi) - np.pi
+    # def _gimbal_yaw_callback(self, msg: JointState):
+    #     self.cam_yaw = (msg.position[0] + np.pi) % (2*np.pi) - np.pi
 
-        self.cam_yaw_vel = 10.0 * ((self.cam_yaw_des - self.cam_yaw + np.pi) % (2*np.pi) - np.pi)
-        self._gimbal_yaw_vel_publisher.publish(Float64(data=self.cam_yaw_vel))
+    #     self.cam_yaw_vel = 10.0 * ((self.cam_yaw_des - self.cam_yaw + np.pi) % (2*np.pi) - np.pi)
+    #     self._gimbal_yaw_vel_publisher.publish(Float64(data=self.cam_yaw_vel))
 
     def _request_mode(self):
         if not self._set_mode_client.wait_for_service(timeout_sec=0.5):
@@ -338,59 +340,7 @@ class ChaserController(Node):
         start = self.get_clock().now()
 
         # Predict UKF first
-        self._UKF_filter.ukf.predict()
-
-        try:
-            tf_msg = self._tf_map_landing_pad_buffer.lookup_transform('map', 'landing_pad_link', Time())
-        except Exception:
-            return
-
-        # Extract pose
-        t = tf_msg.transform.translation
-        q = tf_msg.transform.rotation
-
-        roll, pitch, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
-        state = np.array([t.x, t.y, t.z, yaw])
-
-        # Update measurement noise
-        cov_adj_x = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.y**2 + self.odometry.twist.twist.angular.z**2))
-        cov_adj_y = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.z**2))
-        cov_adj_z = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.y**2))
-
-        self._UKF_filter.ukf.R = np.diag([
-            0.2 * cov_adj_x, 0.2 * cov_adj_y, 0.2 * cov_adj_z,   # position
-            0.05 * cov_adj_z # yaw only
-        ])
-
-        # Update UKF
-        self._UKF_filter.ukf.update(state)
-
-        x = self._UKF_filter.ukf.x
-
-        # Publish filtered pose
-        self.landing_pad_odometry.header.stamp = tf_msg.header.stamp
-        self.landing_pad_odometry.header.frame_id = 'map'
-
-        self.landing_pad_odometry.pose.pose.position.x = x[0]
-        self.landing_pad_odometry.pose.pose.position.y = x[1]
-        self.landing_pad_odometry.pose.pose.position.z = x[2]
-
-        quat = tf_transformations.quaternion_from_euler(0.0, 0.0, x[4])
-        self.landing_pad_odometry.pose.pose.orientation.x = quat[0]
-        self.landing_pad_odometry.pose.pose.orientation.y = quat[1]
-        self.landing_pad_odometry.pose.pose.orientation.z = quat[2]
-        self.landing_pad_odometry.pose.pose.orientation.w = quat[3]
-
-        vx = x[3] * np.cos(x[4])
-        vy = x[3] * np.sin(x[4])
-
-        self.landing_pad_velocity_mag = x[3]
-        self.landing_pad_yaw = x[4]
-        self.landing_pad_yaw_rate = x[5]
-
-        self.landing_pad_odometry.twist.twist.linear.x = vx
-        self.landing_pad_odometry.twist.twist.linear.y = vy
-        self.landing_pad_odometry.twist.twist.linear.z = 0.0
+        self._UKF_filter.predict()
 
         # Update LP Filters
         stamp = Time.from_msg(self.landing_pad_odometry.header.stamp)
@@ -407,8 +357,56 @@ class ChaserController(Node):
             self.landing_pad_odometry.twist.twist.linear.z])
         self.landing_pad_velocity = self._landing_pad_velocity_lp.update(landing_pad_velocity_raw, stamp)
 
+        try:
+            tf_msg = self._tf_map_landing_pad_buffer.lookup_transform('map', 'landing_pad_link', Time())
+        except Exception:
+            return # skip all the update stuff if landing pad not present
+
+        # Extract pose
+        t = tf_msg.transform.translation
+        q = tf_msg.transform.rotation
+
+        roll, pitch, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+        state = np.array([t.x, t.y, t.z, yaw])
+
+        # Update measurement noise
+        cov_adj_x = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.y**2 + self.odometry.twist.twist.angular.z**2))
+        cov_adj_y = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.z**2))
+        cov_adj_z = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.y**2))
+
+        self._UKF_filter.R = np.diag([
+            0.2 * cov_adj_x, 0.2 * cov_adj_y, 0.2 * cov_adj_z,   # position
+            0.05 * cov_adj_z # yaw only
+        ])
+
+        # Update UKF
+        self._UKF_filter.update(state)
+
+        x = self._UKF_filter.x
+
+        # Publish filtered pose
+        self.landing_pad_odometry.header.stamp = tf_msg.header.stamp
+        self.landing_pad_odometry.header.frame_id = 'map'
+
+        self.landing_pad_odometry.pose.pose.position.x = x[0]
+        self.landing_pad_odometry.pose.pose.position.y = x[1]
+        self.landing_pad_odometry.pose.pose.position.z = x[2]
+
+        quat = tf_transformations.quaternion_from_euler(0.0, 0.0, x[5])
+        self.landing_pad_odometry.pose.pose.orientation.x = quat[0]
+        self.landing_pad_odometry.pose.pose.orientation.y = quat[1]
+        self.landing_pad_odometry.pose.pose.orientation.z = quat[2]
+        self.landing_pad_odometry.pose.pose.orientation.w = quat[3]
+
+        self.landing_pad_yaw = x[5]
+
+        self.landing_pad_odometry.twist.twist.linear.x = x[3]
+        self.landing_pad_odometry.twist.twist.linear.y = x[4]
+        self.landing_pad_odometry.twist.twist.linear.z = 0.0
+
         # Check for timer overruns
         end = self.get_clock().now()
+
         elapsed = (end - start).nanoseconds / 1e6  # ms
         if elapsed > self._UKF_timer_rate * 1000:
             self.get_logger().warn(f"UKF loop took {elapsed:.2f} ms!")
@@ -417,7 +415,7 @@ class ChaserController(Node):
         stamp = self.get_clock().now().to_msg()
 
         self._gimbal_pitch_publisher.publish(Float64(data=self.cam_pitch))
-        self._gimbal_roll_publisher.publish(Float64(data=self.cam_roll))
+        # self._gimbal_roll_publisher.publish(Float64(data=self.cam_roll))
 
         # Header for quad to gimbal_base
         q_quad_to_gimbal_base = tf_transformations.quaternion_from_euler(1.57079632679, 0.0, 1.57079632679)
@@ -555,10 +553,10 @@ class ChaserController(Node):
             if self._landing_pad_found and self._landing_pad_first_seen_time is None:
                 self._landing_pad_first_seen_time = self.get_clock().now().nanoseconds / 1e9
                 self.get_logger().info(f"Landing Pad found, starting {self._landing_pad_visual_time_SP} sec timer...")
-                self.controller_state = 2500
+                self.controller_state = 2100
 
-        # ---- State 2500 (Maintain Landing Pad Visual Lock)
-        if self.controller_state == 2500:
+        # ---- State 2100 (Maintain Landing Pad Visual Lock)
+        if self.controller_state == 2100:
             now = self.get_clock().now().nanoseconds / 1e9
             if (now - self._landing_pad_first_seen_time) > self._landing_pad_visual_time_SP:
                 self.get_logger().info(f"Landing Pad visual hold ok, starting {self._landing_pad_locked_time_SP} sec timer...")
@@ -586,31 +584,10 @@ class ChaserController(Node):
         # if self.controller_state == 4000:
 
         # ---- Run Gimbal ----
-        if self.controller_state < 2000:
-            self.cam_pitch = np.pi/2
-            self.cam_yaw   = 0.0
-        elif self.controller_state == 2000:
-            self.cam_pitch = -self.pitch + np.pi/3
-            # Sweep yaw
-            if self.cam_yaw <= (-np.pi + 0.01):
-                self.yaw_increm = 0.2
-            elif self.cam_yaw >= (np.pi - 0.01):
-                self.yaw_increm = -0.2
-            self.cam_yaw_des = self.cam_yaw_des + self.yaw_increm
-        else:
-            dx = self.landing_pad_position[0] - self.odometry.pose.pose.position.x
-            dy = self.landing_pad_position[1] - self.odometry.pose.pose.position.y
-            dz = - self.odometry.pose.pose.position.z
-
-            horizontal_distance = np.sqrt(dx*dx + dy*dy)
-
-            self.cam_roll = - self.roll * np.cos(self.cam_yaw + self.yaw) - self.pitch * np.sin(self.cam_yaw + self.yaw)
-            self.cam_pitch = np.arctan2(-dz, horizontal_distance) - self.pitch * np.cos(self.cam_yaw + self.yaw) - self.roll * np.sin(self.cam_yaw + self.yaw)
-            self.cam_yaw_des = np.arctan2(dy, dx) - self.yaw
-            self.cam_yaw_des = (self.cam_yaw_des + np.pi) % (2*np.pi) - np.pi # normalise
+        self._gimbal_controller()
 
         # ---- Run MPC ----
-        if self.controller_state == 2000 or self.controller_state == 3000 or self.controller_state == 4000:
+        if self.controller_state >= 3000 and self.controller_state <= 4000:
         #    msg = self._mpc_controller.compute_control(self)
             msg = self._pid_controller.update(self)
 
@@ -673,6 +650,39 @@ class ChaserController(Node):
             self.get_logger().warn(f'Boundary violation: position ({x:.1f}, {y:.1f}) - Initiating RTL')
             self._initiate_rtl(f'boundary violation at ({x:.1f}, {y:.1f})')
             return
+        
+    def _gimbal_controller(self):
+        self.cam_pitch = np.pi/2
+        # # Initialise on start up
+        # if self.controller_state < 2000:
+        #     self.cam_pitch = np.pi/2
+        #     self.cam_yaw   = 0.0
+
+        # # Sweep in searching mode
+        # elif self.controller_state == 2000:
+        #     self.cam_pitch = -self.pitch + np.pi/3
+        #     # Sweep yaw
+        #     if self.cam_yaw <= (-np.pi + 0.01):
+        #         self.yaw_increm = 0.2
+        #     elif self.cam_yaw >= (np.pi - 0.01):
+        #         self.yaw_increm = -0.2
+        #     self.cam_yaw_des = self.cam_yaw_des + self.yaw_increm
+
+        # # Once target detected, maintain target lock
+        # else:
+        #     dx = self.landing_pad_position[0] - self.odometry.pose.pose.position.x
+        #     dy = self.landing_pad_position[1] - self.odometry.pose.pose.position.y
+        #     dz = - self.odometry.pose.pose.position.z
+
+        #     horizontal_distance = np.sqrt(dx*dx + dy*dy)
+        #     q_cam_looking = tf_transformations.quaternion_from_euler(0, np.arctan2(-dz, horizontal_distance), np.arctan2(dy, dx))
+
+        #     # code to reverse/invert rotation blah blah...
+
+        #     # self.cam_roll = - self.pitch
+        #     # self.cam_pitch = np.arctan2(-dz, horizontal_distance) - self.roll
+        #     self.cam_yaw_des = np.arctan2(dy, dx) - self.yaw
+        #     self.cam_yaw_des = (self.cam_yaw_des + np.pi) % (2*np.pi) - np.pi # normalise
 
     def destroy_node(self):
         """Clean up CSV file when node is destroyed"""
@@ -707,87 +717,6 @@ class LowPassFilter:
         self.prev_values = filtered_values.copy()
         self.prev_stamp = stamp
         return filtered_values
-    
-
-class UKF:
-    def __init__(self, dt):
-        self.dt = dt
-        self.dim_x = 6
-        self.dim_z = 4
-
-        points = MerweScaledSigmaPoints(
-            n=self.dim_x,
-            alpha=0.3,
-            beta=2.0,
-            kappa=0.0
-        )
-
-        self.ukf = UnscentedKalmanFilter(
-            dim_x=self.dim_x,
-            dim_z=self.dim_z,
-            fx=self.fx,
-            hx=self.hx,
-            dt=dt,
-            points=points
-        )
-
-        # State: [px, py, pz, v, yaw, yaw_rate]
-        self.ukf.x = np.zeros(self.dim_x)
-
-        # Covariance
-        self.ukf.P = np.diag([
-            0.2, 0.2, 0.2,     # position
-            0.5,               # velocity
-            0.2,               # yaw
-            0.5                # yaw_rate
-        ])
-
-        # Process noise
-        self.ukf.Q = np.diag([
-            0.001, 0.001, 0.001,
-            0.002,
-            0.001,
-            0.002
-        ])
-
-        # Measurement noise (vision)
-        self.ukf.R = np.diag([
-            0.2, 0.2, 0.2,   # position
-            0.05                # yaw only
-        ])
-
-    def fx(self, x, dt):
-        px, py, pz, v, yaw, yaw_rate = x
-
-        # State propagation
-        px += v * np.cos(yaw) * dt
-        py += v * np.sin(yaw) * dt
-        pz = pz
-        yaw += yaw_rate * dt
-
-        yaw = self._wrap_angle(yaw)
-
-        return np.array([
-            px,
-            py,
-            pz,
-            v,
-            yaw,
-            yaw_rate
-        ])
-
-    # Measurement model
-    def hx(self, x):
-        px, py, pz, _, yaw, _ = x
-
-        return np.array([
-            px, py, pz,
-            yaw     # roll & pitch unused
-        ])
-
-    @staticmethod
-    def _wrap_angle(a):
-        return (a + np.pi) % (2 * np.pi) - np.pi
 
 
 # ---- MAIN ----
