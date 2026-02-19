@@ -4,21 +4,23 @@
 import numpy as np
 
 from mavros_msgs.msg import AttitudeTarget
-from geometry_msgs.msg import Quaternion
 from tf_transformations import quaternion_from_euler
 
 class PIDController:
     def __init__(self):
         # ---- STATE VARIABLES ----
-        self.lam = 3.0
-        self.Kp  = 3.0
-        self.Kd  = 3.0
-        self.cD  = 0.10
+        self.lam_0 = 7.0
+        self.Kp_0  = 5.0
+        self.Kd_0  = 2.0
+
+        self.lam = self.lam_0
+        self.Kp  = self.Kp_0
+        self.Kd  = self.Kd_0
 
         self.m = 1.98
-        self.max_thrust = 48.0
+        self.max_thrust = 47.0
         self.g = 9.81
-        self.cD = 0.1
+        self.cD = 0.15
     
     def pn_controller(self, quad_pos, quad_vel, landing_pad_pos, landing_pad_vel, quad_yaw):
         """
@@ -30,6 +32,17 @@ class PIDController:
         # ---- Calculate error vectors
         u = quad_pos - landing_pad_pos
         du = quad_vel - landing_pad_vel
+
+        # ---- Increase gains as distance to target decreases
+        terminal_gain = 2.0
+        no_gain_dist = 1.0
+
+        u_mag = np.sqrt(u[0]**2 + u[1]**2 + u[2]**2)
+        gain_factor = terminal_gain * no_gain_dist / (u_mag + no_gain_dist)
+
+        self.lam = self.lam_0 * gain_factor
+        self.Kp = self.Kp_0 * gain_factor
+        self.Kd = self.Kd_0 * gain_factor
 
         # ---- Calculate PN acceleration
         u_norm = np.linalg.norm(u)
@@ -56,9 +69,11 @@ class PIDController:
 
         # Pitch θ (nose down positive in NED)
         theta = -np.arctan((self.m*accel[0] + drag_x) / (self.m*self.g))
+        theta = max(-0.35, min(theta, 0.35))
 
         # Roll φ
         phi = np.arctan((np.cos(theta) * (self.m*accel[1] + drag_y)) / (self.m*self.g))
+        phi = max(-0.35, min(phi, 0.35))
 
         # ---- Compute throttle
         thrust = self.m * self.g / (np.cos(phi) * np.cos(theta))

@@ -31,12 +31,10 @@ If models are edited, this will need to be refreshed.
     cd ros2_ws
     source install/setup.bash
     ros2 run ros_gz_bridge parameter_bridge \
-    /world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image@sensor_msgs/msg/Image@gz.msgs.Image \
-    /gimbal/cmd_roll@std_msgs/msg/Float64@gz.msgs.Double \
-    /gimbal/cmd_pitch@std_msgs/msg/Float64@gz.msgs.Double \
-    /gimbal/cmd_yaw_vel@std_msgs/msg/Float64@gz.msgs.Double \
-    /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock \
-    /gimbal/yaw@sensor_msgs/msg/JointState@gz.msgs.Model --ros-args -r /world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image:=/camera/image_raw
+    /world/iris_runway_new/model/iris_with_gimbal/link/camera_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image \
+    /model/LandingVehicle/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry \
+    /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock --ros-args -r /world/iris_runway_new/model/iris_with_gimbal/link/camera_link/sensor/camera/image:=/camera/image_raw \
+    -r "/model/LandingVehicle/odometry:=/landing_pad/odom"
 
 This will run the gazebo camera and gimbal bridge, linking the gazebo camera images to the camera ROS2 node and gimbal topics.
 
