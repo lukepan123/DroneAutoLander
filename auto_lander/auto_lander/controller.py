@@ -11,9 +11,8 @@ from rclpy.time import Time
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy)
 import tf2_ros
-from std_msgs.msg import Bool, Float64
-from geometry_msgs.msg import TwistStamped, TransformStamped
-from visualization_msgs.msg import Marker
+from std_msgs.msg import Bool
+from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import (State, AttitudeTarget)
 from mavros_msgs.srv import (CommandBool, CommandTOL, SetMode, MessageInterval)
@@ -30,7 +29,7 @@ class ChaserController(Node):
         self.controller_state = 0
 
         self._max_runtime = 90.0
-        self._boundary_limit = 30.0
+        self._boundary_limit = 300.0
 
         self.state = State()
         self.odometry = Odometry()
@@ -49,6 +48,8 @@ class ChaserController(Node):
         self.landing_pad_yaw = 0.0
         self.landing_pad_yaw_rate = 0.0
 
+        self.target_z = 5.0 # m
+
         # ---- State 0xxx (Pre-arm) Variables ----
         self._mode_requested = False
         self._mode_confirmed = False
@@ -61,23 +62,26 @@ class ChaserController(Node):
         self._tko_requested = False
         self._tko_reached = False
         self._tko_complete_time = None
-        self._tko_altitude_SP = 5.0
+        self._tko_altitude_SP = self.target_z # Inititalise at initial target altitude
 
         # ---- State 2xxx (Searching for Landing Pad) Variables ----
         self._landing_pad_found = False
         self._landing_pad_first_seen_time = None
-        self._landing_pad_visual_time_SP = 3.0
+        self._landing_pad_visual_time_SP = 0.5
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
-        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 10.0
+        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 5.0
         self._landing_pad_lost_time = None
-        self._landing_pad_lost_time_SP = 5.0
+        self._landing_pad_lost_time_SP = 2.0
 
-        # ---- State 4xxx (Beginning Landing Descent) Variables ---- 
+        # ---- State 4xxx (Beginning Landing Descent) Variables ----
+        self._landed_time = None
+        self.cutoff = False
 
-        # ---- State 5xxx (Landing Confirmed) Variables ---- 
+        # ---- State 5xxx (Landing Abort) Variables ---- 
 
-        # ---- State 6xxx (Landing Abort) Variables ---- 
+        # ---- State 6xxx (Landing Confirmed) Variables ---- 
+        self._idle_before_RTL_SP = 10.0
 
         # ---- State 7xxx (RTL) Variables ----
         self._rtl_initiated = False
@@ -319,24 +323,12 @@ class ChaserController(Node):
         # Predict UKF first
         self._UKF_filter.predict()
 
-        # # Update LP Filters
-        # stamp = Time.from_msg(self.landing_pad_odometry.header.stamp)
-
-        # landing_pad_position_raw = np.array([
-        #     self.landing_pad_odometry.pose.pose.position.x, 
-        #     self.landing_pad_odometry.pose.pose.position.y, 
-        #     self.landing_pad_odometry.pose.pose.position.z])
-        # self.landing_pad_position = self._landing_pad_position_lp.update(landing_pad_position_raw, stamp)
+        # Move odometry into seperate pose/velocity estimates
         self.landing_pad_position = np.array([
             self.landing_pad_odometry.pose.pose.position.x, 
             self.landing_pad_odometry.pose.pose.position.y, 
             self.landing_pad_odometry.pose.pose.position.z])
 
-        # landing_pad_velocity_raw = np.array([
-        #     self.landing_pad_odometry.twist.twist.linear.x, 
-        #     self.landing_pad_odometry.twist.twist.linear.y, 
-        #     self.landing_pad_odometry.twist.twist.linear.z])
-        # self.landing_pad_velocity = self._landing_pad_velocity_lp.update(landing_pad_velocity_raw, stamp)
         self.landing_pad_velocity = np.array([
             self.landing_pad_odometry.twist.twist.linear.x, 
             self.landing_pad_odometry.twist.twist.linear.y, 
@@ -474,13 +466,45 @@ class ChaserController(Node):
                         self.get_logger().info("Landing Pad Lost!")
                         self.controller_state = 2000
 
-        # ---- State 4000 (Landing)
-        # if self.controller_state == 4000:
+        # ---- State 4000 (Begin Landing Descent)
+        if self.controller_state == 4000:
+            now = self.get_clock().now().nanoseconds / 1e9
+            self.target_z = 0.5
 
-        # ---- Run MPC ----
-        if self.controller_state >= 3000 and self.controller_state <= 4000:
+            # Check target error is not bad
+            err_x = self.landing_pad_position[0] - self.odometry.pose.pose.position.x
+            err_y = self.landing_pad_position[1] - self.odometry.pose.pose.position.y
+
+            if self.odometry.pose.pose.position.z <= 0.6 and err_x < 0.1 and err_y < 0.1:
+                self.cutoff = True
+                self._landed_time = now
+                self.get_logger().info("Throttle Cut Engaged")
+                self.controller_state = 6000
+            elif self.odometry.pose.pose.position.z <= 0.6 and (err_x >= 0.1 or err_y >= 0.1):
+                self.target_z = 5.0
+                self.get_logger().info("Landing Aborted - Trying Again")
+                self.controller_state = 3000
+
+        # ---- State 5000 (Landing Failed - Try again)
+
+        # ---- State 6000 (Landing Success - Idle Until RTL)
+        if self.controller_state == 6000:
+            now = self.get_clock().now().nanoseconds / 1e9
+            if (now - self._landed_time) > self._idle_before_RTL_SP:
+                self._landing_pad_first_seen_time = None
+                self._landing_pad_lost_time = None
+                self.get_logger().info("Landing Pad Lost!")
+                self.controller_state = 6100
+
+        # ---- State 6100 (Initiate RTL)
+        if self.controller_state == 6100:
+            self._initiate_rtl("Landing Complete")
+
+        # ---- Run Controller ----
+        if self.controller_state >= 3000 and self.controller_state <= 6000:
         #    msg = self._mpc_controller.compute_control(self)
             msg = self._pid_controller.update(self)
+
 
         # ---- Data logging ----
         lp_pad_true_roll, lp_pad_true_pitch, lp_pad_true_yaw = tf_transformations.euler_from_quaternion([
@@ -489,6 +513,7 @@ class ChaserController(Node):
             self.landing_pad_true_odometry.pose.pose.orientation.z, 
             self.landing_pad_true_odometry.pose.pose.orientation.w
         ])
+
         current_time = self.get_clock().now().nanoseconds / 1e9
         self._csv_writer.writerow([
             current_time,

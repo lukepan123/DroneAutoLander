@@ -7,7 +7,7 @@ class UKF:
         # -------------------------------
         # Dimensions
         # -------------------------------
-        self.dim_x = 6 # px, py, pz, vx, vy, yaw
+        self.dim_x = 8 # px, py, pz, vx, vy, ax, ay, yaw
         self.dim_z = 4
 
         # UKF scaling parameters (Merwe)
@@ -36,6 +36,7 @@ class UKF:
         self.P = np.diag([
             0.15, 0.15, 0.15,
             0.5, 0.5,
+            1.5, 1.5,
             0.2
         ])
 
@@ -44,8 +45,9 @@ class UKF:
         # -------------------------------
         self.Q = np.diag([
             0.001, 0.001, 0.001,   # pos px, py, pz
-            0.75,  0.75,            # vx, vy
-            0.01                  # yaw
+            0.15,  0.15,           # vx, vy
+            1.50,  1.50,           # ax, ay
+            0.01                   # yaw
         ])
 
         # -------------------------------
@@ -102,13 +104,13 @@ class UKF:
         # 4) Predicted mean
         # ----------------------------------
         self.x[:] = (self.Wm[:, None] * self.X_prop).sum(axis=0)
-        self.x[5] = self._wrap(self.x[5])
+        self.x[7] = self._wrap(self.x[7])
 
         # ----------------------------------
         # 5) Predicted covariance
         # ----------------------------------
         dX = self.X_prop - self.x
-        dX[:, 5] = self._wrap_array(dX[:, 5])  # wrap yaw deviations
+        dX[:, 7] = self._wrap_array(dX[:, 7])  # wrap yaw deviations
 
         self.P[:] = (dX.T * self.Wc) @ dX + self.Q
         self.P = 0.5 * (self.P + self.P.T)  # enforce symmetry
@@ -138,7 +140,7 @@ class UKF:
         # 4) State deviation
         # ----------------------------------
         dX = self.X_prop - self.x
-        dX[:, 5] = self._wrap_array(dX[:, 5])
+        dX[:, 7] = self._wrap_array(dX[:, 7])
 
         # ----------------------------------
         # 5) Cross covariance
@@ -162,7 +164,7 @@ class UKF:
         y[3] = self._wrap(y[3])
 
         self.x += K @ y
-        self.x[5] = self._wrap(self.x[5])
+        self.x[7] = self._wrap(self.x[7])
 
         # ----------------------------------
         # 9) Update covariance
@@ -179,21 +181,27 @@ class UKF:
         pz = X[:, 2]
         vx = X[:, 3]
         vy = X[:, 4]
-        yaw = X[:, 5]
+        ax = X[:, 5]
+        ay = X[:, 6]
+        yaw = X[:, 7]
 
         # Position update
         Y[:, 0] = px + vx * dt
         Y[:, 1] = py + vy * dt
         Y[:, 2] = pz
 
-        # Velocity stays constant (random-walk)
-        Y[:, 3] = vx
-        Y[:, 4] = vy
+        # Velocity update
+        Y[:, 3] = vx + ax * dt
+        Y[:, 4] = vy + ay * dt
+
+        # Acceleration stays constant (random-walk)
+        Y[:, 5] = ax
+        Y[:, 6] = ay
 
         # Yaw stays constant or driven by noise
-        Y[:, 5] = yaw
+        Y[:, 7] = yaw
 
-        Y[:, 5] = self._wrap_array(Y[:, 5])
+        Y[:, 7] = self._wrap_array(Y[:, 7])
 
     # =========================================================
     #               Vectorized hx
@@ -202,7 +210,7 @@ class UKF:
         Z[:, 0] = X[:, 0]
         Z[:, 1] = X[:, 1]
         Z[:, 2] = X[:, 2]
-        Z[:, 3] = self._wrap_array(X[:, 5])
+        Z[:, 3] = self._wrap_array(X[:, 7])
 
     # =========================================================
     #               Angle helpers

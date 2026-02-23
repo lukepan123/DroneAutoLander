@@ -9,9 +9,12 @@ from tf_transformations import quaternion_from_euler
 class PIDController:
     def __init__(self):
         # ---- STATE VARIABLES ----
-        self.lam_0 = 7.0
-        self.Kp_0  = 5.0
-        self.Kd_0  = 2.0
+        self.lam_0  = 7.0
+        self.Kp_0   = 5.0
+        self.Kd_0   = 3.0
+        # self.kI_alt = 0.05
+
+        self.altitude_err = 0.0
 
         self.lam = self.lam_0
         self.Kp  = self.Kp_0
@@ -22,20 +25,37 @@ class PIDController:
         self.g = 9.81
         self.cD = 0.15
     
-    def pn_controller(self, quad_pos, quad_vel, landing_pad_pos, landing_pad_vel, quad_yaw):
+    def pn_controller(self, target_altitude, cutoff, quad_pos, quad_vel, landing_pad_pos, landing_pad_vel, quad_yaw):
         """
         p_a, v_a = drone position & velocity
         p_m, v_m = target position & velocity
         yaw_des = desired yaw (point towards target)
         """
 
+        if cutoff is True:
+            # ---- Build MAVROS message
+            q = quaternion_from_euler(0, 0, quad_yaw)
+
+            msg = AttitudeTarget()
+            msg.type_mask = AttitudeTarget.IGNORE_ROLL_RATE | \
+                            AttitudeTarget.IGNORE_PITCH_RATE | \
+                            AttitudeTarget.IGNORE_YAW_RATE
+
+            msg.orientation.x = q[0]
+            msg.orientation.y = q[1]
+            msg.orientation.z = q[2]
+            msg.orientation.w = q[3]
+            msg.thrust = 0.0
+
+            return msg
+
         # ---- Calculate error vectors
         u = quad_pos - landing_pad_pos
         du = quad_vel - landing_pad_vel
 
         # ---- Increase gains as distance to target decreases
-        terminal_gain = 2.0
-        no_gain_dist = 1.0
+        terminal_gain = 7.0
+        no_gain_dist = 0.4
 
         u_mag = np.sqrt(u[0]**2 + u[1]**2 + u[2]**2)
         gain_factor = terminal_gain * no_gain_dist / (u_mag + no_gain_dist)
@@ -79,6 +99,12 @@ class PIDController:
         thrust = self.m * self.g / (np.cos(phi) * np.cos(theta))
         throttle = thrust/self.max_thrust
 
+        # # ---- I-Controller on thrust to maintain target altitude
+        # err = target_altitude - quad_pos[2]
+        # self.altitude_err = min(max(self.altitude_err + err, -0.1), 0.1)
+
+        # throttle += self.kI_alt * self.altitude_err
+
         # ---- Build MAVROS message
         q = quaternion_from_euler(phi, theta, quad_yaw)
 
@@ -97,6 +123,8 @@ class PIDController:
     
     def update(self, node):
         msg = self.pn_controller(
+            target_altitude=node.target_z,
+            cutoff=node.cutoff,
             quad_pos=np.array([node.odometry.pose.pose.position.x,
                           node.odometry.pose.pose.position.y,
                           node.odometry.pose.pose.position.z]),
