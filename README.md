@@ -50,15 +50,7 @@ The following settings should be changed on Ardupilot to improve MAVROS Publishi
 
 *In LINK:*
 
-> Stream rate Link 1: 30.0
-> 
-> Stream rate Link 2: 30.0
-> 
-> Baud Rate of New Links: 115200
-
-*In UNIT:*
-
-> Try FTP for parameter download: false
+> Stream rate Link 1: 50.0
 
  (this will stop ArduPilot from overwriting the new parameters with default parameters)
 

@@ -351,5 +351,14 @@
             <odom_publish_frequency>1</odom_publish_frequency>
             <topic>cmd_rover_vel</topic>
         </plugin>
+        <plugin
+            name="gz::sim::systems::OdometryPublisher"
+            filename="gz-sim-odometry-publisher-system">
+            <topic>/landing_pad/odom</topic>
+            <odom_frame_id>map</odom_frame_id>
+            <child_frame_id>base_link</child_frame_id>
+            <world_frame>true</world_frame>
+            <publish_odom>true</publish_odom>
+        </plugin>
     </model>
 </sdf>
