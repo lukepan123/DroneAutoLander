@@ -28,8 +28,8 @@ class ChaserController(Node):
         # ---- Global State Variables ----
         self.controller_state = 0
 
-        self._max_runtime = 90.0
-        self._boundary_limit = 300.0
+        self._max_runtime = 60.0
+        self._boundary_limit = 30.0
 
         self.state = State()
         self.odometry = Odometry()
@@ -89,8 +89,10 @@ class ChaserController(Node):
         # ---- CONTROL CLASS INITIALISATIONS ----
         self._UKF_timer_rate = 0.03
         self._UKF_filter = UKF(self._UKF_timer_rate)
+
+        self._control_timer_rate = 0.03
         #self._mpc_controller = MPCController()
-        self._pid_controller = PIDController()
+        self._pid_controller = PIDController(self._control_timer_rate)
 
         # ---- SUBSCRIPTIONS ----
         _state_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
@@ -119,7 +121,6 @@ class ChaserController(Node):
         self._UKF_timer = self.create_timer(self._UKF_timer_rate, self._ukf_loop)
         self._safety_timer_rate = 1.0
         self._safety_timer = self.create_timer(self._safety_timer_rate, self._safety_loop)
-        self._control_timer_rate = 0.04
         self._control_timer = self.create_timer(self._control_timer_rate, self._control_loop)
 
         #  ---- DIAGNOSTICS AND LOGGING ----
