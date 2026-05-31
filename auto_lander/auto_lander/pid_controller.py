@@ -11,7 +11,7 @@ class PIDController:
         # ---- STATE VARIABLES ----
         # PN/PD Gains
         self.lam_0  = 7.0
-        self.Kp_0   = 5.0
+        self.Kp_0   = 6.0
         self.Kd_0   = 3.0
 
         # P/PI Altitude Gains
@@ -38,13 +38,17 @@ class PIDController:
         self.dt = dt
 
     
-    def pn_controller(self, target_altitude, target_yaw, cutoff, quad_pos, quad_roll, quad_pitch, quad_yaw, quad_vel, landing_pad_pos, landing_pad_vel):
+    def controller(self, target_altitude, target_yaw, cutoff, quad_pos, quad_roll, quad_pitch, quad_yaw, quad_vel, landing_pad_pos, landing_pad_vel):
         """
         p_a, v_a = drone position & velocity
         p_m, v_m = target position & velocity
         yaw_des = desired yaw (point towards target)
         """
 
+        # Condition yaw
+        target_yaw = (target_yaw + np.pi) % (2*np.pi) - np.pi
+        
+        # Cuttoff condition
         if cutoff is True:
             # ---- Build MAVROS message
             q = quaternion_from_euler(0, 0, target_yaw)
@@ -62,13 +66,16 @@ class PIDController:
 
             return msg
 
-        # ---- PN/PD Controller
+        # ======================
+        # == PN/PD Controller ==
+        # ======================
+
         # Calculate error vectors
         u = quad_pos - landing_pad_pos
         du = quad_vel - landing_pad_vel
 
         # Increase gains as distance to target decreases
-        terminal_gain = 4.0
+        terminal_gain = 3.0
         no_gain_dist = 0.5
 
         u_mag = np.sqrt(u[0]**2 + u[1]**2 + u[2]**2)
@@ -95,19 +102,25 @@ class PIDController:
         # Sum acceleration 
         accel = accel_perp + accel_parallel
 
-        # ---- P Altitude Controller
+        # =========================
+        # = Altitude Controller =
+        # =========================
+        
         # Outer P loop: position error → velocity command
         z_err     = quad_pos[2] - target_altitude
         vel_z_des = np.clip(self.Kp_z_pos * z_err, -0.5, 0.5)
 
-        # ---- PI Altitude Velocity Controller 
         # Inner PI loop: velocity error → acceleration command
         vel_z_err = vel_z_des - quad_vel[2]
         self.vel_z_integral = np.clip(
             self.vel_z_integral + vel_z_err * self.dt,
             -self.vel_z_i_clamp, self.vel_z_i_clamp
         )
-        accel[2] = np.clip(self.Kp_vel_z * vel_z_err + self.Ki_vel_z * self.vel_z_integral, -0.5*self.g, 0.5*self.g)
+        accel[2] = np.clip(self.Kp_vel_z * vel_z_err + self.Ki_vel_z * self.vel_z_integral, -1.0*self.g, 1.0*self.g)
+
+        # ================================
+        # == Combine controller outputs ==
+        # ================================
 
         # ---- Convert linear accel into attitudes
         # Signed quadratic drag terms
@@ -151,7 +164,7 @@ class PIDController:
         return msg
     
     def update(self, node):
-        msg = self.pn_controller(
+        msg = self.controller(
             target_altitude=node.target_z,
             target_yaw=0.0,
             cutoff=node.cutoff,

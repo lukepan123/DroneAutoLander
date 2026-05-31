@@ -68,17 +68,21 @@
         </geometry>
       </collision>
     </link>
-		<joint name="yaw_joint" type="revolute"> 
-			<parent>base_link</parent> 
-			<child>yaw_link</child> 
-			<axis> 
-				<xyz>0 1 0</xyz> 
-				<dynamics> 
-					<damping>0.1</damping> 
-				</dynamics>  
-			</axis> 
-			<pose>0.0105 0.065 -0.002 0 0 0</pose> 
-		</joint>
+    <joint name="yaw_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>yaw_link</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <dynamics>
+          <damping>0.01</damping>
+        </dynamics>
+        <limit>
+          <lower>-3.1415926</lower>
+          <upper>3.1415926</upper>
+        </limit>
+      </axis>
+      <pose>0.0105 0.065 -0.002 0 0 0</pose>
+    </joint>
 
     <link name="roll_link">
       <inertial>
@@ -118,7 +122,7 @@
       <axis>
         <xyz>0 0 1</xyz>
         <dynamics>
-          <damping>0.1</damping>
+          <damping>0.01</damping>
         </dynamics>
         <limit>
           <lower>-3.1415926</lower>
@@ -185,9 +189,10 @@
         </geometry>
       </collision>
       <sensor name="camera" type="camera">
+        <gz_frame_id>pitch_link</gz_frame_id>
         <pose>0 0 0 -1.57 -1.57 0</pose>
         <camera>
-          <horizontal_fov>0.8</horizontal_fov>
+          <horizontal_fov>2.0</horizontal_fov>
           <image>
             <width>640</width>
             <height>480</height>
@@ -198,8 +203,14 @@
           </clip>
         </camera>
         <always_on>1</always_on>
-        <update_rate>30</update_rate>
+        <update_rate>10</update_rate>
         <visualize>1</visualize>
+
+        <plugin filename="CameraZoomPlugin"
+            name="CameraZoomPlugin">
+          <max_zoom>125.0</max_zoom>
+          <slew_rate>0.42514285714</slew_rate>
+        </plugin>
         
         <plugin name="GstCameraPlugin"
             filename="GstCameraPlugin">
@@ -217,7 +228,7 @@
       <axis>
         <xyz>1 0 0</xyz>
         <dynamics>
-          <damping>0.1</damping>
+          <damping>0.01</damping>
         </dynamics>
         <limit>
           <lower>-3.1415926</lower>
@@ -226,34 +237,5 @@
       </axis>
       <pose>0.045 0.0021 0.0199 0 0 0</pose>
     </joint>
-      
-  	<plugin
-			filename="gz-sim-joint-state-publisher-system"
-			name="gz::sim::systems::JointStatePublisher">
-			<joint_name>yaw_joint</joint_name>
-			<topic>/gimbal/yaw</topic>
-		</plugin>
-		
-		<plugin
-      filename="gz-sim-joint-position-controller-system"
-      name="gz::sim::systems::JointPositionController">
-      <joint_name>roll_joint</joint_name>
-      <topic>/gimbal/cmd_roll</topic>
-      <p_gain>2</p_gain>
-    </plugin>
-    <plugin
-      filename="gz-sim-joint-position-controller-system"
-      name="gz::sim::systems::JointPositionController">
-      <joint_name>pitch_joint</joint_name>
-      <topic>/gimbal/cmd_pitch</topic>
-      <p_gain>2</p_gain>
-    </plugin>
-    <plugin
-			filename="gz-sim-joint-controller-system"
-			name="gz::sim::systems::JointController">
-			<joint_name>yaw_joint</joint_name>
-			<topic>/gimbal/cmd_yaw_vel</topic>
-		</plugin>
-		
   </model>
 </sdf>

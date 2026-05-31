@@ -25,26 +25,17 @@ To rebuild package:
 This will launch the gazebo simulation for the given world name (in this case `iris_runway_new.sdf`). 
 If models are edited, this will need to be refreshed.
 
-**2a. Run Gazebo Camera + Gimbal Bridge**
+**2a. Run ArduPilot SITL**
 
-    source /opt/ros/humble/setup.bash
-    cd ros2_ws
-    source install/setup.bash
-    ros2 run ros_gz_bridge parameter_bridge \
-    /world/iris_runway_new/model/iris_with_gimbal/link/camera_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image \
-    /model/LandingVehicle/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry \
-    /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock --ros-args -r /world/iris_runway_new/model/iris_with_gimbal/link/camera_link/sensor/camera/image:=/camera/image_raw \
-    -r "/model/LandingVehicle/odometry:=/landing_pad/odom"
+    cd ~/ardupilot && sim_vehicle.py -v ArduCopter \
+    --console --map \
+    -f JSON \
+    --add-param-file=$HOME/ardupilot_gazebo/config/gazebo-iris-gimbal_1d.parm \
+    --out=udp:127.0.0.1:14555
 
-This will run the gazebo camera and gimbal bridge, linking the gazebo camera images to the camera ROS2 node and gimbal topics.
+Starts the ArduPilot quad-copter SITL, loads the required params from gazebo-iris-gimbal.parm
 
-**3a. Run ArduPilot SITL**
-
-    cd ~/ardupilot && sim_vehicle.py -v ArduCopter --console --map -w --out=udp:127.0.0.1:14555 -f gazebo-iris --model JSON
-
-Starts the ArduPilot quad-copter SITL. 
-
-**3b. Modify Ardupilot Settings**
+**2b. Modify Ardupilot Settings**
 
 The following settings should be changed on Ardupilot to improve MAVROS Publishing rates:
 
@@ -54,7 +45,7 @@ The following settings should be changed on Ardupilot to improve MAVROS Publishi
 
  (this will stop ArduPilot from overwriting the new parameters with default parameters)
 
-**4. Run MAVROS**
+**3. Run MAVROS**
 
     source /opt/ros/humble/setup.bash
     cd ros2_ws
@@ -79,26 +70,41 @@ Runs the MAVROS node which converts mavlink messages to ROS2  to enable communic
 >     ros2 run mavros mavros_node --ros-args -p fcu_url:=udp://:14555@
 
 
-**5a. Run the launch file**
+**4a. Rebuild the launch file**
 
     source /opt/ros/humble/setup.bash
     cd ros2_ws
     source install/setup.bash
+    colcon build --packages-select auto_lander
+
+**4b. Run the launch file**
+
+    source /opt/ros/humble/setup.bash
+    cd ros2_ws
+    source install/setup.bash 
     ros2 launch auto_lander main_launch.py
 
-Starts all the required ROS2 nodes for the program to function. This launches several nodes which can be examined in the source code.
+Starts all the required ROS2 nodes for the program to function (includes the GZ Bridge now). This launches several nodes which can be examined in the source code.
 
-**5b. Run Camera Calibration (only need to do once)**
+**4c. Run Camera Calibration (only need to do once)**
 
     source /opt/ros/humble/setup.bash
     cd ros2_ws
     source install/setup.bash
     ros2 run auto_lander camera_calibrate
 
+
 Only needed to calibrate camera once to determine camera matrix.
 
-**6. Run Gazebo Rover Bridge (if you want to move rover)**
+**5. Run Gazebo Rover Bridge (if you want to move rover)**
 
     gz topic -t "/cmd_rover_vel" -m gz.msgs.Twist -p "linear: {x: 0.5}, angular: {z: 0.5}"
 
 This will move the rover with the given linear and angular velocity commands. These are in m/s and can be changed to suit whatever is needed.
+
+**Extra**
+
+    ros2 service call /mavros/cmd/command   mavros_msgs/srv/CommandLong   '{command: 205, param1: 0.0, param2: 0.0, param3: 0.0, param4: 0.0, param5: 0.0, param6: 0.0, param7: 1.0}'
+
+
+Manual gimbal command to set to neutral mode

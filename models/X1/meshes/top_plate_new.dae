@@ -3,10 +3,10 @@
   <asset>
     <contributor>
       <author>Blender User</author>
-      <authoring_tool>Blender 4.5.6 LTS commit date:2026-01-19, commit time:19:36, hash:a78963ed6435</authoring_tool>
+      <authoring_tool>Blender 4.5.7 LTS commit date:2026-02-16, commit time:13:34, hash:a9874eeece8d</authoring_tool>
     </contributor>
-    <created>2026-01-27T19:42:04</created>
-    <modified>2026-01-27T19:42:04</modified>
+    <created>2026-03-06T15:59:47</created>
+    <modified>2026-03-06T15:59:47</modified>
     <unit name="meter" meter="1"/>
     <up_axis>Z_UP</up_axis>
   </asset>
@@ -149,7 +149,7 @@
   <library_visual_scenes>
     <visual_scene id="Scene" name="Scene">
       <node id="Top_Plate" name="Top_Plate" type="NODE">
-        <matrix sid="transform">1 0 0 -0.00133478 0 1 0 -0.00296879 0 0 1 4.3182e-5 0 0 0 1</matrix>
+        <matrix sid="transform">3 0 0 -0.00133478 0 3 0 -0.00296879 0 0 3 4.3182e-5 0 0 0 1</matrix>
         <instance_geometry url="#Top_Plate-mesh" name="Top_Plate">
           <bind_material>
             <technique_common>

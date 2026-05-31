@@ -20,7 +20,6 @@ setup(
     maintainer_email='luke.pan88@gmail.com',
     description='TODO: Package description',
     license='TODO: License declaration',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'landing_pad_detector = auto_lander.landing_pad_detector:main',

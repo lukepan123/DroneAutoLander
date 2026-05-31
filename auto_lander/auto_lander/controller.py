@@ -28,7 +28,7 @@ class ChaserController(Node):
         # ---- Global State Variables ----
         self.controller_state = 0
 
-        self._max_runtime = 60.0
+        self._max_runtime = 30.0
         self._boundary_limit = 30.0
 
         self.state = State()
@@ -48,7 +48,7 @@ class ChaserController(Node):
         self.landing_pad_yaw = 0.0
         self.landing_pad_yaw_rate = 0.0
 
-        self.target_z = 5.0 # m
+        self.target_z = 8.0 # m
 
         # ---- State 0xxx (Pre-arm) Variables ----
         self._mode_requested = False
@@ -67,7 +67,7 @@ class ChaserController(Node):
         # ---- State 2xxx (Searching for Landing Pad) Variables ----
         self._landing_pad_found = False
         self._landing_pad_first_seen_time = None
-        self._landing_pad_visual_time_SP = 0.5
+        self._landing_pad_visual_time_SP = 0.1
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
         self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 5.0
@@ -470,18 +470,18 @@ class ChaserController(Node):
         # ---- State 4000 (Begin Landing Descent)
         if self.controller_state == 4000:
             now = self.get_clock().now().nanoseconds / 1e9
-            self.target_z = 0.5
+            self.target_z = 0.2 #land
 
             # Check target error is not bad
-            err_x = self.landing_pad_position[0] - self.odometry.pose.pose.position.x
-            err_y = self.landing_pad_position[1] - self.odometry.pose.pose.position.y
+            err_x = abs(self.landing_pad_position[0] - self.odometry.pose.pose.position.x)
+            err_y = abs(self.landing_pad_position[1] - self.odometry.pose.pose.position.y)
 
-            if self.odometry.pose.pose.position.z <= 0.6 and err_x < 0.1 and err_y < 0.1:
+            if self.odometry.pose.pose.position.z <= 0.8 and err_x < 0.2 and err_y < 0.2:
                 self.cutoff = True
                 self._landed_time = now
                 self.get_logger().info("Throttle Cut Engaged")
                 self.controller_state = 6000
-            elif self.odometry.pose.pose.position.z <= 0.6 and (err_x >= 0.1 or err_y >= 0.1):
+            elif self.odometry.pose.pose.position.z <= 0.6 and (err_x >= 0.2 or err_y >= 0.2):
                 self.target_z = 5.0
                 self.get_logger().info("Landing Aborted - Trying Again")
                 self.controller_state = 3000
@@ -503,8 +503,8 @@ class ChaserController(Node):
 
         # ---- Run Controller ----
         if self.controller_state >= 3000 and self.controller_state <= 6000:
-        #    msg = self._mpc_controller.compute_control(self)
-            msg = self._pid_controller.update(self)
+           #msg = self._mpc_controller.compute_control(self)
+           msg = self._pid_controller.update(self)
 
 
         # ---- Data logging ----

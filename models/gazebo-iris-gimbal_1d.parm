@@ -1,0 +1,7 @@
+# Iris is X frame
+FRAME_CLASS	     1
+FRAME_TYPE	     1
+
+# Match servo out for motors
+MOT_PWM_MIN      1100
+MOT_PWM_MAX      1900

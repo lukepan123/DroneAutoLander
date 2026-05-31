@@ -2,21 +2,38 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 
 def generate_launch_description():
-    # ----- Create tf frames -----
-    # Static transform from "base_link" to "camera_link"
-    base_to_camera_tf_node = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='base_to_camera_tf',
+
+    # ----- Step 1a: Gazebo Camera + Gimbal Bridge -----
+    gz_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='gz_bridge',
         output='screen',
         arguments=[
-            '0.0', '0.0', '-0.1249',                # x, y, z translation
-            '-1.570796326', '0.0', '3.1415926535',   # roll, pitch, yaw (radians)
-            'base_link',                            # parent frame
-            'camera_link'                           # child frame
+            '/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/model/LandingVehicle/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry',
+            '/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/joint_state@sensor_msgs/msg/JointState[gz.msgs.Model',
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+            '--ros-args',
+            '-r', '/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image:=/camera/image_raw',
+            '-r', '/model/LandingVehicle/odometry:=/landing_pad/odom'
         ]
     )
-    
+
+    # ----- Create tf frames -----
+    # base_to_camera_tf_node = Node(
+    #     package='tf2_ros',
+    #     executable='static_transform_publisher',
+    #     name='base_to_camera_tf',
+    #     output='screen',
+    #     arguments=[
+    #         '0.0', '0.0', '-0.1249',
+    #         '-1.570796326', '0.0', '3.1415926535',
+    #         'base_link',
+    #         'camera_link'
+    #     ]
+    # )
+
     # Run target pose detector node
     tag_pose_detector = Node(
         package='auto_lander',
@@ -44,7 +61,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        base_to_camera_tf_node,
+        gz_bridge,
+        # base_to_camera_tf_node,
         tag_pose_detector,
         controller
     ])
