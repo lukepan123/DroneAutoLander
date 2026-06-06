@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import csv
 from datetime import datetime
 
@@ -17,19 +16,22 @@ from nav_msgs.msg import Odometry
 from mavros_msgs.msg import (State, AttitudeTarget)
 from mavros_msgs.srv import (CommandBool, CommandTOL, SetMode, MessageInterval)
 
+from .state_definitions import LP_State, LP_Measurement
 from .ukf import UKF
 from .mpc_controller import MPCController
 from .pid_controller import PIDController
 
-class ChaserController(Node):
+
+class Orchestrator(Node):
+    """ Defines the orchestrator node"""
     def __init__(self):
-        super().__init__('chaser_controller')
+        super().__init__('orchestrator')
         # ---- STATE VARIABLES ----
         # ---- Global State Variables ----
         self.controller_state = 0
 
-        self._max_runtime = 30.0
-        self._boundary_limit = 30.0
+        self._max_runtime = 100.0
+        self._boundary_limit = 500.0
 
         self.state = State()
         self.odometry = Odometry()
@@ -87,7 +89,9 @@ class ChaserController(Node):
         self._rtl_initiated = False
 
         # ---- CONTROL CLASS INITIALISATIONS ----
-        self._UKF_timer_rate = 0.03
+        self._UKF_last_tf_stamp = Time().to_msg()
+        self._UKF_last_update = self.get_clock().now()
+        self._UKF_timer_rate = 0.01
         self._UKF_filter = UKF(self._UKF_timer_rate)
 
         self._control_timer_rate = 0.03
@@ -135,8 +139,8 @@ class ChaserController(Node):
             'quad_omgx', 'quad_omgy', 'quad_omgz',
             'landing_pad_x', 'landing_pad_y', 'landing_pad_z', 'landing_pad_vx', 'landing_pad_vy', 'landing_pad_vz', 
             'landing_pad_yaw',
-            'landing_pad_lpx', 'landing_pad_lpy', 'landing_pad_lpz', 'landing_pad_lpvx', 'landing_pad_lpvy', 'landing_pad_lpvz',
-            'landing_pad_true_x', 'landing_pad_true_y', 'landing_pad_true_z', 'landing_pad_true_vx', 'landing_pad_true_vy', 'landing_pad_true_vz'
+            'landing_pad_true_x', 'landing_pad_true_y', 'landing_pad_true_z', 'landing_pad_true_vx', 'landing_pad_true_vy', 'landing_pad_true_vz',
+            'landing_pad_true_yaw'
         ])
         self.get_logger().info(f'CSV logging initialized: {self._csv_filename}')
 
@@ -145,10 +149,13 @@ class ChaserController(Node):
 
     # ---- CALLBACK IMPLEMENTATIONS ----
     def _set_message_intervals(self):
-        """Set MAVROS message intervals for global position and compass to 100.0Hz"""
+        """ NOT IN USE.
+        """
+
 
     def _set_single_message_interval(self, message_id, rate, description):
-        """Set a single message interval"""
+        """ Set a single message interval.
+        """
         if not self._message_interval_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warn(f'MessageInterval service not ready for {description}')
             return
@@ -162,8 +169,10 @@ class ChaserController(Node):
         
         self.get_logger().info(f'Setting {description} (ID: {message_id}) to {rate}Hz...')
 
+
     def _on_message_interval_done(self, fut, description, message_id, rate):
-        """Handle message interval service response"""
+        """ Handle message interval service response.
+        """
         try:
             res = fut.result()
         except Exception as e:
@@ -175,7 +184,10 @@ class ChaserController(Node):
         else:
             self.get_logger().warn(f'{description} interval setting failed (ID: {message_id}, Rate: {rate}Hz)')
 
+
     def _fcu_state_callback(self, msg: State):
+        """ Confirm state from FCU, and if good arm the FCU.
+        """
         self.state = msg
 
         if self.state.mode == self._mode and not self._mode_confirmed:
@@ -186,7 +198,11 @@ class ChaserController(Node):
             self._armed_confirmed = True
             self._armed_time = self.get_clock().now().nanoseconds / 1e9
 
+
     def _odometry_callback(self, msg: Odometry):
+        """ Obtain FCU Odometry, process quaternions into euler roll, pitch and yaw values. 
+            Also monitor takeoff condition.
+        """
         self.odometry = msg
         alt = msg.pose.pose.position.z
 
@@ -200,18 +216,30 @@ class ChaserController(Node):
             self._tko_complete_time = self.get_clock().now().nanoseconds / 1e9
             self.get_logger().info(f'Takeoff complete at {alt:.2f} m - Starting {self._max_runtime}s safety timer')
 
+
     def _twist_callback(self, msg: TwistStamped):
+        """ Obtain FCU angular rates.
+        """
         self.odometry.twist.twist.angular.x = msg.twist.angular.x
         self.odometry.twist.twist.angular.y = msg.twist.angular.y
         self.odometry.twist.twist.angular.z = msg.twist.angular.z
 
+
     def _landing_pad_found_callback(self, msg: Bool):
+        """ Obtain landing pad found signal from landing_pad_detector node.
+        """
         self._landing_pad_found = msg.data
 
+
     def _landing_pad_true_odometry_callback(self, msg: Odometry):
+        """ SITL ONLY: Pass true odometry of landing pad for data.
+        """
         self.landing_pad_true_odometry = msg
 
+
     def _request_mode(self):
+        """ Set mode on FCU.
+        """
         if not self._set_mode_client.wait_for_service(timeout_sec=0.5):
             self.get_logger().warn('SetMode service not ready yet.')
             return
@@ -222,7 +250,10 @@ class ChaserController(Node):
         fut.add_done_callback(self._on_set_mode_done)
         self.get_logger().info(f'Requesting {self._mode}...')
 
+
     def _on_set_mode_done(self, fut):
+        """ Check if mode properly set on FCU.
+        """
         try:
             res = fut.result()
         except Exception as e:
@@ -236,7 +267,10 @@ class ChaserController(Node):
             self.get_logger().error(f'{self._mode} command rejected by FCU.')
             self._mode_requested = False
 
+
     def _request_arm(self):
+        """ Request FCU Arm.
+        """
         if not self._arming_client.wait_for_service(timeout_sec=0.5):
             self.get_logger().warn('Arming service not ready yet.')
             return
@@ -247,7 +281,10 @@ class ChaserController(Node):
         fut.add_done_callback(self._on_arm_done)
         self.get_logger().info('Requesting ARM...')
 
+
     def _on_arm_done(self, fut):
+        """ Check if FCU Armed.
+        """
         try:
             res = fut.result()
         except Exception as e:
@@ -261,7 +298,10 @@ class ChaserController(Node):
             self.get_logger().error(f'Arm rejected by FCU (result={getattr(res, "result", None)}).')
             self._arm_requested = False
 
+
     def _request_takeoff(self):
+        """ Request FCU takeoff.
+        """
         if not self._takeoff_client.wait_for_service(timeout_sec=0.5):
             self.get_logger().warn('Takeoff service not ready yet.')
             return
@@ -272,7 +312,10 @@ class ChaserController(Node):
         fut.add_done_callback(self._on_takeoff_done)
         self.get_logger().info(f'Requesting takeoff to {self._tko_altitude_SP:.1f} m...')
 
+
     def _on_takeoff_done(self, fut):
+        """ Confirm FCU takeoff successful.
+        """
         try:
             res = fut.result()
         except Exception as e:
@@ -287,7 +330,8 @@ class ChaserController(Node):
             self._tko_requested = False
 
     def _initiate_rtl(self, reason):
-        """Initiate return to land mode and disable tracking"""
+        """ Initiate return to land mode and disable tracking.
+        """
         if self._rtl_initiated:
             return
             
@@ -305,8 +349,10 @@ class ChaserController(Node):
         fut = self._set_mode_client.call_async(req)
         fut.add_done_callback(lambda f: self._on_rtl_done(f, reason))
 
+
     def _on_rtl_done(self, fut, reason):
-        """Handle RTL mode change response"""
+        """ Handle RTL mode change response.
+        """
         try:
             res = fut.result()
         except Exception as e:
@@ -318,74 +364,84 @@ class ChaserController(Node):
         else:
             self.get_logger().error(f'RTL command rejected by FCU (reason: {reason})')
 
+
     def _ukf_loop(self):
-        start = self.get_clock().now()
+        """ Run UKF predict and update loops.
+        """
+        now = self.get_clock().now()
+        dt = (now - self._UKF_last_update).nanoseconds * 1e-9
 
-        # Predict UKF first
-        self._UKF_filter.predict()
+        # Predict UKF step
+        self._UKF_filter.predict(dt)
 
-        # Move odometry into seperate pose/velocity estimates
-        self.landing_pad_position = np.array([
-            self.landing_pad_odometry.pose.pose.position.x, 
-            self.landing_pad_odometry.pose.pose.position.y, 
-            self.landing_pad_odometry.pose.pose.position.z])
-
-        self.landing_pad_velocity = np.array([
-            self.landing_pad_odometry.twist.twist.linear.x, 
-            self.landing_pad_odometry.twist.twist.linear.y, 
-            self.landing_pad_odometry.twist.twist.linear.z])
-
+        # Update UKF step
         try:
             tf_msg = self._tf_map_landing_pad_buffer.lookup_transform('map', 'landing_pad_link', Time())
+
+            stamp_is_new = (
+                tf_msg.header.stamp.sec   != self._UKF_last_tf_stamp.sec or
+                tf_msg.header.stamp.nanosec != self._UKF_last_tf_stamp.nanosec
+            )
+
+            if stamp_is_new:
+                # Extract pose measurement
+                t = tf_msg.transform.translation
+                q = tf_msg.transform.rotation
+                roll, pitch, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+                state = np.array([t.x, t.y, t.z, yaw])
+
+                # Update measurement noise based on drone angular rates
+                cov_adj_x = 2 * (1 + np.sqrt(self.odometry.twist.twist.angular.y**2 + self.odometry.twist.twist.angular.z**2))
+                cov_adj_y = 2 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.z**2))
+                cov_adj_z = 2 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.y**2))
+
+                self._UKF_filter.R = np.diag([
+                    0.01 * cov_adj_x, 0.01 * cov_adj_y, 0.01 * cov_adj_z,
+                    0.01 * cov_adj_z
+                ])
+
+                accepted = self._UKF_filter.update(state)
+            
+            self._UKF_last_tf_stamp = tf_msg.header.stamp
+
         except Exception:
-            return # skip all the update stuff if landing pad not present
+            pass  # predict-only cycle, no correction this tick
 
-        # Extract pose
-        t = tf_msg.transform.translation
-        q = tf_msg.transform.rotation
-
-        roll, pitch, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
-        state = np.array([t.x, t.y, t.z, yaw])
-
-        # Update measurement noise
-        cov_adj_x = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.y**2 + self.odometry.twist.twist.angular.z**2))
-        cov_adj_y = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.z**2))
-        cov_adj_z = 10 * (1 + np.sqrt(self.odometry.twist.twist.angular.x**2 + self.odometry.twist.twist.angular.y**2))
-
-        self._UKF_filter.R = np.diag([
-            0.2 * cov_adj_x, 0.2 * cov_adj_y, 0.2 * cov_adj_z,   # position
-            0.05 * cov_adj_z # yaw only
-        ])
-
-        # Update UKF
-        self._UKF_filter.update(state)
-
+        # Always publish current UKF state
         x = self._UKF_filter.x
 
-        # Publish filtered pose
-        self.landing_pad_odometry.header.stamp = tf_msg.header.stamp
+        self.landing_pad_position = np.array([x[LP_State.PX], x[LP_State.PY], x[LP_State.PZ]])
+
+        yaw = x[LP_State.YAW]
+        vx = x[LP_State.V] * np.cos(yaw)
+        vy = x[LP_State.V] * np.sin(yaw)
+        self.landing_pad_velocity = np.array([vx, vy, 0.0])
+
+        self.landing_pad_odometry.header.stamp = self.get_clock().now().to_msg()
         self.landing_pad_odometry.header.frame_id = 'map'
 
-        self.landing_pad_odometry.pose.pose.position.x = x[0]
-        self.landing_pad_odometry.pose.pose.position.y = x[1]
-        self.landing_pad_odometry.pose.pose.position.z = x[2]
+        self.landing_pad_odometry.pose.pose.position.x = x[LP_State.PX]
+        self.landing_pad_odometry.pose.pose.position.y = x[LP_State.PY]
+        self.landing_pad_odometry.pose.pose.position.z = x[LP_State.PZ]
 
-        quat = tf_transformations.quaternion_from_euler(0.0, 0.0, x[5])
+        quat = tf_transformations.quaternion_from_euler(0.0, 0.0, yaw)
         self.landing_pad_odometry.pose.pose.orientation.x = quat[0]
         self.landing_pad_odometry.pose.pose.orientation.y = quat[1]
         self.landing_pad_odometry.pose.pose.orientation.z = quat[2]
         self.landing_pad_odometry.pose.pose.orientation.w = quat[3]
 
-        self.landing_pad_yaw = x[5]
+        self.landing_pad_yaw = yaw
 
-        self.landing_pad_odometry.twist.twist.linear.x = x[3]
-        self.landing_pad_odometry.twist.twist.linear.y = x[4]
+        self.landing_pad_odometry.twist.twist.linear.x = vx
+        self.landing_pad_odometry.twist.twist.linear.y = vy
         self.landing_pad_odometry.twist.twist.linear.z = 0.0
+
+        # Update dt
+        self._UKF_last_update = now
 
         # Check for timer overruns
         end = self.get_clock().now()
-
-        elapsed = (end - start).nanoseconds / 1e6  # ms
+        elapsed = (end - now).nanoseconds / 1e6
         if elapsed > self._UKF_timer_rate * 1000:
             self.get_logger().warn(f"UKF loop took {elapsed:.2f} ms!")
 
@@ -535,12 +591,6 @@ class ChaserController(Node):
             self.landing_pad_odometry.twist.twist.linear.y,
             self.landing_pad_odometry.twist.twist.linear.z,
             self.landing_pad_yaw,
-            self.landing_pad_position[0],
-            self.landing_pad_position[1],
-            self.landing_pad_position[2],
-            self.landing_pad_velocity[0],
-            self.landing_pad_velocity[1],
-            self.landing_pad_velocity[2],
             self.landing_pad_true_odometry.pose.pose.position.x,
             self.landing_pad_true_odometry.pose.pose.position.y,
             self.landing_pad_true_odometry.pose.pose.position.z,
@@ -548,6 +598,7 @@ class ChaserController(Node):
             self.landing_pad_true_odometry.twist.twist.linear.x * np.cos(lp_pad_true_yaw),
             self.landing_pad_true_odometry.twist.twist.linear.x * np.sin(lp_pad_true_yaw),
             self.landing_pad_true_odometry.twist.twist.linear.z,
+            lp_pad_true_yaw,
         ])
         self._csv_file.flush()
 
@@ -619,7 +670,7 @@ class LowPassFilter:
 # ---- MAIN ----
 def main(args=None):
     rclpy.init(args=args)
-    node = ChaserController()
+    node = Orchestrator()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     try:

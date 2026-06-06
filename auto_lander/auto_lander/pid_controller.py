@@ -75,8 +75,8 @@ class PIDController:
         du = quad_vel - landing_pad_vel
 
         # Increase gains as distance to target decreases
-        terminal_gain = 3.0
-        no_gain_dist = 0.5
+        terminal_gain = 2.0
+        no_gain_dist = 1.0
 
         u_mag = np.sqrt(u[0]**2 + u[1]**2 + u[2]**2)
         gain_factor = terminal_gain * no_gain_dist / (u_mag + no_gain_dist)

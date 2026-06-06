@@ -9,34 +9,42 @@ import numpy as np
 from cv_bridge import CvBridge
 import tf2_ros
 import tf_transformations
-from functools import partial
+from dataclasses import dataclass, field
 
 import rclpy
 from rclpy.node import Node
 import rclpy.duration
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
 from geometry_msgs.msg import TransformStamped
 from mavros_msgs.srv import CommandLong
 
-import csv
-from sensor_msgs.msg import JointState
 
-# Get the workspace root directory
-def get_workspace_root():
-    """Find the workspace root by looking for colcon workspace structure"""
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    while current_dir != '/':
-        if os.path.exists(os.path.join(current_dir, 'src')) and \
-           os.path.exists(os.path.join(current_dir, 'build')) and \
-           os.path.exists(os.path.join(current_dir, 'install')):
-            return current_dir
-        current_dir = os.path.dirname(current_dir)
-    return None
+@dataclass
+class TagDefinition:
+    """Defines the ArUCo tag definition."""
+
+    size: float
+    position: tuple[float, float, float]
+    object_points: np.ndarray = field(init=False)
+
+    def __post_init__(self):
+        half = self.size / 2.0
+
+        self.object_points = np.array([
+            [-half,  half, 0.0],
+            [ half,  half, 0.0],
+            [ half, -half, 0.0],
+            [-half, -half, 0.0],
+        ], dtype=np.float32)
 
 
-class ArUCoNode(Node):
+class VisionPerception(Node):
+    """ Defines the vision perception node"""
     def __init__(self):
+        """ Initialise the vision perception node
+        """
         super().__init__("landing_pad_detection_node")
 
         # ---- PARAMETERS ----
@@ -58,7 +66,7 @@ class ArUCoNode(Node):
             self.get_parameter("webcam_index").get_parameter_value().integer_value
         )
 
-        # SHow the camera viewport
+        # Show the camera viewport
         self.declare_parameter("show_debug_window", True)
         self.show_debug_window = (
             self.get_parameter("show_debug_window").get_parameter_value().bool_value
@@ -115,50 +123,43 @@ class ArUCoNode(Node):
         self._dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
 
         # ---- GIMBAL CONTROLLER PARAMETERS ----
-        self._gimbal_Kp = 0.05
-        self._gimbal_Ki = 0.001
-        self._tag_error_integral = 0.0
+        self._gimbal_Kp = 0.01
         self._servo_angle = -90.0
+
+        self._gimbal_servo_ID = 10
+
+        self._servo_min_angle = -135.0
+        self._servo_max_angle = 45.0
+
+        self._servo_pwm_min = 1100
+        self._servo_pwm_max = 1900
+
+        self._servo_response_delay = 0.025
 
         self._image_timer_rate = 1.0/30 # 30 FPS
 
         # ---- TAG PARAMETERS ----
-        self._TAG_SIZES = {
-                35: 0.541,
-                27: 0.081,
-                0 : 0.081
-            }
-
-        self._TAG_POSITIONS = {
-            35: [0.0, 0.3700, 0.0], #x, y, z
-            27: [0.0, 0.0000, 0.0],
-            0 : [0.0, 0.7400, 0.0]
+        self._tags = {
+            35: TagDefinition(
+                size=0.541,
+                position=(0.0, 0.3700, 0.0)
+            ),
+            27: TagDefinition(
+                size=0.081,
+                position=(0.0, 0.0000, 0.0)
+            ),
+            0: TagDefinition(
+                size=0.081,
+                position=(0.0, 0.7400, 0.0)
+            ),
         }
-
-        self._object_points = {}
-        for tag_id, size in self._TAG_SIZES.items():
-            half = size / 2.0
-            self._object_points[tag_id] = np.array([
-                [-half,  half, 0],
-                [ half,  half, 0],
-                [ half, -half, 0],
-                [-half, -half, 0],
-            ], dtype=np.float32)
-
         # ---- SUBSCRIPTIONS ----
-        self._joint_state_sub = self.create_subscription(
-            JointState,
-            '/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/joint_state',
-            self._joint_state_callback,
-            10
-        )
+        _img_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1)
 
         # ---- PUBLISHERS ----
         self._bridge = CvBridge()
         self._webcam_publisher = self.create_publisher(Image, "/image", 10)
         self._landing_pad_found_publisher = self.create_publisher(Bool, "/landing_pad/found", 10)
-
-        self._gimbal_angle_publisher = self.create_publisher(Bool, "/landing_pad/found", 10)
 
         # ---- SERVICES ----
         self.client = self.create_client(CommandLong, '/mavros/cmd/command')
@@ -178,17 +179,6 @@ class ArUCoNode(Node):
         self._aruco_params.maxMarkerPerimeterRate = 4.0    # default 4.0 — already fine
         self._aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
         self.detector = cv2.aruco.ArucoDetector(self._aruco_dict, self._aruco_params)
-
-        #  ---- DIAGNOSTICS AND LOGGING ----
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._csv_filename = f"gimbal_{timestamp}.csv"
-        self._csv_file = open(self._csv_filename, 'w', newline='')
-        self._csv_writer = csv.writer(self._csv_file)
-        self._csv_writer.writerow([
-            'timestamp',
-            'command', 'actual', 'error'
-        ])
-        self.get_logger().info(f'CSV logging initialized: {self._csv_filename}')
 
         # ---- INITIALISATION ----
         self.frame_count = 0
@@ -224,7 +214,7 @@ class ArUCoNode(Node):
         # Image source
         if self.image_source == "topic":
             self.image_subscription = self.create_subscription(
-                Image, "/camera/image_raw", self._image_callback, 10
+                Image, "/camera/image_raw", self._image_callback, _img_qos
             )
             self.get_logger().info(
                 "ArUCoImageNode started in TOPIC mode, waiting for MAVROS altitude and image topic..."
@@ -269,82 +259,60 @@ class ArUCoNode(Node):
                     f"ArUCoImageNode started in WEBCAM mode. Camera properties: "
                     f"FPS={actual_fps}, Width={actual_width}, Height={actual_height}"
                 )
-            self.timer = self.create_timer(
-                self._image_timer_rate, self._webcam_timer_callback
-            )  # 30 Hz
+            self.timer = self.create_timer(self._image_timer_rate, self._webcam_timer_callback)  # 30 Hz
 
-    # ---- CALLBACK IMPLEMENTATIONS ----
-    def _joint_state_callback(self, msg):
-        if 'tilt_joint' in msg.name:
-            idx = msg.name.index('tilt_joint')
-            actual_angle_rad = msg.position[idx]
-            self._actual_angle_deg = -np.degrees(actual_angle_rad)
-            
-            # Log both for comparison
-            # self.get_logger().info(
-            #     f'Commanded: {self._servo_angle:.2f} deg, '
-            #     f'Actual: {self._actual_angle_deg:.2f} deg, '
-            #     f'Error: {self._servo_angle - self._actual_angle_deg:.2f} deg'
-            # )
 
-            current_time = self.get_clock().now().nanoseconds / 1e9
-            self._csv_writer.writerow([
-                current_time,
-                self._servo_angle,
-                self._actual_angle_deg, 
-                self._servo_angle - self._actual_angle_deg
-            ])
-            self._csv_file.flush()
-    
+    # ---- GIMBAL CONTROLLER IMPLEMENTATIONS ----
     def _send_servo_command(self, servo_id, pwm_value):
+        """ Sends servo command via Mavlink
+
+        :param servo_id: Servo ID to actuate
+        :param pwm_value: PWM value to command to servo
+        """
         req = CommandLong.Request()
         req.command = 183            # MAV_CMD_DO_SET_SERVO
         req.param1 = float(servo_id) # Servo channel number (1 to 16)
         req.param2 = float(pwm_value)# PWM value (typically 1000 to 2000)
 
-        future = self.client.call_async(req)
-        future.add_done_callback(partial(self._servo_response_callback, servo=servo_id, pwm=pwm_value))
+        self.client.call_async(req)
 
-    def _servo_response_callback(self, future, servo, pwm):
-        try:
-            response = future.result()
-            if not response.success:
-                self.get_logger().warning(f'Failed to set Servo {servo}. Check autopilot params.')
-        except Exception as e:
-            self.get_logger().error(f'Service call failed: {e}')
 
     def _gimbal_controller(self, image_points):
+        """ Determines gimbal required output to centre on tag
+
+        :param image_points: Tag corner points
+        """
         # Controller to centre the landing pad into the vertical centre of the image
         centre_y = np.mean(image_points[:, 1])
         image_centre_y = self._image_height / 2
         tag_error = centre_y - image_centre_y   # error from centre of image
 
-        self._tag_error_integral = tag_error + self._tag_error_integral
-        self._tag_error_integral = max(min(self._tag_error_integral, 30), -30)
+        # P-Controller
+        self._servo_angle = self._servo_angle - self._gimbal_Kp * tag_error
+        self._servo_angle = self._servo_angle = np.clip(self._servo_angle, self._servo_min_angle, self._servo_max_angle) # limits
 
-        # PID Controller
-        self._servo_angle = self._servo_angle - self._gimbal_Kp * tag_error # + self._gimbal_Ki * self._tag_error_integral
 
-        self._servo_angle = max(min(self._servo_angle, 45), -135)
+    def _gimbal_publisher(self, servo_angle, stamp):
+        """ Publish the commanded gimbal angle to the gimbal as a PWM signal
 
-    def _gimbal_publisher(self, servo_angle):
+        :param servo_angle: Desired gimbal angle to servo
+        """
         # Map to PWM
-        pwm = int(((servo_angle + 135) / 180.0) * 800 + 1100)
-        pwm = max(1100, min(1900, pwm))
+        pwm = int(((servo_angle - self._servo_min_angle) / 180.0) * (self._servo_pwm_max - self._servo_pwm_min) + self._servo_pwm_min)
+        pwm = np.clip(pwm, self._servo_pwm_min, self._servo_pwm_max)
 
-        self._send_servo_command(10, pwm)
+        self._send_servo_command(self._gimbal_servo_ID, pwm)
 
         # Publish the gimbal servo angle to the quad -> cam transformation
-        # There is roughly a 25ms lag (TODO: Tune), so add this to the timestamp
-        lag = int(0.025 * 1e9)
-        lagged_time = self.get_clock().now() + rclpy.duration.Duration(nanoseconds=lag)
-        stamp = lagged_time.to_msg() # Timestamp after controller
         quad_to_cam_tf_msg = self.quad_to_cam_transformstamped(stamp, servo_angle)
 
         self._tf_quad_to_cam_broadcaster.sendTransform(quad_to_cam_tf_msg)
 
+
+    # ---- IMAGE CALLBACK IMPLEMENTATIONS ----
     def _webcam_timer_callback(self):
-        """Read image from webcam and publish to /image topic"""
+        """ Read image from webcam and publish to /image topic
+        """
         if hasattr(self, "cap") and self.cap is not None and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
@@ -353,6 +321,7 @@ class ArUCoNode(Node):
                     frame, (self._image_width, self._image_height), interpolation=cv2.INTER_NEAREST
                 )
                 msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+                msg.header.stamp = self.get_clock().now().to_msg()
 
                 self._image_callback(msg)
             else:
@@ -360,10 +329,14 @@ class ArUCoNode(Node):
         else:
             self.get_logger().warning("Webcam not opened.")
 
+
     def _image_callback(self, msg):
-        """Process image and detect tag, calculate pose and publish tf_transform"""
+        """ Process image and detect tag, calculate pose and publish tf_transform.
+
+        :param msg: Frame from camera
+        """
         frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        stamp = self.get_clock().now().to_msg() # Timestamp before image processing, because thats when the image was taken
+        stamp = msg.header.stamp
 
         # Ensure inference size matches IR (handles topic frames of any size)
         if frame.shape[0] != self._image_height or frame.shape[1] != self._image_width:
@@ -374,26 +347,22 @@ class ArUCoNode(Node):
         corners, ids, _ = self.detector.detectMarkers(gray_frame)
 
         # Check that the tag_id is recognised for tag_id_arr in ids:
-        landing_pad_found = False
+        valid_indices = []
         if ids is not None:
-            for tag_id_arr in ids:
-                tag_id = int(tag_id_arr[0])
-                if tag_id in self._object_points:
-                    landing_pad_found = True
-                    self._landing_pad_found_publisher.publish(Bool(data=True))
-                    break
-        else:
-            self._landing_pad_found_publisher.publish(Bool(data=False))
+            valid_indices = [i for i, tag_id_arr in enumerate(ids) if int(tag_id_arr[0]) in self._tags]
+
+        landing_pad_found = len(valid_indices) > 0
+        self._landing_pad_found_publisher.publish(Bool(data=landing_pad_found))
 
         # If tag is recognised, then execute pose calculations
-        if landing_pad_found == True:
+        if landing_pad_found:
             # Compute areas
-            areas = [cv2.contourArea(c[0].astype(np.float32)) for c in corners]
-            idx = int(np.argmax(areas))      # index of largest detected marker
+            idx = max(valid_indices, key=lambda i: cv2.contourArea(corners[i][0].astype(np.float32)))
             tag_id = int(ids[idx][0])
 
             image_points = corners[idx][0].astype(np.float32)
-            object_points = self._object_points[tag_id]
+            tag = self._tags[tag_id]
+            object_points = tag.object_points
 
             success, rvec, tvec = cv2.solvePnP(
                 object_points,
@@ -415,20 +384,18 @@ class ArUCoNode(Node):
                         self._dist_coeffs,
                         rvec,
                         tvec,
-                        self._TAG_SIZES[tag_id] * 0.5
+                        tag.size * 0.5
                     )
 
                 # Broadcast landing_pad position relative to camera frame
                 cam_to_tag_tf_msg = self.cam_to_tag_transformstamped(stamp, tag_id, rvec, tvec)
-                tag_to_landing_pad_tf_msg = self.tag_to_landing_pad_transformstamped(stamp, tag_id, self._TAG_POSITIONS)
+                tag_to_landing_pad_tf_msg = (self.tag_to_landing_pad_transformstamped(stamp, tag_id, tag.position))
                 if cam_to_tag_tf_msg is not None:
                     self._tf_cam_to_tag_broadcaster.sendTransform(cam_to_tag_tf_msg)
                     self._tf_tag_to_landing_pad_broadcaster.sendTransform(tag_to_landing_pad_tf_msg)
 
-        # if landing_pad_found is False:
-        #     self._gimbal_publisher(-90.0)
-        # else:
-        self._gimbal_publisher(self._servo_angle)
+        # Publish the gimbal angle regardless of if the pose update was good
+        self._gimbal_publisher(self._servo_angle, stamp)
         
         # Show the output image after ArUCo detection (if debug window enabled)
         if self.show_debug_window:
@@ -457,79 +424,10 @@ class ArUCoNode(Node):
             msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
             self._webcam_publisher.publish(msg)
 
-    # ---- HELPER FUNCTIONS ---- 
-    def quad_to_cam_transformstamped(self, stamp, servo_angle):
-        # From gimbal angle, find the quad --> cam transform (4x4)
-        t_quad_to_cam_pad = [0.0, 0.0, -0.1249]
-        q_tag_to_landing_pad = tf_transformations.quaternion_from_euler(
-            -1.5707963 + np.deg2rad(servo_angle), 0.0, -1.5707963
-        )
-
-        # Header for pose
-        tf_quad_to_cam = TransformStamped()
-        tf_quad_to_cam.header.stamp = stamp
-        tf_quad_to_cam.header.frame_id = "base_link"
-        tf_quad_to_cam.child_frame_id = "camera_link"
-        tf_quad_to_cam.transform.translation.x = t_quad_to_cam_pad[0]
-        tf_quad_to_cam.transform.translation.y = t_quad_to_cam_pad[1]
-        tf_quad_to_cam.transform.translation.z = t_quad_to_cam_pad[2]
-        tf_quad_to_cam.transform.rotation.x = q_tag_to_landing_pad[0]
-        tf_quad_to_cam.transform.rotation.y = q_tag_to_landing_pad[1]
-        tf_quad_to_cam.transform.rotation.z = q_tag_to_landing_pad[2]
-        tf_quad_to_cam.transform.rotation.w = q_tag_to_landing_pad[3]
-
-        return tf_quad_to_cam
-    
-    def cam_to_tag_transformstamped(self, stamp, tag_id, rvec, tvec):
-        # From ArUCo tag, find the camera --> tag transform (4x4)
-        try:
-            t_cam_to_tag = tvec.reshape(3) # position
-            R_cam_to_tag, _ = cv2.Rodrigues(rvec)
-            T_cam_to_tag = np.eye(4)
-            T_cam_to_tag[:3, :3] = R_cam_to_tag
-            q_cam_to_tag = tf_transformations.quaternion_from_matrix(T_cam_to_tag)
-        
-        except Exception as e:
-            self.get_logger().error(f"cam_to_tag transform failed: {e}")
-            return None
-
-        # Header for pose
-        tf_cam_to_tag = TransformStamped()
-        tf_cam_to_tag.header.stamp = stamp
-        tf_cam_to_tag.header.frame_id = "camera_link"
-        tf_cam_to_tag.child_frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
-        tf_cam_to_tag.transform.translation.x = t_cam_to_tag[0]
-        tf_cam_to_tag.transform.translation.y = t_cam_to_tag[1]
-        tf_cam_to_tag.transform.translation.z = t_cam_to_tag[2]
-        tf_cam_to_tag.transform.rotation.x = q_cam_to_tag[0]
-        tf_cam_to_tag.transform.rotation.y = q_cam_to_tag[1]
-        tf_cam_to_tag.transform.rotation.z = q_cam_to_tag[2]
-        tf_cam_to_tag.transform.rotation.w = q_cam_to_tag[3]
-
-        return tf_cam_to_tag
-    
-    def tag_to_landing_pad_transformstamped(self, stamp, tag_id, tag_positions):
-        # Broadcast the tag_to_landing_pad tf transform
-        t_tag_to_landing_pad = np.array(tag_positions[tag_id])
-        q_tag_to_landing_pad = tf_transformations.quaternion_from_euler(0.0, 0.0, -1.570796326) # Turns out all the tags were 90deg off...
-
-        # Header for pose
-        tf_tag_to_landing_pad = TransformStamped()
-        tf_tag_to_landing_pad.header.stamp = stamp
-        tf_tag_to_landing_pad.header.frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
-        tf_tag_to_landing_pad.child_frame_id = "landing_pad_link"
-        tf_tag_to_landing_pad.transform.translation.x = t_tag_to_landing_pad[0]
-        tf_tag_to_landing_pad.transform.translation.y = t_tag_to_landing_pad[1]
-        tf_tag_to_landing_pad.transform.translation.z = t_tag_to_landing_pad[2]
-        tf_tag_to_landing_pad.transform.rotation.x = q_tag_to_landing_pad[0]
-        tf_tag_to_landing_pad.transform.rotation.y = q_tag_to_landing_pad[1]
-        tf_tag_to_landing_pad.transform.rotation.z = q_tag_to_landing_pad[2]
-        tf_tag_to_landing_pad.transform.rotation.w = q_tag_to_landing_pad[3]
-
-        return tf_tag_to_landing_pad
-    
+    # ---- HELPER FUNCTIONS ----
     def create_video_from_frames(self):
-        """Create video from saved frames"""
+        """ Create video from saved frames
+        """
         if not (self.save_frames or self.create_video) or not self.saved_frames:
             self.get_logger().info(f"Video creation skipped. save_frames={self.save_frames}, create_video={self.create_video}, frames_count={len(self.saved_frames) if hasattr(self, 'saved_frames') else 0}")
             return
@@ -596,10 +494,107 @@ class ArUCoNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error creating video: {e}")
 
+    @staticmethod
+    def quad_to_cam_transformstamped(stamp, servo_angle):
+        """ Generate the quad to cam TF transfrom
+
+        :param servo_angle: Servo angle to pass into TF
+        """
+        # From gimbal angle, find the quad --> cam transform (4x4)
+        t_quad_to_cam_pad = [0.0, 0.0, -0.1249]
+        q_tag_to_landing_pad = tf_transformations.quaternion_from_euler(
+            -1.5707963 + np.deg2rad(servo_angle), 0.0, -1.5707963
+        )
+
+        # Header for pose
+        tf_quad_to_cam = TransformStamped()
+        tf_quad_to_cam.header.stamp = stamp
+        tf_quad_to_cam.header.frame_id = "base_link"
+        tf_quad_to_cam.child_frame_id = "camera_link"
+        tf_quad_to_cam.transform.translation.x = t_quad_to_cam_pad[0]
+        tf_quad_to_cam.transform.translation.y = t_quad_to_cam_pad[1]
+        tf_quad_to_cam.transform.translation.z = t_quad_to_cam_pad[2]
+        tf_quad_to_cam.transform.rotation.x = q_tag_to_landing_pad[0]
+        tf_quad_to_cam.transform.rotation.y = q_tag_to_landing_pad[1]
+        tf_quad_to_cam.transform.rotation.z = q_tag_to_landing_pad[2]
+        tf_quad_to_cam.transform.rotation.w = q_tag_to_landing_pad[3]
+
+        return tf_quad_to_cam
+    
+
+    @staticmethod
+    def cam_to_tag_transformstamped(stamp, tag_id, rvec, tvec):
+        """ Generate the cam to tag TF transfrom
+
+        :param tag_id: Tag ID
+        :param rvec: Tag rotation
+        :param tvec: Tag translation
+        """
+        # From ArUCo tag, find the camera --> tag transform (4x4)
+        t_cam_to_tag = tvec.reshape(3) # position
+        R_cam_to_tag, _ = cv2.Rodrigues(rvec)
+        T_cam_to_tag = np.eye(4)
+        T_cam_to_tag[:3, :3] = R_cam_to_tag
+        q_cam_to_tag = tf_transformations.quaternion_from_matrix(T_cam_to_tag)
+
+        # Header for pose
+        tf_cam_to_tag = TransformStamped()
+        tf_cam_to_tag.header.stamp = stamp
+        tf_cam_to_tag.header.frame_id = "camera_link"
+        tf_cam_to_tag.child_frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
+        tf_cam_to_tag.transform.translation.x = t_cam_to_tag[0]
+        tf_cam_to_tag.transform.translation.y = t_cam_to_tag[1]
+        tf_cam_to_tag.transform.translation.z = t_cam_to_tag[2]
+        tf_cam_to_tag.transform.rotation.x = q_cam_to_tag[0]
+        tf_cam_to_tag.transform.rotation.y = q_cam_to_tag[1]
+        tf_cam_to_tag.transform.rotation.z = q_cam_to_tag[2]
+        tf_cam_to_tag.transform.rotation.w = q_cam_to_tag[3]
+
+        return tf_cam_to_tag
+    
+
+    @staticmethod
+    def tag_to_landing_pad_transformstamped(stamp, tag_id, tag_position):
+        """ Generate the tag to landing pad TF transfrom
+
+        :tag_id: Tag ID
+        :tag_positions: Tag position on landing pad
+        """
+        # Broadcast the tag_to_landing_pad tf transform
+        t_tag_to_landing_pad = np.array(tag_position)
+        q_tag_to_landing_pad = tf_transformations.quaternion_from_euler(0.0, 0.0, -1.570796326) # Turns out all the tags were 90deg off...
+
+        # Header for pose
+        tf_tag_to_landing_pad = TransformStamped()
+        tf_tag_to_landing_pad.header.stamp = stamp
+        tf_tag_to_landing_pad.header.frame_id = f"tag{tag_id}_link" # keeps tag_id positions in sync with cam detection
+        tf_tag_to_landing_pad.child_frame_id = "landing_pad_link"
+        tf_tag_to_landing_pad.transform.translation.x = t_tag_to_landing_pad[0]
+        tf_tag_to_landing_pad.transform.translation.y = t_tag_to_landing_pad[1]
+        tf_tag_to_landing_pad.transform.translation.z = t_tag_to_landing_pad[2]
+        tf_tag_to_landing_pad.transform.rotation.x = q_tag_to_landing_pad[0]
+        tf_tag_to_landing_pad.transform.rotation.y = q_tag_to_landing_pad[1]
+        tf_tag_to_landing_pad.transform.rotation.z = q_tag_to_landing_pad[2]
+        tf_tag_to_landing_pad.transform.rotation.w = q_tag_to_landing_pad[3]
+
+        return tf_tag_to_landing_pad
+
+def get_workspace_root():
+    """ Find the workspace root by looking for colcon workspace structure
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    while current_dir != '/':
+        if os.path.exists(os.path.join(current_dir, 'src')) and \
+           os.path.exists(os.path.join(current_dir, 'build')) and \
+           os.path.exists(os.path.join(current_dir, 'install')):
+            return current_dir
+        current_dir = os.path.dirname(current_dir)
+    return None
+
 # ---- MAIN ----
 def main(args=None):
     rclpy.init(args=args)
-    node = ArUCoNode()
+    node = VisionPerception()
     
     # Global variable to track if we're already shutting down
     shutdown_in_progress = False
@@ -639,7 +634,6 @@ def main(args=None):
         if getattr(node, "show_debug_window", True):
             cv2.destroyAllWindows()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
