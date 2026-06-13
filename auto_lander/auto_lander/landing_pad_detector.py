@@ -123,7 +123,7 @@ class VisionPerception(Node):
         self._dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
 
         # ---- GIMBAL CONTROLLER PARAMETERS ----
-        self._gimbal_Kp = 0.01
+        self._gimbal_Kp = 0.011
         self._servo_angle = -90.0
 
         self._gimbal_servo_ID = 10

@@ -37,12 +37,31 @@ class PIDController:
 
         self.dt = dt
 
+    def predict_state(self, pos, vel, dt_lag):
+        """ Forward propagate a state estimate by dt_lag seconds to compensate for known UKF pipeline delay.
+
+        :param pos: Target position vector (m)
+        :param vel: Target velocity vector (m/s)
+        :return: Future target position
+        """
+        pos_pred = pos + vel * dt_lag
+        return pos_pred
+
     
     def controller(self, target_altitude, target_yaw, cutoff, quad_pos, quad_roll, quad_pitch, quad_yaw, quad_vel, landing_pad_pos, landing_pad_vel):
-        """
-        p_a, v_a = drone position & velocity
-        p_m, v_m = target position & velocity
-        yaw_des = desired yaw (point towards target)
+        """ PN/PD Controller Logic
+
+        :param target_altitude: desired hover/approach altitude (m, ENU z)
+        :param target_yaw:      desired heading (rad, ENU convention)
+        :param cutoff:          bool — if True, zero thrust and hold yaw (kill switch)
+        :param quad_pos:        drone position  p_a (m)   — 3-vector [x, y, z]
+        :param quad_roll:       drone roll  φ   (rad)
+        :param quad_pitch:      drone pitch θ   (rad)
+        :param quad_yaw:        drone yaw   ψ   (rad)
+        :param quad_vel:        drone velocity  v_a (m/s) — 3-vector [vx, vy, vz]
+        :param landing_pad_pos: target position p_m (m)   — 3-vector [x, y, z]
+        :param landing_pad_vel: target velocity v_m (m/s) — 3-vector [vx, vy, vz]
+        :return: AttitudeTarget msg (attitude quaternion + normalised throttle)
         """
 
         # Condition yaw
@@ -71,22 +90,23 @@ class PIDController:
         # ======================
 
         # Calculate error vectors
+        # delay = 0.05 # 100ms UKF delay
+        # landing_pad_pos = self.predict_state(landing_pad_pos, landing_pad_vel, delay)
         u = quad_pos - landing_pad_pos
         du = quad_vel - landing_pad_vel
 
         # Increase gains as distance to target decreases
-        terminal_gain = 2.0
-        no_gain_dist = 1.0
+        terminal_gain = 1.0
+        no_gain_dist = 2.0
 
-        u_mag = np.sqrt(u[0]**2 + u[1]**2 + u[2]**2)
-        gain_factor = terminal_gain * no_gain_dist / (u_mag + no_gain_dist)
+        u_norm = np.linalg.norm(u)
+        gain_factor = terminal_gain * no_gain_dist / (u_norm + no_gain_dist)
 
         self.lam = self.lam_0 * gain_factor
         self.Kp = self.Kp_0 * gain_factor
         self.Kd = self.Kd_0 * gain_factor
 
         # Calculate PN acceleration
-        u_norm = np.linalg.norm(u)
         if u_norm < 1e-6:
             accel_perp = np.zeros(3)
         else:
@@ -166,7 +186,7 @@ class PIDController:
     def update(self, node):
         msg = self.controller(
             target_altitude=node.target_z,
-            target_yaw=0.0,
+            target_yaw=node.landing_pad_yaw,
             cutoff=node.cutoff,
             quad_pos=np.array([node.odometry.pose.pose.position.x,
                           node.odometry.pose.pose.position.y,
@@ -183,3 +203,22 @@ class PIDController:
 
         node.att_pub.publish(msg)
 
+    def stop(self, node):
+        msg = self.controller(
+            target_altitude=node.target_z,
+            target_yaw=0.0,
+            cutoff=node.cutoff,
+            quad_pos=np.array([node.odometry.pose.pose.position.x,
+                            node.odometry.pose.pose.position.y,
+                            node.odometry.pose.pose.position.z]),
+            quad_roll=node.roll,
+            quad_pitch=node.pitch,
+            quad_yaw=node.yaw,
+            quad_vel=np.array([node.odometry.twist.twist.linear.x,
+                            node.odometry.twist.twist.linear.y,
+                            node.odometry.twist.twist.linear.z]),
+            landing_pad_pos=np.array([0,0,0]),
+            landing_pad_vel=np.array([0,0,0]),
+        )
+
+        node.att_pub.publish(msg)

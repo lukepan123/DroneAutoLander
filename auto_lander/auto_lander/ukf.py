@@ -44,11 +44,11 @@ class UKF:
             0.15, 0.50,
         ])
 
-        # Process noise
-        self.Q = np.diag([
+        # Process noise (make dependent on dt)
+        self.Q = 0.01/dt * np.diag([
             0.05, 0.05, 0.05,    # px, py, pz
-            0.20, 2.00,          # v, a
-            0.01, 0.20,          # yaw, yaw_rate
+            0.10, 1.00,          # v, a
+            0.02, 0.10,          # yaw, yaw_rate
         ])
 
         # Measurement noise
@@ -101,6 +101,23 @@ class UKF:
         self.P = (dX.T * self.Wc) @ dX + self.Q
         self.P = 0.5 * (self.P + self.P.T)
 
+    def get_predicted_state(self, dt):
+        """
+        Shadow predict — project current mean state forward by one dt
+        to compensate for UKF pipeline delay. Propagates sigma points
+        to avoid bias from the nonlinear CTRA model.
+        """
+        X_in  = np.tile(self.x, (self.num_sigma, 1))   # broadcast mean as all sigma points
+        X_out = np.zeros_like(X_in)
+
+        self._fx_vectorized(X_in, X_out, dt)
+
+        # Only the mean row matters — all rows are identical so just take first
+        x_pred = X_out[0].copy()
+        x_pred[LP_State.YAW] = self._wrap(x_pred[LP_State.YAW])
+
+        return x_pred
+
 
     def update(self, z, mahal_threshold: float = 5.0) -> bool:
         """ Do update step for UKF.
@@ -114,15 +131,15 @@ class UKF:
         self._hx_vectorized(self.X_prop, self.Z)
 
         # 2) Predicted measurement mean
-        z_pred    = (self.Wm[:, None] * self.Z).sum(axis=0)
+        z_pred = (self.Wm[:, None] * self.Z).sum(axis=0)
         z_pred[LP_Measurement.YAW] = self._circular_mean(self.Z[:, LP_Measurement.YAW], self.Wm)  # circular mean for yaw
 
         # 3) Measurement deviations
-        dZ       = self.Z - z_pred
+        dZ = self.Z - z_pred
         dZ[:, LP_Measurement.YAW] = self._wrap(dZ[:, LP_Measurement.YAW])
 
         # 4) State deviations
-        dX       = self.X_prop - self.x
+        dX = self.X_prop - self.x
         dX[:, LP_State.YAW] = self._wrap(dX[:, LP_State.YAW])
 
         # 5) Cross covariance
@@ -135,7 +152,7 @@ class UKF:
         K = np.linalg.solve(S.T, P_xz.T).T
 
         # 8) Innovation
-        y    = z - z_pred
+        y = z - z_pred
         y[LP_Measurement.YAW] = self._wrap(y[LP_Measurement.YAW])
 
         # Mahalanobis gate: reject if innovation is statistically inconsistent

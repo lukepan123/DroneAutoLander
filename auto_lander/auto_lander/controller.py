@@ -31,7 +31,7 @@ class Orchestrator(Node):
         self.controller_state = 0
 
         self._max_runtime = 100.0
-        self._boundary_limit = 500.0
+        self._boundary_limit = 30.0
 
         self.state = State()
         self.odometry = Odometry()
@@ -43,14 +43,12 @@ class Orchestrator(Node):
         self.landing_pad_true_odometry = Odometry()
         self.landing_pad_position = [0,0,0]
         self.landing_pad_velocity = [0,0,0]
-        # self._landing_pad_position_lp = LowPassFilter(0.8)
-        # self._landing_pad_velocity_lp = LowPassFilter(0.5)
         self.landing_pad_velocity_mag = 0.0
         self.landing_pad_accel_mag = 0.0
         self.landing_pad_yaw = 0.0
         self.landing_pad_yaw_rate = 0.0
 
-        self.target_z = 8.0 # m
+        self.target_z = 7.0 # m
 
         # ---- State 0xxx (Pre-arm) Variables ----
         self._mode_requested = False
@@ -72,15 +70,13 @@ class Orchestrator(Node):
         self._landing_pad_visual_time_SP = 0.1
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
-        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 5.0
+        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 10.0
         self._landing_pad_lost_time = None
-        self._landing_pad_lost_time_SP = 2.0
+        self._landing_pad_lost_time_SP = 2.5
 
         # ---- State 4xxx (Beginning Landing Descent) Variables ----
         self._landed_time = None
         self.cutoff = False
-
-        # ---- State 5xxx (Landing Abort) Variables ---- 
 
         # ---- State 6xxx (Landing Confirmed) Variables ---- 
         self._idle_before_RTL_SP = 10.0
@@ -89,12 +85,13 @@ class Orchestrator(Node):
         self._rtl_initiated = False
 
         # ---- CONTROL CLASS INITIALISATIONS ----
+        self._UKF_start = False
         self._UKF_last_tf_stamp = Time().to_msg()
         self._UKF_last_update = self.get_clock().now()
-        self._UKF_timer_rate = 0.01
+        self._UKF_timer_rate = 0.05
         self._UKF_filter = UKF(self._UKF_timer_rate)
 
-        self._control_timer_rate = 0.03
+        self._control_timer_rate = 0.1
         #self._mpc_controller = MPCController()
         self._pid_controller = PIDController(self._control_timer_rate)
 
@@ -371,8 +368,8 @@ class Orchestrator(Node):
         now = self.get_clock().now()
         dt = (now - self._UKF_last_update).nanoseconds * 1e-9
 
-        # Predict UKF step
-        self._UKF_filter.predict(dt)
+        # Predict UKF step (after first measurement)
+        if self._UKF_start: self._UKF_filter.predict(dt)
 
         # Update UKF step
         try:
@@ -404,11 +401,13 @@ class Orchestrator(Node):
             
             self._UKF_last_tf_stamp = tf_msg.header.stamp
 
+            self._UKF_start = True
+
         except Exception:
             pass  # predict-only cycle, no correction this tick
 
         # Always publish current UKF state
-        x = self._UKF_filter.x
+        x = self._UKF_filter.get_predicted_state(0.075) # Lag compensate
 
         self.landing_pad_position = np.array([x[LP_State.PX], x[LP_State.PY], x[LP_State.PZ]])
 
@@ -528,21 +527,32 @@ class Orchestrator(Node):
             now = self.get_clock().now().nanoseconds / 1e9
             self.target_z = 0.2 #land
 
+            # Check we still have the target in view, reset timer if so
+            if self._landing_pad_found:
+                self._landing_pad_lost_time = None
+            else:
+                if self._landing_pad_lost_time is None:
+                    self._landing_pad_lost_time = now
+                else:
+                    if (now - self._landing_pad_lost_time) > self._landing_pad_lost_time_SP:
+                        self._landing_pad_first_seen_time = None
+                        self._landing_pad_lost_time = None
+                        self.get_logger().info("Landing Pad Lost!")
+                        self.controller_state = 2000                
+
             # Check target error is not bad
             err_x = abs(self.landing_pad_position[0] - self.odometry.pose.pose.position.x)
             err_y = abs(self.landing_pad_position[1] - self.odometry.pose.pose.position.y)
 
-            if self.odometry.pose.pose.position.z <= 0.8 and err_x < 0.2 and err_y < 0.2:
+            if self.odometry.pose.pose.position.z <= 0.8 and err_x < 0.3 and err_y < 0.3:
                 self.cutoff = True
                 self._landed_time = now
                 self.get_logger().info("Throttle Cut Engaged")
                 self.controller_state = 6000
-            elif self.odometry.pose.pose.position.z <= 0.6 and (err_x >= 0.2 or err_y >= 0.2):
+            elif self.odometry.pose.pose.position.z <= 0.4 and (err_x >= 0.3 or err_y >= 0.3):
                 self.target_z = 5.0
-                self.get_logger().info("Landing Aborted - Trying Again")
-                self.controller_state = 3000
-
-        # ---- State 5000 (Landing Failed - Try again)
+                self.get_logger().info(f"Landing Aborted - Trying Again Err_x = {err_x}, Err_y = {err_y}")
+                self.controller_state = 3000           
 
         # ---- State 6000 (Landing Success - Idle Until RTL)
         if self.controller_state == 6000:
@@ -550,7 +560,7 @@ class Orchestrator(Node):
             if (now - self._landed_time) > self._idle_before_RTL_SP:
                 self._landing_pad_first_seen_time = None
                 self._landing_pad_lost_time = None
-                self.get_logger().info("Landing Pad Lost!")
+                self.get_logger().info("Idling Done")
                 self.controller_state = 6100
 
         # ---- State 6100 (Initiate RTL)
@@ -558,13 +568,15 @@ class Orchestrator(Node):
             self._initiate_rtl("Landing Complete")
 
         # ---- Run Controller ----
-        if self.controller_state >= 3000 and self.controller_state <= 6000:
-           #msg = self._mpc_controller.compute_control(self)
-           msg = self._pid_controller.update(self)
+        if self.controller_state >= 2000 and self.controller_state < 3000:
+           self._pid_controller.stop(self)
+        elif self.controller_state >= 3000 and self.controller_state <= 6000:
+           #self._mpc_controller.compute_control(self)
+           self._pid_controller.update(self)
 
 
         # ---- Data logging ----
-        lp_pad_true_roll, lp_pad_true_pitch, lp_pad_true_yaw = tf_transformations.euler_from_quaternion([
+        _, _, lp_pad_true_yaw = tf_transformations.euler_from_quaternion([
             self.landing_pad_true_odometry.pose.pose.orientation.x, 
             self.landing_pad_true_odometry.pose.pose.orientation.y, 
             self.landing_pad_true_odometry.pose.pose.orientation.z, 
@@ -638,34 +650,6 @@ class Orchestrator(Node):
             self._csv_file.close()
             self.get_logger().info(f'CSV file closed: {self._csv_filename}')
         super().destroy_node()
-
-# ---- HELPER CLASSES ----
-class LowPassFilter:
-    def __init__(self, cutoff_hz):
-        self.cutoff = cutoff_hz
-        self.prev_values = None
-        self.prev_stamp = None
-
-    def update(self, values, stamp):
-        # Initialise if first time
-        if self.prev_values is None:
-            self.prev_values = values.copy()
-            self.prev_stamp = stamp
-            return values
-
-        dt = (stamp - self.prev_stamp).nanoseconds * 1e-9
-        if dt <= 0.0:
-            return self.prev_values
-
-        tau = 1.0 / (2.0 * np.pi * self.cutoff)
-        alpha = dt / (tau + dt)
-
-        filtered_values = self.prev_values + alpha * (values - self.prev_values)
-
-        self.prev_values = filtered_values.copy()
-        self.prev_stamp = stamp
-        return filtered_values
-
 
 # ---- MAIN ----
 def main(args=None):
