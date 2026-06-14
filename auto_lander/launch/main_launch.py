@@ -44,7 +44,7 @@ def generate_launch_description():
             {'image_source': 'topic'},
             {'show_debug_window': True},
             {'enable_debug_publish': False},
-            {'create_video': True},
+            {'create_video': False},
             {'use_sim_time': True}
         ]
     )

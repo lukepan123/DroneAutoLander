@@ -37,16 +37,6 @@ class PIDController:
 
         self.dt = dt
 
-    def predict_state(self, pos, vel, dt_lag):
-        """ Forward propagate a state estimate by dt_lag seconds to compensate for known UKF pipeline delay.
-
-        :param pos: Target position vector (m)
-        :param vel: Target velocity vector (m/s)
-        :return: Future target position
-        """
-        pos_pred = pos + vel * dt_lag
-        return pos_pred
-
     
     def controller(self, target_altitude, target_yaw, cutoff, quad_pos, quad_roll, quad_pitch, quad_yaw, quad_vel, landing_pad_pos, landing_pad_vel):
         """ PN/PD Controller Logic
@@ -90,8 +80,6 @@ class PIDController:
         # ======================
 
         # Calculate error vectors
-        # delay = 0.05 # 100ms UKF delay
-        # landing_pad_pos = self.predict_state(landing_pad_pos, landing_pad_vel, delay)
         u = quad_pos - landing_pad_pos
         du = quad_vel - landing_pad_vel
 

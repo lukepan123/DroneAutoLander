@@ -374,13 +374,16 @@ class Orchestrator(Node):
         # Update UKF step
         try:
             tf_msg = self._tf_map_landing_pad_buffer.lookup_transform('map', 'landing_pad_link', Time())
-
             stamp_is_new = (
                 tf_msg.header.stamp.sec   != self._UKF_last_tf_stamp.sec or
                 tf_msg.header.stamp.nanosec != self._UKF_last_tf_stamp.nanosec
             )
 
             if stamp_is_new:
+                # ---- Measurement age — how stale is this TF?
+                # meas_age = self.get_clock().now() - Time.from_msg(tf_msg.header.stamp)
+                # self.get_logger().info(f'Measurement age: {meas_age.nanoseconds / 1e6:.1f} ms')
+
                 # Extract pose measurement
                 t = tf_msg.transform.translation
                 q = tf_msg.transform.rotation
@@ -398,16 +401,15 @@ class Orchestrator(Node):
                 ])
 
                 accepted = self._UKF_filter.update(state)
-            
-            self._UKF_last_tf_stamp = tf_msg.header.stamp
 
+            self._UKF_last_tf_stamp = tf_msg.header.stamp
             self._UKF_start = True
 
         except Exception:
             pass  # predict-only cycle, no correction this tick
 
         # Always publish current UKF state
-        x = self._UKF_filter.get_predicted_state(0.075) # Lag compensate
+        x = self._UKF_filter.get_predicted_state(0.075) # Lag compensate (75ms)
 
         self.landing_pad_position = np.array([x[LP_State.PX], x[LP_State.PY], x[LP_State.PZ]])
 

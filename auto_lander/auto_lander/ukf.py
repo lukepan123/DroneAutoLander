@@ -103,9 +103,9 @@ class UKF:
 
     def get_predicted_state(self, dt):
         """
-        Shadow predict — project current mean state forward by one dt
+        Shadow predict — project current mean state forward by dt
         to compensate for UKF pipeline delay. Propagates sigma points
-        to avoid bias from the nonlinear CTRA model.
+        to avoid bias from the nonlinear CTRA model but does NOT update interal UKF state
         """
         X_in  = np.tile(self.x, (self.num_sigma, 1))   # broadcast mean as all sigma points
         X_out = np.zeros_like(X_in)
