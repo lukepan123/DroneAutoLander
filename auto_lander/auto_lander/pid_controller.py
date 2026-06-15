@@ -84,7 +84,7 @@ class PIDController:
         du = quad_vel - landing_pad_vel
 
         # Increase gains as distance to target decreases
-        terminal_gain = 1.0
+        terminal_gain = 0.9
         no_gain_dist = 2.0
 
         u_norm = np.linalg.norm(u)
@@ -148,12 +148,12 @@ class PIDController:
         # Roll φ
         # phi = np.arctan((np.cos(theta) * (self.m*accel[1] + drag_y)) / (self.m*self.g))
         phi = np.arcsin(-(F_x*np.sin(quad_yaw) - F_y*np.cos(quad_yaw))/(thrust))
-        phi = max(-0.35, min(phi, 0.35))
+        phi = max(-0.5, min(phi, 0.5))
 
         # Pitch θ (nose down positive in NED)
         # theta = -np.arctan((self.m*accel[0] + drag_x) / (self.m*self.g))
         theta = np.arcsin(-(F_x*np.cos(quad_yaw) + F_y*np.sin(quad_yaw))/(thrust * np.cos(phi)))
-        theta = max(-0.35, min(theta, 0.35))
+        theta = max(-0.5, min(theta, 0.5))
 
         # ---- Build MAVROS message
         q = quaternion_from_euler(phi, theta, target_yaw)
@@ -194,7 +194,7 @@ class PIDController:
     def stop(self, node):
         msg = self.controller(
             target_altitude=node.target_z,
-            target_yaw=0.0,
+            target_yaw=node.landing_pad_yaw,
             cutoff=node.cutoff,
             quad_pos=np.array([node.odometry.pose.pose.position.x,
                             node.odometry.pose.pose.position.y,

@@ -67,10 +67,10 @@ class Orchestrator(Node):
         # ---- State 2xxx (Searching for Landing Pad) Variables ----
         self._landing_pad_found = False
         self._landing_pad_first_seen_time = None
-        self._landing_pad_visual_time_SP = 0.1
+        self._landing_pad_visual_time_SP = 4.0
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
-        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 10.0
+        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 5.0
         self._landing_pad_lost_time = None
         self._landing_pad_lost_time_SP = 2.5
 
@@ -369,11 +369,12 @@ class Orchestrator(Node):
         dt = (now - self._UKF_last_update).nanoseconds * 1e-9
 
         # Predict UKF step (after first measurement)
-        if self._UKF_start: self._UKF_filter.predict(dt)
+        if self._UKF_start: self._UKF_filter.predict(dt, now.nanoseconds * 1e-9)
 
         # Update UKF step
         try:
             tf_msg = self._tf_map_landing_pad_buffer.lookup_transform('map', 'landing_pad_link', Time())
+            stamp_sec = Time.from_msg(tf_msg.header.stamp).nanoseconds / 1e9
             stamp_is_new = (
                 tf_msg.header.stamp.sec   != self._UKF_last_tf_stamp.sec or
                 tf_msg.header.stamp.nanosec != self._UKF_last_tf_stamp.nanosec
@@ -381,14 +382,14 @@ class Orchestrator(Node):
 
             if stamp_is_new:
                 # ---- Measurement age — how stale is this TF?
-                # meas_age = self.get_clock().now() - Time.from_msg(tf_msg.header.stamp)
+                # meas_age = now - Time.from_msg(tf_msg.header.stamp)
                 # self.get_logger().info(f'Measurement age: {meas_age.nanoseconds / 1e6:.1f} ms')
 
                 # Extract pose measurement
                 t = tf_msg.transform.translation
                 q = tf_msg.transform.rotation
                 roll, pitch, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
-                state = np.array([t.x, t.y, t.z, yaw])
+                measurement = np.array([t.x, t.y, t.z, yaw])
 
                 # Update measurement noise based on drone angular rates
                 cov_adj_x = 2 * (1 + np.sqrt(self.odometry.twist.twist.angular.y**2 + self.odometry.twist.twist.angular.z**2))
@@ -400,7 +401,7 @@ class Orchestrator(Node):
                     0.01 * cov_adj_z
                 ])
 
-                accepted = self._UKF_filter.update(state)
+                accepted = self._UKF_filter.update(z=measurement, measurement_timestamp=stamp_sec)
 
             self._UKF_last_tf_stamp = tf_msg.header.stamp
             self._UKF_start = True
@@ -499,7 +500,7 @@ class Orchestrator(Node):
                 self.get_logger().info(f"Landing Pad found, starting {self._landing_pad_visual_time_SP} sec timer...")
                 self.controller_state = 2100
 
-        # ---- State 2100 (Maintain Landing Pad Visual Lock)
+        # ---- State 2100 (Maintain Landing Pad Visual Lock - Yaw to match target)
         if self.controller_state == 2100:
             now = self.get_clock().now().nanoseconds / 1e9
             if (now - self._landing_pad_first_seen_time) > self._landing_pad_visual_time_SP:

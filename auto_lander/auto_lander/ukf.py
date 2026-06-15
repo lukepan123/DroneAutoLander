@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 import numpy as np
+from collections import deque
 
 from .state_definitions import LP_State, LP_Measurement
 
-
 class UKF:
+    # Define snapshot tuple type
+    _Snapshot = tuple  # (timestamp, UKF state (x), UKF covariances (P), UKF propogated sigma points)
+
     """ Defines the UKF class for the landing platform"""
     def __init__(self,  dt):
         """ Initialise the UKF
         """
 
+        # Nominal running timestep (fall back)
         self.dt = dt
 
         # Timestamp of the last predict/update cycle (seconds, ROS clock).
         # None until the first measurement arrives.
         self.last_update_time: float | None = None
+
         # Dimensions
         self.dim_x = len(LP_State)
         self.dim_z = len(LP_Measurement)
@@ -64,8 +69,12 @@ class UKF:
         self.Wm[0] = self.lambda_ / (self.dim_x + self.lambda_)
         self.Wc[0] = self.lambda_ / (self.dim_x + self.lambda_) + (1 - self.alpha**2 + self.beta)
 
+        # OOSM buffer, ordered from oldest -> newest
+        # Each entry: (timestamp, x, P)
+        self._buffer: deque[UKF._Snapshot] = deque()
 
-    def predict(self, dt):
+
+    def predict(self, dt, timestamp: float):
         """ Do prediction step for UKF.
         """
         # 0) Guarantee P is symmetric positive definite before proceeding, repair if needed
@@ -101,11 +110,15 @@ class UKF:
         self.P = (dX.T * self.Wc) @ dX + self.Q
         self.P = 0.5 * (self.P + self.P.T)
 
+        # Update timestamp and store state in the buffer
+        self.last_update_time = timestamp
+        self._buffer_push(timestamp)
+
+
     def get_predicted_state(self, dt):
         """
         Shadow predict — project current mean state forward by dt
-        to compensate for UKF pipeline delay. Propagates sigma points
-        to avoid bias from the nonlinear CTRA model but does NOT update interal UKF state
+        to compensate for UKF pipeline delay.
         """
         X_in  = np.tile(self.x, (self.num_sigma, 1))   # broadcast mean as all sigma points
         X_out = np.zeros_like(X_in)
@@ -119,7 +132,75 @@ class UKF:
         return x_pred
 
 
-    def update(self, z, mahal_threshold: float = 5.0) -> bool:
+    def update(self, z, measurement_timestamp: float, mahal_threshold: float = 5.0) -> bool:
+        """ Do update step for UKF.
+        :param z: Measurement of new landing pad pose
+        :param measurement_timestamp: True timestamp of the measurement (seconds)
+        :param mahal_threshold: Measurements whose Mahalanobis distance exceeds
+                                this value are rejected as outliers. Returns False
+                                when the measurement is rejected, True otherwise.
+        """
+
+        if (self.last_update_time is not None
+                and measurement_timestamp < self.last_update_time
+                and len(self._buffer) > 0):
+
+            # Iterate forward through the buffer until the t > measurement_timestamp
+            buf_list = list(self._buffer) # Make a copy
+            anchor_idx = None
+            for i, (t, *_) in enumerate(buf_list):
+                if t <= measurement_timestamp:
+                    anchor_idx = i
+                else:
+                    break
+
+            if anchor_idx is None:
+                return False  # OOSM older than entire buffer, skip
+
+            # Save the state of the UKF at this timestamp
+            t_anchor, x_anchor, P_anchor, X_prop_anchor = buf_list[anchor_idx]
+
+            # Collect the future snapshots (i.e. snapshots after the measurement time)
+            future_snapshots = buf_list[anchor_idx + 1:]
+
+            # Save full current state
+            x_now           = self.x.copy()
+            P_now           = self.P.copy()
+            X_prop_now      = self.X_prop.copy()
+            t_now           = self.last_update_time
+
+            # Rewind to anchor
+            self.x, self.P, self.X_prop = x_anchor.copy(), P_anchor.copy(), X_prop_anchor.copy()
+            self.last_update_time = t_anchor
+
+            # Prune the buffer forward of the anchor
+            while self._buffer and self._buffer[-1][0] > t_anchor:
+                self._buffer.pop()
+
+            accepted = self.update_apply(z, mahal_threshold)
+            # If the update failed, bail back to current state
+            if not accepted:
+                self.x               = x_now.copy()
+                self.P               = P_now.copy()
+                self.X_prop          = X_prop_now.copy()
+                self.last_update_time = t_now
+                return False
+
+            # Fast-forward using pre-collected future timestamps
+            prev_t = t_anchor
+            for snap_t, *_ in future_snapshots:
+                dt_step = snap_t - prev_t
+                if dt_step > 1e-6:
+                    self.predict(dt_step, snap_t)
+                prev_t = snap_t
+
+            return True
+
+        else:
+            return self.update_apply(z, mahal_threshold)
+        
+
+    def update_apply(self, z, mahal_threshold: float = 5.0) -> bool:
         """ Do update step for UKF.
 
         :param z: Measurement of new landing pad pose
@@ -127,6 +208,7 @@ class UKF:
                                 this value are rejected as outliers. Returns False
                                 when the measurement is rejected, True otherwise.
         """
+
         # 1) Propagate sigma points through hx
         self._hx_vectorized(self.X_prop, self.Z)
 
@@ -261,6 +343,21 @@ class UKF:
         Z[:, LP_Measurement.PY] = X[:, LP_State.PY]
         Z[:, LP_Measurement.PZ] = X[:, LP_State.PZ]
         Z[:, LP_Measurement.YAW] = self._wrap(X[:, LP_State.YAW])
+
+
+    def _buffer_push(self, timestamp: float):
+        """ Append current (x, P) snapshot and prune entries older than _OOSM_BUFFER_S relative to the newest entry. 
+        
+        :param timestamp: Timestamp to add to buffer
+        """
+        # Save UKF state to buffer
+        self._buffer.append((timestamp, self.x.copy(), self.P.copy(), self.X_prop.copy()))
+ 
+        # Prune stale snapshots from the front
+        OOSM_BUFFER_S = 0.200
+        cutoff = timestamp - OOSM_BUFFER_S
+        while self._buffer and self._buffer[0][0] < cutoff:
+            self._buffer.popleft()
 
 
     def _repair_P(self):
