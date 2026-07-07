@@ -1,23 +1,32 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
+from launch.actions import TimerAction
+
 
 def generate_launch_description():
 
     # ----- Step 1a: Gazebo Camera + Gimbal Bridge -----
     gz_bridge = Node(
-        package='ros_gz_bridge',
-        executable='parameter_bridge',
-        name='gz_bridge',
-        output='screen',
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="gz_bridge",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
         arguments=[
-            '/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/model/LandingVehicle/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry',
-            '/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/joint_state@sensor_msgs/msg/JointState[gz.msgs.Model',
-            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-            '--ros-args',
-            '-r', '/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image:=/camera/image_raw',
-            '-r', '/model/LandingVehicle/odometry:=/landing_pad/odom'
-        ]
+            "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/model/LandingVehicle/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
+            "/model/iris_with_gimbal/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
+            "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/joint_state@sensor_msgs/msg/JointState[gz.msgs.Model",
+            "/cmd_rover_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
+            "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+            "--ros-args",
+            "-r",
+            "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image:=/camera/image_raw",
+            "-r",
+            "/model/LandingVehicle/odometry:=/landing_pad/odom",
+            "-r",
+            "/model/iris_with_gimbal/odometry:=/quadcopter/true_odom",
+        ],
     )
 
     # ----- Create tf frames -----
@@ -36,33 +45,49 @@ def generate_launch_description():
 
     # Run target pose detector node
     tag_pose_detector = Node(
-        package='auto_lander',
-        executable='landing_pad_detector',
-        name='image_node',
-        output='screen',
+        package="auto_lander",
+        executable="landing_pad_detector",
+        name="image_node",
+        output="screen",
+        sigterm_timeout="20",
+        sigkill_timeout="30",
         parameters=[
-            {'image_source': 'topic'},
-            {'show_debug_window': True},
-            {'enable_debug_publish': False},
-            {'create_video': False},
-            {'use_sim_time': True}
-        ]
+            {"image_source": "topic"},
+            {"show_debug_window": True},
+            {"enable_debug_publish": False},
+            {"create_video": False},
+            {"use_sim_time": True},
+        ],
     )
 
     # Run main controller node
     controller = Node(
-        package='auto_lander',
-        executable='controller',
-        name='controller_node',
-        output='screen',
-        parameters=[
-            {'use_sim_time': True}
-        ]
+        package="auto_lander",
+        executable="controller",
+        name="controller_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
     )
 
-    return LaunchDescription([
-        gz_bridge,
-        # base_to_camera_tf_node,
-        tag_pose_detector,
-        controller
-    ])
+    # Run AGV controller node (SITL only)
+    # agv_controller = Node(
+    #     package="auto_lander",
+    #     executable="agv_controller",
+    #     name="agv_controller",
+    #     output="screen",
+    #     parameters=[{"use_sim_time": True}],
+    # )
+    # delayed_agv_controller = TimerAction(
+    #     period=25.0,  # Wait a few secs
+    #     actions=[agv_controller],
+    # )
+
+    return LaunchDescription(
+        [
+            gz_bridge,
+            # base_to_camera_tf_node,
+            tag_pose_detector,
+            controller,
+            # delayed_agv_controller,
+        ]
+    )

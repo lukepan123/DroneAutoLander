@@ -24,7 +24,9 @@ class CameraCalibrate(Node):
 
         # Must match the IR input size you exported (default OpenVINO export is 640)
         self.declare_parameter("imgsz", 256)
-        self.imgsz = int(self.get_parameter("imgsz").get_parameter_value().integer_value)
+        self.imgsz = int(
+            self.get_parameter("imgsz").get_parameter_value().integer_value
+        )
         # ----------------------------------------------------------
 
         self.bridge = CvBridge()
@@ -48,8 +50,12 @@ class CameraCalibrate(Node):
         self.criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
         # Precompute object points (3D coordinates)
-        self.objp = np.zeros((self.CHECKERBOARD[0]*self.CHECKERBOARD[1], 3), np.float32)
-        self.objp[:,:2] = np.mgrid[0:self.CHECKERBOARD[0], 0:self.CHECKERBOARD[1]].T.reshape(-1,2)
+        self.objp = np.zeros(
+            (self.CHECKERBOARD[0] * self.CHECKERBOARD[1], 3), np.float32
+        )
+        self.objp[:, :2] = np.mgrid[
+            0 : self.CHECKERBOARD[0], 0 : self.CHECKERBOARD[1]
+        ].T.reshape(-1, 2)
         self.objp *= self.square_size
 
         # Image source
@@ -64,18 +70,22 @@ class CameraCalibrate(Node):
             # Try different backends for camera access
             self.cap = None
             backends_to_try = [cv2.CAP_V4L2, cv2.CAP_ANY]
-            
+
             for backend in backends_to_try:
                 try:
                     self.cap = cv2.VideoCapture(self.webcam_index, backend)
                     if self.cap.isOpened():
-                        self.get_logger().info(f"Successfully opened camera {self.webcam_index} with backend {backend}")
+                        self.get_logger().info(
+                            f"Successfully opened camera {self.webcam_index} with backend {backend}"
+                        )
                         break
                     else:
                         self.cap.release()
                         self.cap = None
                 except Exception as e:
-                    self.get_logger().warning(f"Failed to open camera with backend {backend}: {e}")
+                    self.get_logger().warning(
+                        f"Failed to open camera with backend {backend}: {e}"
+                    )
                     if self.cap:
                         self.cap.release()
                         self.cap = None
@@ -90,12 +100,12 @@ class CameraCalibrate(Node):
                 self.cap.set(cv2.CAP_PROP_FPS, 30)
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.imgsz)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.imgsz)
-                
+
                 # Log actual camera properties
                 actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
                 actual_width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
                 actual_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-                
+
                 self.get_logger().info(
                     f"ArUCoImageNode started in WEBCAM mode. Camera properties: "
                     f"FPS={actual_fps}, Width={actual_width}, Height={actual_height}"
@@ -131,21 +141,25 @@ class CameraCalibrate(Node):
         ret, corners = cv2.findChessboardCorners(
             gray_frame,
             self.CHECKERBOARD,
-            cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_FAST_CHECK + cv2.CALIB_CB_NORMALIZE_IMAGE
+            cv2.CALIB_CB_ADAPTIVE_THRESH
+            + cv2.CALIB_CB_FAST_CHECK
+            + cv2.CALIB_CB_NORMALIZE_IMAGE,
         )
 
         if ret:
-            corners2 = cv2.cornerSubPix(gray_frame, corners, (11,11), (-1,-1), self.criteria)
+            corners2 = cv2.cornerSubPix(
+                gray_frame, corners, (11, 11), (-1, -1), self.criteria
+            )
 
-            self.objpoints.append(self.objp)       # same 3D points for all frames
-            self.imgpoints.append(corners2)        # detected 2D corners
+            self.objpoints.append(self.objp)  # same 3D points for all frames
+            self.imgpoints.append(corners2)  # detected 2D corners
 
             self.frames_collected += 1
             print(f"Collected frame {self.frames_collected}/{self.num_frames}")
 
             # Draw corners for visualization
             cv2.drawChessboardCorners(frame, self.CHECKERBOARD, corners2, ret)
-            cv2.imshow('Calibration Camera', frame)
+            cv2.imshow("Calibration Camera", frame)
             cv2.waitKey(5000)
 
         # Once enough frames collected, calibrate
@@ -163,17 +177,17 @@ class CameraCalibrate(Node):
             self.frames_collected = 0
             self.objpoints = []
             self.imgpoints = []
- 
+
 
 def main(args=None):
     rclpy.init(args=args)
     node = CameraCalibrate()
-    
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         node.get_logger().info("Shutting down gracefully...")
-    finally: 
+    finally:
         node.destroy_node()
         cv2.destroyAllWindows()
         rclpy.shutdown()
