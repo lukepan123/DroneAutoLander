@@ -29,7 +29,7 @@ class PIDController:
         self.m = 1.98
         self.max_thrust = 46.0
         self.g = 9.81
-        self.cD = 0.0
+        self.cD = -0.002
 
         # Initialise variables
         self.lam = self.lam_0

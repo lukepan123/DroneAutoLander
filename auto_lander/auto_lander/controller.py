@@ -46,7 +46,10 @@ class Orchestrator(Node):
 
         self.fcu_state = State()
         self.odometry = Odometry()
-        self.quad_vel = [0, 0, 0]
+        self.quad_vel = np.zeros(3)
+        self.prev_quad_vel = np.zeros(3)
+        self.prev_quad_vel_stamp = 0
+        self.quad_acc = np.zeros(3)
         self.true_odometry = Odometry()
         self.meas_age = 0.0
         self.roll = 0.0
@@ -81,7 +84,7 @@ class Orchestrator(Node):
         self._landing_pad_visual_time_SP = 4.0
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
-        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 40.0
+        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 540.0
         self._landing_pad_lost_time = None
         self._landing_pad_lost_time_SP = 2.5
 
@@ -137,8 +140,8 @@ class Orchestrator(Node):
         )
         self._twist_sub = self.create_subscription(
             TwistStamped,
-            "/mavros/local_position/velocity_local",
-            self._twist_callback,
+            "/mavros/local_position/velocity_local", #TODO: Check on real drone if local
+            self._vel_accel_callback,
             _odom_qos,
         )
         self._true_odometry_sub = self.create_subscription(
@@ -315,6 +318,14 @@ class Orchestrator(Node):
             [q.x, q.y, q.z, q.w]
         )
 
+        self.quad_vel = np.array(
+            [
+                self.odometry.twist.twist.linear.x,
+                self.odometry.twist.twist.linear.y,
+                self.odometry.twist.twist.linear.z,
+            ]
+        )
+
         if (
             self._armed_confirmed
             and not self._tko_reached
@@ -326,19 +337,20 @@ class Orchestrator(Node):
                 f"Takeoff complete at {alt:.2f} m - Starting {self._max_runtime}s safety timer"
             )
 
-    def _twist_callback(self, msg: TwistStamped):
-        """Obtain FCU angular rates."""
+    def _vel_accel_callback(self, msg: TwistStamped):
+        """Obtain FCU linear and angular velocities rates and derive accelerations."""
         self.odometry.twist.twist.angular.x = msg.twist.angular.x
         self.odometry.twist.twist.angular.y = msg.twist.angular.y
         self.odometry.twist.twist.angular.z = msg.twist.angular.z
 
-        self.quad_vel = np.array(
-            [
-                self.odometry.twist.twist.linear.x,
-                self.odometry.twist.twist.linear.y,
-                self.odometry.twist.twist.linear.z,
-            ]
-        )
+        # Derive local accelerations based on quadcopter velocity and message timestamps
+        curr_stamp = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+        dt = curr_stamp - self.prev_quad_vel_stamp
+        if dt > 0:
+            self.quad_accel = (self.quad_vel - self.prev_quad_vel)/dt
+
+        self.prev_quad_vel = self.quad_vel.copy()
+        self.prev_quad_vel_stamp = curr_stamp
 
     def _true_odometry_callback(self, msg: Odometry):
         """SITL ONLY: Pass true (ground truth) odometry of the quad itself for data logging."""
@@ -479,7 +491,7 @@ class Orchestrator(Node):
         # Predict UKF step (after first measurement)
         if self._UKF_start:
             if self._UKF_start:
-                self._UKF_filter.predict(self.quad_vel, dt, now.nanoseconds * 1e-9)
+                self._UKF_filter.predict(self.quad_vel, self.quad_accel, dt, now.nanoseconds * 1e-9)
 
         # ---- Grab per-state covariance diagnostics every tick ----
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
@@ -737,16 +749,16 @@ class Orchestrator(Node):
             err_y = abs(self.landing_pad_relative_position[1])
 
             if (
-                self.odometry.pose.pose.position.z <= 0.8
-                and err_x < 0.3
-                and err_y < 0.3
+                self.odometry.pose.pose.position.z <= 0.6
+                and err_x < 0.4
+                and err_y < 0.4
             ):
                 self.cutoff = True
                 self._landed_time = now
                 self.get_logger().info("Throttle Cut Engaged")
                 self.controller_state = 6000
-            elif self.odometry.pose.pose.position.z <= 0.4 and (
-                err_x >= 0.3 or err_y >= 0.3
+            elif self.odometry.pose.pose.position.z <= 0.6 and (
+                err_x >= 0.4 or err_y >= 0.4
             ):
                 self.target_z = 5.0
                 self.get_logger().info(

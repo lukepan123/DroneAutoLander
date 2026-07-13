@@ -6,11 +6,16 @@ from datetime import datetime
 
 import cv2
 import numpy as np
+import numpy.typing as npt
 import tf2_ros
 import rclpy
 import tf_transformations
+import bisect
+
+from pupil_apriltags import Detector as AprilTagDetector
 
 from cv_bridge import CvBridge
+from collections import deque
 from dataclasses import dataclass
 from dataclasses import field
 from rclpy.node import Node
@@ -23,11 +28,12 @@ from std_msgs.msg import Bool
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
 from mavros_msgs.srv import CommandLong
+from typing import cast
 
 
 @dataclass
 class TagDefinition:
-    """Defines the ArUCo tag definition."""
+    """Defines an AprilTag definition (tag size and position on the landing pad)."""
 
     size: float
     position: tuple[float, float, float]
@@ -165,10 +171,11 @@ class VisionPerception(Node):
         self._servo_response_delay = 0.025
 
         # ---- TAG PARAMETERS ----
+        # IDs must be valid tag36h11 IDs (0-586).
         self._tags = {
-            35: TagDefinition(size=0.541, position=(0.0, 0.0000, 0.0)),
-            27: TagDefinition(size=0.081, position=(0.0, -0.3700, 0.0)),
-            0: TagDefinition(size=0.081, position=(0.0, 0.3700, 0.0)),
+            1: TagDefinition(size=0.481, position=(0.0, -0.0812, 0.0)),
+            2: TagDefinition(size=0.072, position=(0.0, -0.4232, 0.0)),
+            3: TagDefinition(size=0.072, position=(0.0,  0.2608, 0.0)),
         }
 
         # ---- LATEST FRAME STORAGE ----
@@ -186,7 +193,7 @@ class VisionPerception(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1,
+            depth=10,
         )
         self._quad_odometry_sub = self.create_subscription(
             Odometry,
@@ -195,6 +202,8 @@ class VisionPerception(Node):
             _quad_odom_qos,
         )
         self.quad_odometry = Odometry()
+        self.quad_odom_buffer: deque[tuple[float, list[float]]] = deque(maxlen=400)
+        self.quad_odom_buffer_window_s = 1.0  # keep enough history to always bracket the image stamp
 
         # ---- PUBLISHERS ----
         self._bridge = CvBridge()
@@ -209,20 +218,27 @@ class VisionPerception(Node):
         # ---- TF2 ----
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
-        # ---- OPENCV ----
-        self._aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
-        self._aruco_params = cv2.aruco.DetectorParameters()
-        self._aruco_params.adaptiveThreshWinSizeMin = 3
-        self._aruco_params.adaptiveThreshWinSizeMax = (
-            200  # default is 23 — increase this significantly
+        # ---- APRILTAG DETECTOR (pupil_apriltags — reference AprilTag3 C library) ----
+        # tag36h11, valid IDs 0-586. This is the reference decoder rather than OpenCV's
+        # reimplementation of it — generally more robust at range/oblique angles, at a
+        # real CPU cost. Tuned here for maximum accuracy, not speed:
+        #   - quad_decimate=1.0 runs quad detection at full resolution (the pupil_apriltags
+        #     default is 2.0, i.e. half-resolution — make sure this stays at 1.0).
+        #   - quad_sigma=0.0 applies no pre-blur; raise toward ~0.8 only if the feed is noisy.
+        #   - refine_edges=1 does a final least-squares edge refinement pass.
+        #   - decode_sharpening=0.25 (library default) helps marginal/blurry decodes; try
+        #     raising it if you're seeing missed detections on tags that are otherwise
+        #     clearly visible, at some risk of false decodes.
+        # nthreads is unrelated to accuracy — set to however many cores you can spare.
+        self.detector = AprilTagDetector(
+            families="tag36h11",
+            nthreads=4,
+            quad_decimate=1.0,
+            quad_sigma=0.0,
+            refine_edges=1,
+            decode_sharpening=0.25,
+            debug=0,
         )
-        self._aruco_params.adaptiveThreshWinSizeStep = 10
-        self._aruco_params.minMarkerPerimeterRate = (
-            0.01  # default 0.03 — allow smaller apparent perimeter
-        )
-        self._aruco_params.maxMarkerPerimeterRate = 4.0  # default 4.0 — already fine
-        self._aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        self.detector = cv2.aruco.ArucoDetector(self._aruco_dict, self._aruco_params)
 
         # ---- INITIALISATION ----
         self.frame_count = 0
@@ -266,7 +282,7 @@ class VisionPerception(Node):
                 Image, "/camera/image_raw", self._image_store_callback, _img_qos
             )
             self.get_logger().info(
-                "ArUCoImageNode started in TOPIC mode, waiting for MAVROS altitude and image topic..."
+                "AprilTag (tag36h11) detection node started in TOPIC mode, waiting for MAVROS altitude and image topic..."
             )
         else:
             # Open webcam
@@ -307,7 +323,7 @@ class VisionPerception(Node):
                 actual_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
                 self.get_logger().info(
-                    f"ArUCoImageNode started in WEBCAM mode. Camera properties: "
+                    f"AprilTag (tag36h11) detection node started in WEBCAM mode. Camera properties: "
                     f"FPS={actual_fps}, Width={actual_width}, Height={actual_height}"
                 )
 
@@ -346,9 +362,57 @@ class VisionPerception(Node):
         self._latest_msg = msg
 
     def _quad_odometry_callback(self, msg: Odometry):
-        """Obtain FCU Odometry
+        """Obtain FCU Odometry, buffering stamped attitude for time-correct lookups."""
+        self.quad_odometry = msg  # keep for anything that just wants "latest"
+
+        t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        q = [
+            msg.pose.pose.orientation.x,
+            msg.pose.pose.orientation.y,
+            msg.pose.pose.orientation.z,
+            msg.pose.pose.orientation.w,
+        ]
+        self.quad_odom_buffer.append((t, q))
+
+        cutoff = t - self.quad_odom_buffer_window_s
+        while self.quad_odom_buffer and self.quad_odom_buffer[0][0] < cutoff:
+            self.quad_odom_buffer.popleft()
+
+    def _get_orientation_at(self, stamp) -> list[float] | None:
+        """Interpolate the quad's orientation to a specific timestamp via SLERP.
+
+        :param stamp: builtin_interfaces/Time, e.g. the image's header.stamp
+        :return: [x, y, z, w] quaternion at that instant, or None if the buffer is empty
         """
-        self.quad_odometry = msg
+        if not self.quad_odom_buffer:
+            return None
+
+        t_query = stamp.sec + stamp.nanosec * 1e-9
+        times = [t for t, _ in self.quad_odom_buffer]
+
+        if t_query <= times[0]:
+            self.get_logger().warn(
+                "Image older than odometry buffer start — clamping to oldest sample",
+                throttle_duration_sec=2.0,
+            )
+            return self.quad_odom_buffer[0][1]
+        if t_query >= times[-1]:
+            self.get_logger().warn(
+                "Image newer than odometry buffer end — clamping to newest sample",
+                throttle_duration_sec=2.0,
+            )
+            return self.quad_odom_buffer[-1][1]
+
+        idx = bisect.bisect_right(times, t_query)
+        t0, q0 = self.quad_odom_buffer[idx - 1]
+        t1, q1 = self.quad_odom_buffer[idx]
+
+        if t1 <= t0:
+            return q0
+
+        fraction = (t_query - t0) / (t1 - t0)
+        slerp_result = cast(npt.NDArray[np.floating], tf_transformations.quaternion_slerp(q0, q1, fraction))
+        return list(slerp_result)
 
     # ---- PROCESSING TIMER ----
     def _process_timer_callback(self):
@@ -370,19 +434,17 @@ class VisionPerception(Node):
 
     # ---- CORE PROCESSING ----
     def _process_frame(self, msg):
-        """Process an image message: detect ArUco tags, estimate pose, broadcast TF.
+        """Process an image message: detect AprilTags, estimate pose, broadcast TF.
 
         :param msg: ROS Image message to process
         """
         frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         stamp = msg.header.stamp
 
-        q = [
-            self.quad_odometry.pose.pose.orientation.x,
-            self.quad_odometry.pose.pose.orientation.y,
-            self.quad_odometry.pose.pose.orientation.z,
-            self.quad_odometry.pose.pose.orientation.w,
-        ]
+        q = self._get_orientation_at(stamp)
+        if q is None:
+            self.get_logger().warn("No odometry buffered yet — skipping frame", throttle_duration_sec=1.0)
+            return
 
         # Ensure inference size matches IR (handles topic frames of any size)
         if frame.shape[0] != self._image_height or frame.shape[1] != self._image_width:
@@ -392,31 +454,27 @@ class VisionPerception(Node):
                 interpolation=cv2.INTER_LINEAR,
             )
 
-        # Inference (ArUCo detection via OpenCV)
+        # Inference (AprilTag tag36h11 detection via pupil_apriltags)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = self.detector.detectMarkers(gray_frame)
+        detections = self.detector.detect(gray_frame)
 
         # Filter to only recognised tag IDs
-        valid_indices = []
-        if ids is not None:
-            valid_indices = [
-                i
-                for i, tag_id_arr in enumerate(ids)
-                if int(tag_id_arr[0]) in self._tags
-            ]
+        valid_detections = [d for d in detections if d.tag_id in self._tags]
 
-        landing_pad_found = len(valid_indices) > 0
+        landing_pad_found = len(valid_detections) > 0
         self._landing_pad_found_publisher.publish(Bool(data=landing_pad_found))
 
         if landing_pad_found:
-            # Select the largest visible tag
-            idx = max(
-                valid_indices,
-                key=lambda i: cv2.contourArea(corners[i][0].astype(np.float32)),
+            # Select the largest visible tag by apparent (pixel) area
+            best = max(
+                valid_detections,
+                key=lambda d: cv2.contourArea(d.corners.astype(np.float32)),
             )
-            tag_id = int(ids[idx][0])
+            tag_id = best.tag_id
 
-            image_points = corners[idx][0].astype(np.float32)
+            # Reorder pupil_apriltags' corners to match TagDefinition.object_points'
+            # [top-left, top-right, bottom-right, bottom-left] convention
+            image_points = best.corners[[1, 0, 3, 2]].astype(np.float32)
             tag = self._tags[tag_id]
             object_points = tag.object_points
 
@@ -452,9 +510,21 @@ class VisionPerception(Node):
         # Publish gimbal angle regardless of pose update success
         self._gimbal_publisher(self._servo_angle)
 
-        # Show the output image after ArUCo detection (if debug window enabled)
+        # Show the output image after AprilTag detection (if debug window enabled)
         if self.show_debug_window:
-            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+            for d in detections:
+                pts = d.corners.astype(np.int32)
+                colour = (0, 255, 0) if d.tag_id in self._tags else (0, 165, 255)
+                cv2.polylines(frame, [pts], isClosed=True, color=colour, thickness=2)
+                cv2.putText(
+                    frame,
+                    str(d.tag_id),
+                    (int(d.center[0]), int(d.center[1])),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 0, 255),
+                    2,
+                )
             cv2.imshow("Detected Markers", frame)
             cv2.waitKey(1)
 
@@ -604,8 +674,8 @@ class VisionPerception(Node):
         :param stamp:         ROS timestamp
         :param quad_rotation: Quadcopter rotation quaternion
         :param servo_angle:   Current gimbal servo angle (degrees)
-        :param rvec:          ArUco rotation vector (camera→tag)
-        :param tvec:          ArUco translation vector (camera→tag)
+        :param rvec:          AprilTag rotation vector (camera→tag)
+        :param tvec:          AprilTag translation vector (camera→tag)
         :param tag_id:        Detected tag ID (unused here, kept for clarity)
         :param tag_position:  (x, y, z) offset of this tag on the landing pad
         :return:              TransformStamped: base_link → landing_pad_link
@@ -614,7 +684,7 @@ class VisionPerception(Node):
         T_quad_local = tf_transformations.quaternion_matrix(quad_rotation)
 
         # Quad_body -> Cam
-        t_quad_cam = np.array([0.0, 0.0, -0.1249])
+        t_quad_cam = np.array([0.01, -0.02, -0.1249])
         q_quad_cam = tf_transformations.quaternion_from_euler(
             -1.5707963 + np.deg2rad(servo_angle), 0.0, -1.5707963
         )
@@ -628,7 +698,7 @@ class VisionPerception(Node):
         T_cam_tag[:3, 3] = tvec.reshape(3)
 
         # Tag -> landing pad
-        q_tag_pad = tf_transformations.quaternion_from_euler(0.0, 0.0, -1.570796326)
+        q_tag_pad = tf_transformations.quaternion_from_euler(0.0, 0.0, 1.570796326)
         T_tag_pad = tf_transformations.quaternion_matrix(q_tag_pad)
         T_tag_pad[:3, 3] = np.array(tag_position)
 

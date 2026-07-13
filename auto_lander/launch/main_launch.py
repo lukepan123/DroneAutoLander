@@ -70,17 +70,17 @@ def generate_launch_description():
     )
 
     # Run AGV controller node (SITL only)
-    # agv_controller = Node(
-    #     package="auto_lander",
-    #     executable="agv_controller",
-    #     name="agv_controller",
-    #     output="screen",
-    #     parameters=[{"use_sim_time": True}],
-    # )
-    # delayed_agv_controller = TimerAction(
-    #     period=25.0,  # Wait a few secs
-    #     actions=[agv_controller],
-    # )
+    agv_controller = Node(
+        package="auto_lander",
+        executable="agv_controller",
+        name="agv_controller",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+    delayed_agv_controller = TimerAction(
+        period=25.0,  # Wait a few secs
+        actions=[agv_controller],
+    )
 
     return LaunchDescription(
         [
@@ -88,6 +88,6 @@ def generate_launch_description():
             # base_to_camera_tf_node,
             tag_pose_detector,
             controller,
-            # delayed_agv_controller,
+            delayed_agv_controller,
         ]
     )

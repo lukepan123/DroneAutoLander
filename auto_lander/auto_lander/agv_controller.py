@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+import numpy as np
 
 class AGV_Controller(Node):
     def __init__(self):
@@ -11,7 +12,7 @@ class AGV_Controller(Node):
         self.current_speed = 0.0          # m/s
         self.current_angular_speed = 0.0
 
-        self.target_speed = 10.0         # 100 km/h
+        self.target_speed = 30.0         # 100 km/h
         self.acceleration = 1.0           # m/s²
 
         self.dt = 0.05                    # 20 Hz
@@ -21,6 +22,15 @@ class AGV_Controller(Node):
         if self.current_speed < self.target_speed:
             self.current_speed += self.acceleration * self.dt
             self.current_speed = min(self.current_speed, self.target_speed)
+
+        # Add some randomness
+        self.current_angular_speed += np.random.normal(0, 0.005)
+
+        self.current_angular_speed = np.clip(
+            self.current_angular_speed,
+            -0.04,   # max left turn
+             0.04    # max right turn
+        )
 
         msg = Twist()
         msg.linear.x = self.current_speed

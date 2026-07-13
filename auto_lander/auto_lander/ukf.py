@@ -29,7 +29,7 @@ class UKF:
         # UKF scaling parameters (Merwe)
         self.alpha = 0.3
         self.beta = 2.0
-        self.kappa = 0.0
+        self.kappa = -4.0
 
         self.lambda_ = self.alpha**2 * (self.dim_x + self.kappa) - self.dim_x
         self.gamma = np.sqrt(self.dim_x + self.lambda_)
@@ -64,8 +64,8 @@ class UKF:
                 0.005,
                 0.005,
                 0.005,  # px, py, pz
-                0.025,
-                0.050,  # v, a
+                0.050,
+                0.100,  # v, a
                 0.005,
                 0.025,  # yaw, yaw_rate
             ]
@@ -87,7 +87,7 @@ class UKF:
         # Each entry: (timestamp, x, P)
         self._buffer: deque[UKF._snapshot] = deque()
 
-    def predict(self, quad_vel, dt: float, timestamp: float) -> None:
+    def predict(self, quad_vel, quad_accel, dt: float, timestamp: float) -> None:
         """Do prediction step for UKF."""
         # Guarantee P is symmetric positive definite before proceeding, repair if needed
         try:
@@ -109,7 +109,7 @@ class UKF:
             self.X[n + i + 1] = self.x - col
 
         # Propagate through fx
-        self._fx_vectorized(self.X, self.X_prop, quad_vel, dt)
+        self._fx_vectorized(self.X, self.X_prop, quad_vel, quad_accel, dt)
 
         # Predicted mean
         self.x[:] = (self.Wm[:, None] * self.X_prop).sum(axis=0)
@@ -140,7 +140,7 @@ class UKF:
 
         # Update timestamp and store state in the buffer
         self.last_update_time = timestamp
-        self._buffer_push(timestamp, quad_vel)
+        self._buffer_push(timestamp, quad_vel, quad_accel)
 
     def update(
         self, z, measurement_timestamp: float) -> bool:
@@ -167,7 +167,7 @@ class UKF:
                 return False  # OOSM older than entire buffer, skip
 
             # Save the state of the UKF at this timestamp
-            t_anchor, x_anchor, P_anchor, X_prop_anchor, quad_vel_anchor = buf_list[
+            t_anchor, x_anchor, P_anchor, X_prop_anchor, _, _ = buf_list[
                 anchor_idx
             ]
 
@@ -203,10 +203,10 @@ class UKF:
 
             # Fast-forward using pre-collected future timestamps
             prev_t = t_anchor
-            for snap_t, _, _, _, snap_quad_vel in future_snapshots:
+            for snap_t, _, _, _, snap_quad_vel, snap_quad_accel in future_snapshots:
                 dt_step = snap_t - prev_t
                 if dt_step > 1e-6:
-                    self.predict(snap_quad_vel, dt_step, snap_t)
+                    self.predict(snap_quad_vel, snap_quad_accel, dt_step, snap_t)
                 prev_t = snap_t
 
             return True
@@ -218,9 +218,6 @@ class UKF:
         """Do update step for UKF.
 
         :param z: Measurement of new landing pad pose
-        :param mahal_threshold: Measurements whose Mahalanobis distance exceeds
-                                this value are rejected as outliers. Returns False
-                                when the measurement is rejected, True otherwise.
         """
 
         # 1) Propagate sigma points through hx
@@ -305,12 +302,13 @@ class UKF:
             "is_pd": is_pd,
         }
 
-    def _fx_vectorized(self, X, Y, quad_vel, dt):
+    def _fx_vectorized(self, X, Y, quad_vel, quad_accel, dt):
         """Vectorised state model updater.
 
         :param X: Old state vector
         :param Y: New state vector
         :param quad_vel: Quadcopter velocity
+        :param quad_accel: Quadcopter acceleration
         :param dt: UKF timestep
         """
 
@@ -331,9 +329,9 @@ class UKF:
         straight = ~turning
 
         # Account for quadcopter velocity
-        quad_dx = quad_vel[0] * dt
-        quad_dy = quad_vel[1] * dt
-        quad_dz = quad_vel[2] * dt
+        quad_dx = quad_vel[0] * dt + 0.5 * quad_accel[0] * dt**2
+        quad_dy = quad_vel[1] * dt + 0.5 * quad_accel[1] * dt**2
+        quad_dz = quad_vel[2] * dt + 0.5 * quad_accel[2] * dt**2
 
         # Allocate outputs
         px_new = np.empty_like(px)
@@ -396,14 +394,14 @@ class UKF:
         Z[:, LP_Measurement.PZ] = X[:, LP_State.PZ]
         Z[:, LP_Measurement.YAW] = self._wrap(X[:, LP_State.YAW])
 
-    def _buffer_push(self, timestamp: float, quad_vel):
+    def _buffer_push(self, timestamp: float, quad_vel, quad_accel):
         """Append current (x, P) snapshot and prune entries older than _OOSM_BUFFER_S relative to the newest entry.
 
         :param timestamp: Timestamp to add to buffer
         """
         # Save UKF state to buffer
         self._buffer.append(
-            (timestamp, self.x.copy(), self.P.copy(), self.X_prop.copy(), quad_vel)
+            (timestamp, self.x.copy(), self.P.copy(), self.X_prop.copy(), quad_vel, quad_accel)
         )
 
         # Prune stale snapshots from the front
