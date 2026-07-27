@@ -3,7 +3,20 @@
 ## **Resources**
 https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Colcon-Tutorial.html
 
-## Running
+## Running IRL
+**General Notes**
+
+Before running in real-world, be sure to check the follow parameters are set up correctly:
+1. Check the _compose_base_to_landing_pad frame transforms match that of the real world quadcopter setup, this includes both translation and rotation of the camera.
+2. Check the AprilTag definitions, locations, and sizing match
+3. Check the gains on the gimbal servo are ok/suitable
+4. Adjust the measurement noise (R) based on quality of image, it will likely be worse than the simulation so it is likely that R will need to go up
+5. Disable sim_time usage and any ground_truth diagnostics in main_launch.py
+6. Disable gz_bridge and agv_controller from main_launch.py
+7. Switch camera to webcam mode (need to check if this works)
+8. Ensure that mavlink is outputting mavros messages at greater than 20Hz - if less, the quad will be very unstable!!
+
+## Running in Simulator
 **General Notes**
 
 Each application will need to be run in separate terminal windows.
