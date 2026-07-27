@@ -1,6 +1,15 @@
 from enum import IntEnum
 
 
+class QUAD_State(IntEnum):
+    """State vector for the quadcopter"""
+
+    X = 0
+    Y = 1
+    Z = 2
+    YAW = 3
+    
+
 class LP_State(IntEnum):
     """State vector for the landing platform."""
 

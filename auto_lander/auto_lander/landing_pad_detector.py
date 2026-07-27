@@ -1,9 +1,6 @@
-#!/usr/bin/env python3
 import os
 import sys
 import signal
-from datetime import datetime
-
 import cv2
 import numpy as np
 import numpy.typing as npt
@@ -11,8 +8,6 @@ import tf2_ros
 import rclpy
 import tf_transformations
 import bisect
-
-from pupil_apriltags import Detector as AprilTagDetector
 
 from cv_bridge import CvBridge
 from collections import deque
@@ -26,14 +21,35 @@ from rclpy.qos import DurabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Vector3Stamped
 from geometry_msgs.msg import TransformStamped
 from mavros_msgs.srv import CommandLong
+from pupil_apriltags import Detector as AprilTagDetector
+from datetime import datetime
 from typing import cast
+
+""" Landing Pad Detection Node handles all high level processing of the camera feed and 
+    produces a transformation from the quadcopter to the landing pad for the controller 
+    to utilise.
+"""
+
+def _get_workspace_root() -> str | None:
+    """ Find the workspace root by looking for colcon workspace structure. """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    while current_dir != "/":
+        if (
+            os.path.exists(os.path.join(current_dir, "src"))
+            and os.path.exists(os.path.join(current_dir, "build"))
+            and os.path.exists(os.path.join(current_dir, "install"))
+        ):
+            return current_dir
+        current_dir = os.path.dirname(current_dir)
+    return None
 
 
 @dataclass
 class TagDefinition:
-    """Defines an AprilTag definition (tag size and position on the landing pad)."""
+    """ Defines an AprilTag definition (tag size and position on the landing pad)."""
 
     size: float
     position: tuple[float, float, float]
@@ -54,13 +70,21 @@ class TagDefinition:
 
 
 class VisionPerception(Node):
-    """Defines the vision perception node"""
+    """ Defines the vision perception node.
+    """
 
-    def __init__(self):
-        """Initialise the vision perception node"""
+    def __init__(self) -> None:
+        """ Initialise the vision perception node
+        """
+
         super().__init__("landing_pad_detection_node")
+        # ---- NODE PARAMETERS ----
+        # If in sim, enable logging and certain diagnostics
+        self.declare_parameter("diagnostics_enabled", True)
+        self.diagnostics_enabled = (
+            self.get_parameter("diagnostics_enabled").get_parameter_value().bool_value
+        )
 
-        # ---- PARAMETERS ----
         # Publish the image topic from the camera after processing
         self.declare_parameter("enable_debug_publish", False)
         self.enable_debug_publish = (
@@ -157,9 +181,13 @@ class VisionPerception(Node):
         self._dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
 
         # ---- GIMBAL CONTROLLER PARAMETERS ----
-        self._gimbal_Kp = 0.010
-        self._servo_angle = -90.0
+        self._gimbal_Kp = 0.03                # now deg output per deg error
+        self._gimbal_Kd = 0.005
+        self._gimbal_prev_error = 0.0
+        self._gimbal_max_slew_deg_s = 60.0
+        self._gimbal_last_cmd_time = None
 
+        self._servo_angle = -90.0
         self._gimbal_servo_ID = 10
 
         self._servo_min_angle = -135.0
@@ -168,27 +196,26 @@ class VisionPerception(Node):
         self._servo_pwm_min = 1100
         self._servo_pwm_max = 1900
 
-        self._servo_response_delay = 0.025
-
-        # ---- TAG PARAMETERS ----
+        # ---- APRILTAG PARAMETERS ----
         # IDs must be valid tag36h11 IDs (0-586).
+        SPACING = 0.341
+        MAIN = -0.0912
         self._tags = {
-            1: TagDefinition(size=0.481, position=(0.0, -0.0812, 0.0)),
-            2: TagDefinition(size=0.072, position=(0.0, -0.4232, 0.0)),
-            3: TagDefinition(size=0.072, position=(0.0,  0.2608, 0.0)),
+            1: TagDefinition(size=0.481, position=(0.0, MAIN, 0.0)),
+            2: TagDefinition(size=0.072, position=(0.0, MAIN + SPACING, 0.0)),
+            3: TagDefinition(size=0.072, position=(0.0, MAIN - SPACING, 0.0)),
         }
 
-        # ---- LATEST FRAME STORAGE ----
-        # Decouples reception from processing — always process the most recent frame
-        self._latest_msg = None
-
-        # ---- SUBSCRIPTIONS ----
-        _img_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,  # drop stale frames rather than queuing
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
+        self.detector = AprilTagDetector(
+            families="tag36h11",
+            quad_decimate=1.0,
+            quad_sigma=0.0,
+            refine_edges=1,
+            decode_sharpening=0.75,
+            debug=0,
         )
 
+        # ---- SUBSCRIPTIONS ----
         _quad_odom_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -202,8 +229,10 @@ class VisionPerception(Node):
             _quad_odom_qos,
         )
         self.quad_odometry = Odometry()
+
+        # Create odometry buffer for transformations in the past
         self.quad_odom_buffer: deque[tuple[float, list[float]]] = deque(maxlen=400)
-        self.quad_odom_buffer_window_s = 1.0  # keep enough history to always bracket the image stamp
+        self.quad_odom_buffer_window_s = 1.0  # sec, keep history to bracket image stamp
 
         # ---- PUBLISHERS ----
         self._bridge = CvBridge()
@@ -218,57 +247,17 @@ class VisionPerception(Node):
         # ---- TF2 ----
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
-        # ---- APRILTAG DETECTOR (pupil_apriltags — reference AprilTag3 C library) ----
-        # tag36h11, valid IDs 0-586. This is the reference decoder rather than OpenCV's
-        # reimplementation of it — generally more robust at range/oblique angles, at a
-        # real CPU cost. Tuned here for maximum accuracy, not speed:
-        #   - quad_decimate=1.0 runs quad detection at full resolution (the pupil_apriltags
-        #     default is 2.0, i.e. half-resolution — make sure this stays at 1.0).
-        #   - quad_sigma=0.0 applies no pre-blur; raise toward ~0.8 only if the feed is noisy.
-        #   - refine_edges=1 does a final least-squares edge refinement pass.
-        #   - decode_sharpening=0.25 (library default) helps marginal/blurry decodes; try
-        #     raising it if you're seeing missed detections on tags that are otherwise
-        #     clearly visible, at some risk of false decodes.
-        # nthreads is unrelated to accuracy — set to however many cores you can spare.
-        self.detector = AprilTagDetector(
-            families="tag36h11",
-            nthreads=4,
-            quad_decimate=1.0,
-            quad_sigma=0.0,
-            refine_edges=1,
-            decode_sharpening=0.25,
-            debug=0,
+        # ---- DIAGNOSTICS AND LOGGING ----
+        self._pipeline_timing_publisher = self.create_publisher(
+            Vector3Stamped, "/landing_pad/pipeline_timing", 10
         )
 
         # ---- INITIALISATION ----
-        self.frame_count = 0
-        self.saved_frames = []
+        self._frame_count = 0
+        self._saved_frames = []
 
         if self.save_frames or self.create_video:
-            # Create output directory with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            if self.output_dir:
-                self.frames_dir = os.path.join(self.output_dir, f"frames_{timestamp}")
-            else:
-                # Use workspace root or current directory
-                workspace_root = get_workspace_root()
-                base_dir = workspace_root if workspace_root else os.getcwd()
-                self.frames_dir = os.path.join(base_dir, f"frames_{timestamp}")
-
-            os.makedirs(self.frames_dir, exist_ok=True)
-            self.get_logger().info(
-                f"Frame saving ENABLED - Directory: {self.frames_dir}"
-            )
-            self.get_logger().info(
-                f"Video creation settings - save_frames: {self.save_frames}, create_video: {self.create_video}, fps: {self.video_fps}"
-            )
-
-            # Video output filename
-            self.video_filename = os.path.join(
-                os.path.dirname(self.frames_dir),
-                f"yolo_detection_video_{timestamp}.mp4",
-            )
-            self.get_logger().info(f"Video will be saved as: {self.video_filename}")
+            self._start_video_creation()
         else:
             self.get_logger().info("Frame saving DISABLED - no video will be created")
 
@@ -276,6 +265,16 @@ class VisionPerception(Node):
             cv2.namedWindow("Detected Markers", cv2.WINDOW_AUTOSIZE)
 
         # ---- IMAGE SOURCE SETUP ----
+        self._img_msg = None
+
+        # Drop old frames instead of queuing
+        _img_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,  
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+
+        # Create subscription based on image source
         if self.image_source == "topic":
             # Subscribe and store latest frame — processing happens in the timer
             self.image_subscription = self.create_subscription(
@@ -328,21 +327,26 @@ class VisionPerception(Node):
                 )
 
         # ---- PROCESSING TIMER ----
-        # Single timer drives processing for both topic and webcam modes
+        # Callback which does the actual vision processing
         self._process_timer = self.create_timer(
             1.0 / self._processing_rate, self._process_timer_callback
         )
 
     # ---- RECEPTION CALLBACKS ----
-    def _image_store_callback(self, msg):
-        """Store the latest incoming image message — no processing here.
+    def _image_store_callback(self, msg) -> None:
+        """ Store the latest incoming image message.
 
         :param msg: Incoming Image message from the camera topic
         """
-        self._latest_msg = msg
 
-    def _webcam_store_callback(self):
-        """Read one frame from the webcam and store it as a ROS Image message."""
+        self._img_msg = msg
+        self._img_received_time = self.get_clock().now()
+
+
+    def _webcam_store_callback(self) -> None:
+        """ Read one frame from the webcam and store it as a ROS Image message.
+        """
+
         if not (hasattr(self, "cap") and self.cap is not None and self.cap.isOpened()):
             self.get_logger().warning("Webcam not opened.")
             return
@@ -359,12 +363,20 @@ class VisionPerception(Node):
         )
         msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
         msg.header.stamp = self.get_clock().now().to_msg()
-        self._latest_msg = msg
+        self._img_msg = msg
+        self._img_received_time = self.get_clock().now()
 
-    def _quad_odometry_callback(self, msg: Odometry):
-        """Obtain FCU Odometry, buffering stamped attitude for time-correct lookups."""
-        self.quad_odometry = msg  # keep for anything that just wants "latest"
 
+    def _quad_odometry_callback(self, msg: Odometry) -> None:
+        """ Obtain FCU Odometry, buffering stamped attitude for time-correct lookups.
+        
+        :param msg: Incoming Image message from the odometry topic
+        """
+
+        # Keep for anything that just wants "latest"
+        self.quad_odometry = msg
+
+        # Otherwise push and timestamp into odometry buffer
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         q = [
             msg.pose.pose.orientation.x,
@@ -378,72 +390,76 @@ class VisionPerception(Node):
         while self.quad_odom_buffer and self.quad_odom_buffer[0][0] < cutoff:
             self.quad_odom_buffer.popleft()
 
+
     def _get_orientation_at(self, stamp) -> list[float] | None:
-        """Interpolate the quad's orientation to a specific timestamp via SLERP.
+        """ Interpolate the quad's orientation to a specific timestamp via SLERP.
 
         :param stamp: builtin_interfaces/Time, e.g. the image's header.stamp
         :return: [x, y, z, w] quaternion at that instant, or None if the buffer is empty
         """
+
+        # If the buffer is empty, skip
         if not self.quad_odom_buffer:
             return None
 
         t_query = stamp.sec + stamp.nanosec * 1e-9
         times = [t for t, _ in self.quad_odom_buffer]
 
+        # Clamp to oldest sample if time older than buffer
         if t_query <= times[0]:
-            self.get_logger().warn(
-                "Image older than odometry buffer start — clamping to oldest sample",
-                throttle_duration_sec=2.0,
-            )
             return self.quad_odom_buffer[0][1]
+        
+        # Clamp to newest sample if time newer than buffer
         if t_query >= times[-1]:
-            self.get_logger().warn(
-                "Image newer than odometry buffer end — clamping to newest sample",
-                throttle_duration_sec=2.0,
-            )
             return self.quad_odom_buffer[-1][1]
 
         idx = bisect.bisect_right(times, t_query)
         t0, q0 = self.quad_odom_buffer[idx - 1]
         t1, q1 = self.quad_odom_buffer[idx]
 
-        if t1 <= t0:
-            return q0
+        if t1 <= t0: return q0
 
         fraction = (t_query - t0) / (t1 - t0)
-        slerp_result = cast(npt.NDArray[np.floating], tf_transformations.quaternion_slerp(q0, q1, fraction))
+        slerp_result = cast(
+            npt.NDArray[np.floating], 
+            tf_transformations.quaternion_slerp(q0, q1, fraction)
+        )
         return list(slerp_result)
 
-    # ---- PROCESSING TIMER ----
-    def _process_timer_callback(self):
-        """Fires at the configured processing rate.
 
-        In webcam mode: grabs a fresh frame first, then processes it.
-        In topic mode:  processes the most recent stored frame (if any).
+    def _process_timer_callback(self) -> None:
+        """ Fires at the configured processing rate - calls the vision processing 
+            function.
+            - In webcam mode: grabs a fresh frame first, then processes it.
+            - In topic mode:  processes the most recent stored frame (if any).
         """
+
         if self.image_source != "topic":
-            # Grab a fresh webcam frame into _latest_msg
+            # Grab a fresh webcam frame into _img_msg
             self._webcam_store_callback()
 
-        if self._latest_msg is None:
+        if self._img_msg is None:
             return  # nothing received yet
 
-        msg = self._latest_msg
-        self._latest_msg = None  # consume it so we don't reprocess
+        msg = self._img_msg
+        self._img_msg = None  # consume it so we don't reprocess
         self._process_frame(msg)
 
-    # ---- CORE PROCESSING ----
-    def _process_frame(self, msg):
-        """Process an image message: detect AprilTags, estimate pose, broadcast TF.
+
+    def _process_frame(self, msg) -> None:
+        """ Process an image message: detect AprilTags, estimate pose, broadcast TF.
 
         :param msg: ROS Image message to process
         """
+
+        # Convert msg to an image and save its timestamp
         frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         stamp = msg.header.stamp
 
         q = self._get_orientation_at(stamp)
         if q is None:
-            self.get_logger().warn("No odometry buffered yet — skipping frame", throttle_duration_sec=1.0)
+            self.get_logger().warn("No odometry buffered yet — skipping frame", 
+                                   throttle_duration_sec=1.0)
             return
 
         # Ensure inference size matches IR (handles topic frames of any size)
@@ -456,10 +472,10 @@ class VisionPerception(Node):
 
         # Inference (AprilTag tag36h11 detection via pupil_apriltags)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        detections = self.detector.detect(gray_frame)
+        detections = self.detector.detect(gray_frame) # type: ignore
 
         # Filter to only recognised tag IDs
-        valid_detections = [d for d in detections if d.tag_id in self._tags]
+        valid_detections = [d for d in detections if d.tag_id in self._tags] # type: ignore
 
         landing_pad_found = len(valid_detections) > 0
         self._landing_pad_found_publisher.publish(Bool(data=landing_pad_found))
@@ -502,17 +518,27 @@ class VisionPerception(Node):
                     )
 
                 # Broadcast landing_pad position relative to camera frame
-                tf_base_to_pad = self.compose_base_to_landing_pad(
+                tf_base_to_pad = self._compose_base_to_landing_pad(
                     stamp, q, self._servo_angle, rvec, tvec, tag_id, tag.position
                 )
                 self._tf_broadcaster.sendTransform(tf_base_to_pad)
+
+                # Pipeline Latency Diagnostics
+                if self.diagnostics_enabled:
+                    transform_ready_time = self.get_clock().now()
+                    timing_msg = Vector3Stamped()
+                    timing_msg.header.stamp = stamp # t0 same as the TF's stamp, aligned
+                    timing_msg.header.frame_id = "pipeline_timing"
+                    timing_msg.vector.x = self._img_received_time.nanoseconds / 1e9 # t1
+                    timing_msg.vector.y = transform_ready_time.nanoseconds / 1e9    # t2
+                    self._pipeline_timing_publisher.publish(timing_msg)
 
         # Publish gimbal angle regardless of pose update success
         self._gimbal_publisher(self._servo_angle)
 
         # Show the output image after AprilTag detection (if debug window enabled)
         if self.show_debug_window:
-            for d in detections:
+            for d in detections: # type: ignore
                 pts = d.corners.astype(np.int32)
                 colour = (0, 255, 0) if d.tag_id in self._tags else (0, 165, 255)
                 cv2.polylines(frame, [pts], isClosed=True, color=colour, thickness=2)
@@ -530,33 +556,14 @@ class VisionPerception(Node):
 
         # Save frame if enabled
         if self.save_frames or self.create_video:
-            if hasattr(self, "frames_dir"):
-                frame_filename = os.path.join(
-                    self.frames_dir, f"frame_{self.frame_count:06d}.jpg"
-                )
-                success = cv2.imwrite(frame_filename, frame)
-                if success:
-                    self.saved_frames.append(frame_filename)
-                    self.frame_count += 1
-                    if self.frame_count % 100 == 0:
-                        self.get_logger().info(
-                            f"Saved {self.frame_count} frames so far..."
-                        )
-                else:
-                    self.get_logger().warning(
-                        f"Failed to save frame {self.frame_count}"
-                    )
-            else:
-                self.get_logger().warning(
-                    "Frame saving enabled but frames_dir not initialized"
-                )
+            self._save_video_from_frame(frame)
 
         if self.enable_debug_publish:
             pub_msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
             self._webcam_publisher.publish(pub_msg)
 
-    # ---- GIMBAL CONTROLLER IMPLEMENTATIONS ----
-    def _send_servo_command(self, servo_id, pwm_value):
+
+    def _send_servo_command(self, servo_id, pwm_value) -> None:
         """Sends servo command via Mavlink
 
         :param servo_id: Servo ID to actuate
@@ -569,21 +576,42 @@ class VisionPerception(Node):
 
         self.client.call_async(req)
 
-    def _gimbal_controller(self, image_points):
+
+    def _gimbal_controller(self, image_points) -> None:
         """Determines gimbal required output to centre on tag
 
         :param image_points: Tag corner points
         """
-        centre_y = np.mean(image_points[:, 1])
-        image_centre_y = self._image_height / 2
-        tag_error = centre_y - image_centre_y
 
-        self._servo_angle = self._servo_angle - self._gimbal_Kp * tag_error
+        now = self.get_clock().now()
+        if self._gimbal_last_cmd_time is None:
+            dt = 1.0 / self._processing_rate
+        else:
+            dt = (now - self._gimbal_last_cmd_time).nanoseconds / 1e9
+            dt = max(dt, 1e-3)
+        self._gimbal_last_cmd_time = now
+
+        centre_y = np.mean(image_points[:, 1])
+        pixel_error = centre_y - self._image_height / 2
+        fy = self._camera_matrix[1, 1]
+        angle_error = np.degrees(np.arctan2(pixel_error, fy))
+
+        derivative = (angle_error - self._gimbal_prev_error) / dt
+        self._gimbal_prev_error = angle_error
+
+        correction = (
+            self._gimbal_Kp * angle_error
+            + self._gimbal_Kd * derivative
+        )
+        max_step = self._gimbal_max_slew_deg_s * dt
+        correction = np.clip(correction, -max_step, max_step)
+
         self._servo_angle = np.clip(
-            self._servo_angle, self._servo_min_angle, self._servo_max_angle
+            self._servo_angle - correction, self._servo_min_angle, self._servo_max_angle
         )
 
-    def _gimbal_publisher(self, servo_angle):
+
+    def _gimbal_publisher(self, servo_angle) -> None:
         """Publish the commanded gimbal angle to the gimbal as a PWM signal
 
         :param servo_angle: Desired gimbal angle to servo
@@ -597,79 +625,13 @@ class VisionPerception(Node):
 
         self._send_servo_command(self._gimbal_servo_ID, pwm)
 
-    # ---- HELPER FUNCTIONS ----
-    def create_video_from_frames(self):
-        """Create video from saved frames"""
-        if not (self.save_frames or self.create_video) or not self.saved_frames:
-            self.get_logger().info(
-                f"Video creation skipped. save_frames={self.save_frames}, create_video={self.create_video}, frames_count={len(self.saved_frames) if hasattr(self, 'saved_frames') else 0}"
-            )
-            return
-
-        try:
-            duration_seconds = len(self.saved_frames) / self.video_fps
-            self.get_logger().info(
-                f"Creating video from {len(self.saved_frames)} frames (estimated duration: {duration_seconds:.1f}s at {self.video_fps}fps)..."
-            )
-
-            first_frame = cv2.imread(self.saved_frames[0])
-            if first_frame is None:
-                self.get_logger().error("Could not read first frame for video creation")
-                return
-
-            height, width, layers = first_frame.shape
-            self.get_logger().info(f"Video dimensions: {width}x{height}")
-
-            fourcc = cv2.VideoWriter.fourcc(*"mp4v")
-            video_writer = cv2.VideoWriter(
-                self.video_filename, fourcc, self.video_fps, (width, height)
-            )
-
-            if not video_writer.isOpened():
-                self.get_logger().error("Failed to open video writer")
-                return
-
-            frames_written = 0
-            for i, frame_path in enumerate(self.saved_frames):
-                frame = cv2.imread(frame_path)
-                if frame is not None:
-                    video_writer.write(frame)
-                    frames_written += 1
-                    if (i + 1) % 100 == 0:
-                        self.get_logger().info(
-                            f"Writing frame {i + 1}/{len(self.saved_frames)} to video..."
-                        )
-                else:
-                    self.get_logger().warning(f"Could not read frame: {frame_path}")
-
-            video_writer.release()
-            self.get_logger().info(f"Video created successfully: {self.video_filename}")
-            self.get_logger().info(
-                f"Final video stats: {frames_written} frames written, duration: {frames_written/self.video_fps:.1f}s"
-            )
-
-            if not self.save_frames:
-                self.get_logger().info("Cleaning up temporary frame files...")
-                for frame_path in self.saved_frames:
-                    try:
-                        os.remove(frame_path)
-                    except OSError as e:
-                        self.get_logger().warning(
-                            f"Could not remove frame {frame_path}: {e}"
-                        )
-                try:
-                    os.rmdir(self.frames_dir)
-                except OSError:
-                    pass
-
-        except Exception as e:
-            self.get_logger().error(f"Error creating video: {e}")
-
+    
     @staticmethod
-    def compose_base_to_landing_pad(
+    def _compose_base_to_landing_pad(
         stamp, quad_rotation, servo_angle, rvec, tvec, tag_id, tag_position
     ):
-        """Compose quad_local→quad_body→cam→tag→landing_pad into a single base_link→landing_pad_link transform.
+        """ Compose quad_local→quad_body→cam→tag→landing_pad into a single 
+            base_link→landing_pad_link transform.
 
         :param stamp:         ROS timestamp
         :param quad_rotation: Quadcopter rotation quaternion
@@ -680,11 +642,12 @@ class VisionPerception(Node):
         :param tag_position:  (x, y, z) offset of this tag on the landing pad
         :return:              TransformStamped: base_link → landing_pad_link
         """
+
         # Quad_local -> Quad body
         T_quad_local = tf_transformations.quaternion_matrix(quad_rotation)
 
         # Quad_body -> Cam
-        t_quad_cam = np.array([0.01, -0.02, -0.1249])
+        t_quad_cam = np.array([0.02, -0.01, -0.124923])
         q_quad_cam = tf_transformations.quaternion_from_euler(
             -1.5707963 + np.deg2rad(servo_angle), 0.0, -1.5707963
         )
@@ -698,7 +661,7 @@ class VisionPerception(Node):
         T_cam_tag[:3, 3] = tvec.reshape(3)
 
         # Tag -> landing pad
-        q_tag_pad = tf_transformations.quaternion_from_euler(0.0, 0.0, 1.570796326)
+        q_tag_pad = tf_transformations.quaternion_from_euler(0.0, 0.0, 1.5707963)
         T_tag_pad = tf_transformations.quaternion_matrix(q_tag_pad)
         T_tag_pad[:3, 3] = np.array(tag_position)
 
@@ -724,18 +687,131 @@ class VisionPerception(Node):
         return tf_msg
 
 
-def get_workspace_root():
-    """Find the workspace root by looking for colcon workspace structure"""
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    while current_dir != "/":
-        if (
-            os.path.exists(os.path.join(current_dir, "src"))
-            and os.path.exists(os.path.join(current_dir, "build"))
-            and os.path.exists(os.path.join(current_dir, "install"))
-        ):
-            return current_dir
-        current_dir = os.path.dirname(current_dir)
-    return None
+    # ---- DIAGNOSTICS FUNCTION CALLBACKS ----
+    def _start_video_creation(self) -> None:
+        """ Create directory and start video creation from camera feed. 
+        """
+
+        # Create output directory with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if self.output_dir:
+            self.frames_dir = os.path.join(self.output_dir, f"frames_{timestamp}")
+        else:
+            # Use workspace root or current directory
+            workspace_root = _get_workspace_root()
+            base_dir = workspace_root if workspace_root else os.getcwd()
+            self.frames_dir = os.path.join(base_dir, f"frames_{timestamp}")
+
+        os.makedirs(self.frames_dir, exist_ok=True)
+        self.get_logger().info(
+            f"Frame saving ENABLED - Directory: {self.frames_dir}"
+        )
+        self.get_logger().info(
+            f"Video creation settings - save_frames: {self.save_frames}, create_video: {self.create_video}, fps: {self.video_fps}"
+        )
+
+        # Video output filename
+        self.video_filename = os.path.join(
+            os.path.dirname(self.frames_dir),
+            f"yolo_detection_video_{timestamp}.mp4",
+        )
+        self.get_logger().info(f"Video will be saved as: {self.video_filename}")
+
+
+    def _save_video_from_frame(self, frame) -> None:
+        """ Save current frame from camera feed into video. 
+        """
+
+        if hasattr(self, "frames_dir"):
+            frame_filename = os.path.join(
+                self.frames_dir, f"frame_{self._frame_count:06d}.jpg"
+            )
+            success = cv2.imwrite(frame_filename, frame)
+            if success:
+                self._saved_frames.append(frame_filename)
+                self._frame_count += 1
+                if self._frame_count % 100 == 0:
+                    self.get_logger().info(
+                        f"Saved {self._frame_count} frames so far..."
+                    )
+            else:
+                self.get_logger().warning(
+                    f"Failed to save frame {self._frame_count}"
+                )
+        else:
+            self.get_logger().warning(
+                "Frame saving enabled but frames_dir not initialized"
+            )
+
+
+    def _create_video_from_frames(self) -> None:
+        """ Create video from saved frames.
+        """
+
+        if not (self.save_frames or self.create_video) or not self._saved_frames:
+            self.get_logger().info(
+                f"Video creation skipped. save_frames={self.save_frames}, create_video={self.create_video}, frames_count={len(self._saved_frames) if hasattr(self, '_saved_frames') else 0}"
+            )
+            return
+
+        try:
+            duration_seconds = len(self._saved_frames) / self.video_fps
+            self.get_logger().info(
+                f"Creating video from {len(self._saved_frames)} frames (estimated duration: {duration_seconds:.1f}s at {self.video_fps}fps)..."
+            )
+
+            first_frame = cv2.imread(self._saved_frames[0])
+            if first_frame is None:
+                self.get_logger().error("Could not read first frame for video creation")
+                return
+
+            height, width, layers = first_frame.shape
+            self.get_logger().info(f"Video dimensions: {width}x{height}")
+
+            fourcc = cv2.VideoWriter.fourcc(*"mp4v")
+            video_writer = cv2.VideoWriter(
+                self.video_filename, fourcc, self.video_fps, (width, height)
+            )
+
+            if not video_writer.isOpened():
+                self.get_logger().error("Failed to open video writer")
+                return
+
+            frames_written = 0
+            for i, frame_path in enumerate(self._saved_frames):
+                frame = cv2.imread(frame_path)
+                if frame is not None:
+                    video_writer.write(frame)
+                    frames_written += 1
+                    if (i + 1) % 100 == 0:
+                        self.get_logger().info(
+                            f"Writing frame {i + 1}/{len(self._saved_frames)} to video..."
+                        )
+                else:
+                    self.get_logger().warning(f"Could not read frame: {frame_path}")
+
+            video_writer.release()
+            self.get_logger().info(f"Video created successfully: {self.video_filename}")
+            self.get_logger().info(
+                f"Final video stats: {frames_written} frames written, duration: {frames_written/self.video_fps:.1f}s"
+            )
+
+            if not self.save_frames:
+                self.get_logger().info("Cleaning up temporary frame files...")
+                for frame_path in self._saved_frames:
+                    try:
+                        os.remove(frame_path)
+                    except OSError as e:
+                        self.get_logger().warning(
+                            f"Could not remove frame {frame_path}: {e}"
+                        )
+                try:
+                    os.rmdir(self.frames_dir)
+                except OSError:
+                    pass
+
+        except Exception as e:
+            self.get_logger().error(f"Error creating video: {e}")
 
 
 # ---- MAIN ----
@@ -767,11 +843,11 @@ def main(args=None):
         node.get_logger().info("Shutting down gracefully...")
     finally:
         if hasattr(node, "create_video_from_frames") and not shutdown_in_progress:
-            node.create_video_from_frames()
+            node._create_video_from_frames()
         elif hasattr(node, "create_video_from_frames"):
             try:
                 node.get_logger().info("Creating video during shutdown...")
-                node.create_video_from_frames()
+                node._create_video_from_frames()
             except Exception as e:
                 node.get_logger().error(f"Failed to create video during shutdown: {e}")
 

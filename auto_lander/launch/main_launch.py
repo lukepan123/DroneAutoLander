@@ -52,6 +52,7 @@ def generate_launch_description():
         sigterm_timeout="20",
         sigkill_timeout="30",
         parameters=[
+            {"diagnostics_enabled": True},
             {"image_source": "topic"},
             {"show_debug_window": True},
             {"enable_debug_publish": False},
@@ -66,7 +67,11 @@ def generate_launch_description():
         executable="controller",
         name="controller_node",
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        parameters=[
+            {"diagnostics_enabled": True},
+            {"ground_truth_available": True},
+            {"use_sim_time": True},
+        ],
     )
 
     # Run AGV controller node (SITL only)
