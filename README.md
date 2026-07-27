@@ -13,7 +13,7 @@ Before running in real-world, be sure to check the follow parameters are set up 
 4. Adjust the measurement noise (R) based on quality of image, it will likely be worse than the simulation so it is likely that R will need to go up
 5. Disable sim_time usage and any ground_truth diagnostics in main_launch.py
 6. Disable gz_bridge and agv_controller from main_launch.py
-7. Switch camera to webcam mode (need to check if this works)
+7. Switch camera to webcam mode (need to check if this works) - get actual camera parameters!
 8. Ensure that mavlink is outputting mavros messages at greater than 20Hz - if less, the quad will be very unstable!!
 
 ## Running in Simulator
