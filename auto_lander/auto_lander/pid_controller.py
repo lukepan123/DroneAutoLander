@@ -20,12 +20,12 @@ class PIDController:
 
         # ---- PID PARAMETERS ----
         # PN/PD Gains
-        self.lam_0 = 6.0
-        self.Kp_0 = 5.0
+        self.lam_0 = 2.0
+        self.Kp_0 = 6.0
         self.Kd_0 = 3.0
 
         # P/PI Altitude Gains
-        self.Kp_z_pos = 0.1
+        self.Kp_z_pos = 0.2
 
         self.Kp_vel_z = 5.0
         self.Ki_vel_z = 2.0
@@ -105,14 +105,19 @@ class PIDController:
             return msg
 
         # ---- PN/PD Controller ----
-        # Increase gains as distance to target decreases
-        terminal_gain = 0.9
-        no_gain_dist = 2.0
+        # Drop off bearing/PN gain as we close to target
+        r = np.linalg.norm(u[:2])
+        drop_off_strength = 0.5
+        lam_gain_factor = 1 - np.exp(-drop_off_strength * r)
+
+        terminal_gain = 1.0
+        drop_off = 5.0
+        peak_gain_dist = 0.0
 
         u_norm = np.linalg.norm(u)
-        gain_factor = terminal_gain * no_gain_dist / (u_norm + no_gain_dist)
+        gain_factor = terminal_gain * drop_off / ((u_norm - peak_gain_dist)**2 + drop_off)
 
-        self.lam = self.lam_0 * gain_factor
+        self.lam = self.lam_0 * lam_gain_factor
         self.Kp = self.Kp_0 * gain_factor
         self.Kd = self.Kd_0 * gain_factor
 
@@ -135,7 +140,7 @@ class PIDController:
         # ---- Altitude Controller ----
         # Outer P loop: position error → velocity command
         z_err = u[QUAD_State.Z] - target_altitude
-        vel_z_des = np.clip(self.Kp_z_pos * z_err, -0.5, 0.5)
+        vel_z_des = np.clip(self.Kp_z_pos * z_err, -1.5, 1.5)
 
         # Inner PI loop: velocity error → acceleration command
         vel_z_err = vel_z_des - quad_vel[2]

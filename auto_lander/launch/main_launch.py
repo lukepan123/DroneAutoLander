@@ -44,10 +44,28 @@ def generate_launch_description():
     # )
 
     # Run target pose detector node
-    tag_pose_detector = Node(
+    apriltag_pose_detector = Node(
         package="auto_lander",
-        executable="landing_pad_detector",
-        name="image_node",
+        executable="apriltag",
+        name="apriltag_node",
+        output="screen",
+        sigterm_timeout="20",
+        sigkill_timeout="30",
+        parameters=[
+            {"diagnostics_enabled": True},
+            {"image_source": "topic"},
+            {"show_debug_window": True},
+            {"enable_debug_publish": False},
+            {"create_video": False},
+            {"use_sim_time": True},
+        ],
+    )
+    
+    # Run target pose detector node
+    yolo_pose_detector = Node(
+        package="auto_lander",
+        executable="yolo",
+        name="apriltag_node",
         output="screen",
         sigterm_timeout="20",
         sigkill_timeout="30",
@@ -91,7 +109,8 @@ def generate_launch_description():
         [
             gz_bridge,
             # base_to_camera_tf_node,
-            tag_pose_detector,
+            apriltag_pose_detector,
+            yolo_pose_detector,
             controller,
             delayed_agv_controller,
         ]

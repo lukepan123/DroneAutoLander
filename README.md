@@ -29,7 +29,18 @@ To rebuild package:
 
 **Running SITL**
 
- **1. Run Gazebo Simulation**
+ **1. Run SITL Setup**
+
+    chmod +x /home/luke/Documents/Thesis/DroneAutoLander/SITL_Script.sh
+    /home/luke/Documents/Thesis/DroneAutoLander/SITL_Script.sh
+
+Then in the ardupilot terminal, run
+
+    set streamrate 40
+
+This now runs what used to be the following steps (a-d).
+
+ **1a Run Gazebo Simulation**
 
     export GZ_SIM_SYSTEM_PLUGIN_PATH=$HOME/ardupilot_gazebo/build:$GZ_SIM_SYSTEM_PLUGIN_PATH
     cd ardupilot_gazebo/worlds
@@ -38,7 +49,7 @@ To rebuild package:
 This will launch the gazebo simulation for the given world name (in this case `iris_runway_new.sdf`). 
 If models are edited, this will need to be refreshed.
 
-**2a. Run ArduPilot SITL**
+**1b. Run ArduPilot SITL**
 
     cd ~/ardupilot && sim_vehicle.py -v ArduCopter \
     --console --map \
@@ -48,7 +59,7 @@ If models are edited, this will need to be refreshed.
 
 Starts the ArduPilot quad-copter SITL, loads the required params from gazebo-iris-gimbal.parm
 
-**2b. Modify Ardupilot Settings**
+**1c. Modify Ardupilot Settings**
 
 The following settings should be changed on Ardupilot to improve MAVROS Publishing rates:
 
@@ -58,7 +69,7 @@ The following settings should be changed on Ardupilot to improve MAVROS Publishi
 
  (this will stop ArduPilot from overwriting the new parameters with default parameters)
 
-**3. Run MAVROS**
+**1d. Run MAVROS**
 
     source /opt/ros/humble/setup.bash
     cd ros2_ws
@@ -83,14 +94,14 @@ Runs the MAVROS node which converts mavlink messages to ROS2  to enable communic
 >     ros2 run mavros mavros_node --ros-args -p fcu_url:=udp://:14555@
 
 
-**4a. Rebuild the launch file**
+**2a. Rebuild the launch file**
 
     source /opt/ros/humble/setup.bash
     cd ros2_ws
     source install/setup.bash
     colcon build --packages-select auto_lander
 
-**4b. Run the launch file**
+**2b. Run the launch file**
 
     source /opt/ros/humble/setup.bash
     cd ros2_ws
@@ -99,7 +110,7 @@ Runs the MAVROS node which converts mavlink messages to ROS2  to enable communic
 
 Starts all the required ROS2 nodes for the program to function (includes the GZ Bridge now). This launches several nodes which can be examined in the source code.
 
-**4c. Run Camera Calibration (only need to do once)**
+**2c. Run Camera Calibration (only need to do once)**
 
     source /opt/ros/humble/setup.bash
     cd ros2_ws
@@ -109,7 +120,7 @@ Starts all the required ROS2 nodes for the program to function (includes the GZ 
 
 Only needed to calibrate camera once to determine camera matrix.
 
-**5. Run Gazebo Rover Bridge (if you want to move rover)**
+**3. Run Gazebo Rover Bridge (if you want to move rover)**
 
     gz topic -t "/cmd_rover_vel" -m gz.msgs.Twist -p "linear: {x: 0.5}, angular: {z: 0.5}"
 

@@ -19,7 +19,8 @@ setup(
     license="TODO: License declaration",
     entry_points={
         "console_scripts": [
-            "landing_pad_detector = auto_lander.landing_pad_detector:main",
+            "yolo = auto_lander.yolo:main",
+            "apriltag = auto_lander.apriltag:main",
             "controller = auto_lander.controller:main",
             "camera_calibrate = auto_lander.camera_calibrate:main",
             "agv_controller = auto_lander.agv_controller:main",

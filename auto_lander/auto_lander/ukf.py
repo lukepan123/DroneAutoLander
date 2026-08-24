@@ -1,5 +1,6 @@
 import numpy as np
 from collections import deque
+from collections import namedtuple
 
 from .state_definitions import LP_State
 from .state_definitions import LP_Measurement
@@ -12,11 +13,20 @@ from .state_definitions import LP_Measurement
 class UKF:
     """ Defines the UKF class for the landing platform.
     """
-    # Define UKF snapshot structure for old events, allows for UKF rewinding and 
-    # rollback for out of date measurements. Structured as follows:
-    # timestamp | UKF state (x) | UKF covariances (P) | UKF propogated sigma points |
-    # Quadcopter Velocity | Quadcopter Acceleration
-    _UKF_snapshot = tuple
+    # Define the UKF event-log structure. Every predict() and every accepted
+    # update() call pushes one of these, in chronological order, allowing the
+    # filter to rewind to any point in the buffer window and *replay* history
+    # exactly rather than re-simulate over it. This is what lets multiple,
+    # independent measurement streams (e.g. AprilTag + YOLO) each perform
+    # out-of-sequence-measurement (OOSM) corrections without one stream's
+    # correction silently erasing the other's.
+    #
+    #   kind == "predict": data = quad_vel used for that process step
+    #   kind == "update":  data = (z, R) used for that measurement correction
+    #
+    # x / P / X_prop are the UKF state, covariance, and propagated sigma
+    # points immediately AFTER this event was applied.
+    _Event = namedtuple("_Event", ["t", "kind", "x", "P", "X_prop", "data"])
 
     def __init__(self) -> None:
         """ Initialise the UKF. Preprocesses and computes the required sigma weights and
@@ -36,8 +46,16 @@ class UKF:
         self.lambda_ = self.alpha**2 * (self.dim_x + self.kappa) - self.dim_x
         self.gamma = np.sqrt(self.dim_x + self.lambda_)
 
-        # Length of UKF Historical Buffer
-        self._buffer_window = 0.200
+        # Length of UKF Historical Buffer. Must comfortably exceed the WORST
+        # CASE end-to-end latency of the slowest measurement stream feeding
+        # this filter (capture -> image -> transform -> UKF), or that
+        # stream's OOSM corrections will fall outside the buffer and be
+        # silently dropped (anchor_idx is None -> update() returns False).
+        # Check the *_transform_to_UKF_lag / *_cam_to_image_lag diagnostics
+        # you're already publishing to size this properly per-stream; 0.5s
+        # is a safer starting point than the previous 0.2s now that a
+        # second, slower (YOLO) stream is in the mix.
+        self._buffer_window = 0.500
 
         # Number of sigma points
         self.num_sigma = 2 * self.dim_x + 1
@@ -91,14 +109,23 @@ class UKF:
         self._nis_ewma_beta = 0.90          # higher = slower to react, smoother
         self._q_infl_cap = 8.0              # max multiplier, tune to taste
 
-        # Measurement noise
+        # Measurement noise. NOTE: update() snapshots this at call time (see
+        # below), so callers are still free to mutate self.R in place right
+        # before calling update() per-stream, same convention as before.
         self.R = np.diag([0.01, 0.01, 0.1, 0.01])
 
         # Timestamp of the last predict/update cycle, initialised to None
         self._last_update_time: float | None = None
 
-        # OOSM buffer, ordered from oldest -> newest
-        self._UKF_buffer: deque[UKF._UKF_snapshot] = deque()
+        # Most recent process input (quad_vel) seen by ANY predict() call.
+        # Used as a fallback when an OOSM anchor happens to be an "update"
+        # event (which carries no process input of its own) and we need
+        # something to bridge the small residual gap to the OOSM's own
+        # timestamp.
+        self._last_quad_vel = np.zeros(3)
+
+        # OOSM event-log buffer, ordered oldest -> newest by timestamp.
+        self._UKF_buffer: deque["UKF._Event"] = deque()
 
         # Diagnostic variables
         self._last_nis = np.nan
@@ -166,10 +193,11 @@ class UKF:
             self.X_prop[i + 1] = self.x + S_new[:, i]
             self.X_prop[self.dim_x + i + 1] = self.x - S_new[:, i]
 
-        # Update timestamp and store state in the buffer (defaults to yes)
+        # Update timestamp/last-known process input, and buffer this event
         self._last_update_time = timestamp
+        self._last_quad_vel = np.asarray(quad_vel, dtype=float).copy()
         if buffer:
-            self._UKF_buffer_push(timestamp, quad_vel)
+            self._push_predict_event(timestamp, quad_vel)
 
 
     def forward_predict(self, quad_vel, dt: float) -> np.ndarray:
@@ -212,91 +240,103 @@ class UKF:
     def update(self, z, measurement_timestamp: float) -> bool:
         """ Do update step for UKF. Manages higher level update functions such as 
             checking the measurement timestamp and performing the UKF rewind and 
-            rollback.
+            rollback. Safe to call from multiple independent measurement streams
+            (e.g. AprilTag and YOLO) in any interleaving/order - out-of-sequence
+            measurements are spliced into the correct chronological position and
+            every event after that point (predicts AND updates, from every stream)
+            is replayed against the corrected timeline.
 
         :param z:                     Measurement of new landing pad pose
         :param measurement_timestamp: True timestamp of the measurement (seconds)
         :return: True on success, False on failure.
         """
 
-        # Check if the measurement is out-of-date, if so do UKF rewind and rollback
-        if (
-            self._last_update_time is not None
-            and measurement_timestamp < self._last_update_time
-            and len(self._UKF_buffer) > 0
-        ):
-            # Iterate forward through the buffer until the t > measurement_timestamp
-            buffer_copy = list(self._UKF_buffer)  # Make a copy
-            anchor_idx = None
-            for i, (t, *_) in enumerate(buffer_copy):
-                if t <= measurement_timestamp:
-                    anchor_idx = i
-                else:
-                    break
+        z = np.asarray(z, dtype=float)
+        # Snapshot R at call time rather than reading self.R again later -
+        # avoids a race where a second stream reassigns self.R before this
+        # measurement's correction is actually replayed.
+        R_used = self.R.copy()
 
-            if anchor_idx is None:
-                return False  # OOSM older than entire buffer, skip
+        # In-order path: this is the newest thing we've seen, no rewind needed.
+        if self._last_update_time is None or measurement_timestamp >= self._last_update_time:
+            accepted = self._update_apply(z, R_used)
+            if accepted:
+                self._last_update_time = measurement_timestamp
+                self._push_update_event(measurement_timestamp, z, R_used)
+            return accepted
 
-            # Save the state of the UKF at this timestamp
-            t_anchor, x_anchor, P_anchor, X_prop_anchor, quad_vel_anchor = buffer_copy[
-                anchor_idx
-            ]
+        # ---- OOSM path ----
+        if not self._UKF_buffer:
+            return False
 
-            # Collect the future snapshots (i.e. snapshots after the measurement time)
-            future_UKF_snapshots = buffer_copy[anchor_idx + 1 :]
+        buffer_copy = list(self._UKF_buffer)  # ordered oldest -> newest
+        anchor_idx = None
+        for i, ev in enumerate(buffer_copy):
+            if ev.t <= measurement_timestamp:
+                anchor_idx = i
+            else:
+                break
 
-            # Save full current state
-            x_now = self.x.copy()
-            P_now = self.P.copy()
-            X_prop_now = self.X_prop.copy()
-            t_now = self._last_update_time
+        if anchor_idx is None:
+            return False  # OOSM older than entire buffer, skip
 
-            # Rewind to anchor
-            self.x, self.P, self.X_prop = (
-                x_anchor.copy(),
-                P_anchor.copy(),
-                X_prop_anchor.copy(),
-            )
-            self._last_update_time = t_anchor
+        anchor = buffer_copy[anchor_idx]
+        future_events = buffer_copy[anchor_idx + 1:]
 
-            # Predict the small delta to the timestamp - we dont update the buffer here
-            self.predict(
-                quad_vel_anchor,
-                measurement_timestamp - t_anchor,
-                measurement_timestamp,
-                buffer=False
-            )
+        # Save full current state in case we need to bail out
+        x_now, P_now, X_prop_now = self.x.copy(), self.P.copy(), self.X_prop.copy()
+        t_now = self._last_update_time
 
-            # Do the update at the correct timestamp
-            accepted = self._update_apply(z)
+        # Rewind to anchor
+        self.x, self.P, self.X_prop = anchor.x.copy(), anchor.P.copy(), anchor.X_prop.copy()
+        self._last_update_time = anchor.t
 
-            # If the update failed, bail back to current state — real buffer untouched
-            if not accepted:
-                self.x = x_now.copy()
-                self.P = P_now.copy()
-                self.X_prop = X_prop_now.copy()
-                self._last_update_time = t_now
-                return False
+        # Bridge the small residual gap to the OOSM's own timestamp. If the
+        # anchor itself is an "update" event it has no process input of its
+        # own, so fall back to the nearest preceding predict's quad_vel.
+        dt_bridge = measurement_timestamp - anchor.t
+        if dt_bridge > 1e-9:
+            bridge_quad_vel = self._nearest_quad_vel(buffer_copy, anchor_idx)
+            self.predict(bridge_quad_vel, dt_bridge, measurement_timestamp, buffer=False)
 
-            # Only commit to the rewind now that we know it succeeded:
-            # prune entries forward of the anchor from the real buffer
-            while self._UKF_buffer and self._UKF_buffer[-1][0] > t_anchor:
-                self._UKF_buffer.pop()
+        accepted = self._update_apply(z, R_used)
 
-            # Fast-forward using pre-collected future timestamps
-            prev_t = measurement_timestamp
-            for snap_t, _, _, _, snap_quad_vel in future_UKF_snapshots:
-                dt_step = snap_t - prev_t
-                if dt_step > 1e-6:
-                    self.predict(snap_quad_vel, dt_step, snap_t)
-                prev_t = snap_t
+        # If the update failed, bail back to current state - real buffer untouched
+        if not accepted:
+            self.x, self.P, self.X_prop = x_now, P_now, X_prop_now
+            self._last_update_time = t_now
+            return False
 
-            return True
+        # Only commit to the rewind now that we know it succeeded: prune
+        # entries forward of the anchor from the real buffer, then rebuild it
+        # by splicing this OOSM in and replaying every event that originally
+        # came after it - from BOTH streams - in the order it actually
+        # happened, instead of blindly re-predicting over lost corrections.
+        while self._UKF_buffer and self._UKF_buffer[-1].t > anchor.t:
+            self._UKF_buffer.pop()
 
-        else:
-            # Do regular update if measurement is new enough
-            return self._update_apply(z)
-        
+        self._last_update_time = measurement_timestamp
+        self._push_update_event(measurement_timestamp, z, R_used)
+
+        prev_t = measurement_timestamp
+        for ev in future_events:
+            if ev.kind == "predict":
+                dt_step = ev.t - prev_t
+                if dt_step > 1e-9:
+                    self.predict(ev.data, dt_step, ev.t)  # buffer=True re-pushes it
+            else:  # "update" - replay the other stream's correction too
+                ev_z, ev_R = ev.data
+                if self._update_apply(ev_z, ev_R):
+                    self._last_update_time = ev.t
+                    self._push_update_event(ev.t, ev_z, ev_R)
+                # A failed replay (rare - singular innovation covariance) is
+                # simply skipped: _update_apply never mutates state before it
+                # can fail, so this is safe and just drops that one stale
+                # correction rather than corrupting the timeline.
+            prev_t = ev.t
+
+        return True
+
 
     def reset(self) -> None:
         """Reset runtime state; leaves parameters, weights, and preallocated
@@ -305,6 +345,7 @@ class UKF:
         self.x = np.zeros(self.dim_x)
         self.P = self.P_init.copy()
         self._last_update_time = None
+        self._last_quad_vel = np.zeros(3)
         self._UKF_buffer.clear()
 
         self.X.fill(0.0)
@@ -312,14 +353,21 @@ class UKF:
         self.Z.fill(0.0)
 
 
-    def _update_apply(self, z) -> bool:
+    def _update_apply(self, z, R=None) -> bool:
         """ Do update step for UKF. Handles lower level UKF update functions such as 
             actual covariance and state updates. Called via the public .update() 
-            function.
+            function (both the in-order path and OOSM replay).
 
         :param z: Measurement of new landing pad pose
+        :param R: Measurement noise covariance to use for this specific update.
+                   Defaults to self.R for backward compatibility, but update()
+                   always passes this explicitly so replayed events use the R
+                   that was actually in effect when they first happened.
         :return: True on success, False on failure.
         """
+
+        if R is None:
+            R = self.R
 
         # Propagate sigma points through hx
         self._hx_vectorized(self.X_prop, self.Z)
@@ -342,7 +390,7 @@ class UKF:
         P_xz = (dX.T * self.Wc) @ dZ
 
         # Innovation covariance
-        S = (dZ.T * self.Wc) @ dZ + self.R
+        S = (dZ.T * self.Wc) @ dZ + R
 
         # Kalman gain, if S is singular skip update
         try:
@@ -497,22 +545,76 @@ class UKF:
         Z[:, LP_Measurement.YAW] = self._wrap(X[:, LP_State.YAW])
 
 
-    def _UKF_buffer_push(self, timestamp: float, quad_vel) -> None:
-        """ Append current snapshot and prune entries older than 
-            _OOSM_UKF_buffer_S relative to the newest entry.
+    def _push_predict_event(self, timestamp: float, quad_vel) -> None:
+        """ Append a predict event to the buffer and prune anything now older
+            than _buffer_window relative to the newest entry.
 
-        :param timestamp: Timestamp to add to buffer
+        :param timestamp: Timestamp of this predict event
+        :param quad_vel:  Process input used for this predict event
         """
 
-        # Save UKF state to buffer
         self._UKF_buffer.append(
-            (timestamp, self.x.copy(), self.P.copy(), self.X_prop.copy(), quad_vel.copy())
+            self._Event(
+                timestamp,
+                "predict",
+                self.x.copy(),
+                self.P.copy(),
+                self.X_prop.copy(),
+                np.asarray(quad_vel, dtype=float).copy(),
+            )
         )
+        self._prune_buffer_front(timestamp)
 
-        # Prune stale snapshots from the front
-        cutoff = timestamp - self._buffer_window
-        while self._UKF_buffer and self._UKF_buffer[0][0] < cutoff:
+
+    def _push_update_event(self, timestamp: float, z, R) -> None:
+        """ Append an update event to the buffer and prune anything now older
+            than _buffer_window relative to the newest entry.
+
+        :param timestamp: Timestamp of this update event
+        :param z:         Measurement applied for this update event
+        :param R:         Measurement noise covariance applied for this event
+        """
+
+        self._UKF_buffer.append(
+            self._Event(
+                timestamp,
+                "update",
+                self.x.copy(),
+                self.P.copy(),
+                self.X_prop.copy(),
+                (np.asarray(z, dtype=float).copy(), np.asarray(R, dtype=float).copy()),
+            )
+        )
+        self._prune_buffer_front(timestamp)
+
+
+    def _prune_buffer_front(self, latest_timestamp: float) -> None:
+        """ Drop buffered events older than _buffer_window relative to the
+            newest timestamp seen.
+
+        :param latest_timestamp: Most recent timestamp pushed to the buffer
+        """
+
+        cutoff = latest_timestamp - self._buffer_window
+        while self._UKF_buffer and self._UKF_buffer[0].t < cutoff:
             self._UKF_buffer.popleft()
+
+
+    def _nearest_quad_vel(self, buffer_list, idx) -> np.ndarray:
+        """ Walk backward from idx to find the most recent "predict" event's
+            quad_vel. Needed when an OOSM anchor turns out to be an "update"
+            event (which carries no process input of its own) and a small
+            residual gap still needs bridging up to the OOSM's own timestamp.
+
+        :param buffer_list: Ordered (oldest -> newest) list of buffered events
+        :param idx:         Index to walk backward from, inclusive
+        :return: Most recent known quad_vel at or before idx
+        """
+
+        for i in range(idx, -1, -1):
+            if buffer_list[i].kind == "predict":
+                return buffer_list[i].data
+        return self._last_quad_vel
 
 
     def _repair_P(self) -> None:
