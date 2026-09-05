@@ -91,7 +91,7 @@ class YoloNode(Node):
             self.get_parameter("create_video").get_parameter_value().bool_value
         )
 
-        self.declare_parameter("video_fps", 30.0)
+        self.declare_parameter("video_fps", 24.0)
         self.video_fps = float(
             self.get_parameter("video_fps").get_parameter_value().double_value
         )
@@ -101,7 +101,7 @@ class YoloNode(Node):
             self.get_parameter("output_dir").get_parameter_value().string_value
         )
 
-        self.declare_parameter("yolo_processing_rate", 15.0)
+        self.declare_parameter("yolo_processing_rate", 10.0)
         self._yolo_processing_rate = float(
             self.get_parameter("yolo_processing_rate").get_parameter_value().double_value
         )
@@ -111,7 +111,7 @@ class YoloNode(Node):
             self.get_parameter("imgsz_width").get_parameter_value().integer_value
         )
 
-        self.declare_parameter("imgsz_height", 480)
+        self.declare_parameter("imgsz_height", 384)
         self._image_height = int(
             self.get_parameter("imgsz_height").get_parameter_value().integer_value
         )
@@ -139,7 +139,7 @@ class YoloNode(Node):
 
         self.declare_parameter("yolo_enabled", True)
         self.declare_parameter("yolo_model_path", default_yolo_model)
-        self.declare_parameter("yolo_conf_threshold", 0.5)
+        self.declare_parameter("yolo_conf_threshold", 0.80)
 
         self.yolo_enabled = (
             self.get_parameter("yolo_enabled").get_parameter_value().bool_value
@@ -284,7 +284,7 @@ class YoloNode(Node):
             frame = cv2.resize(
                 frame,
                 (self._image_width, self._image_height),
-                interpolation=cv2.INTER_LINEAR,
+                interpolation=cv2.INTER_AREA,
             )
 
         return frame, stamp

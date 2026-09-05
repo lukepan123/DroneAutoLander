@@ -17,8 +17,10 @@ from std_msgs.msg import Bool
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Vector3Stamped
 from geometry_msgs.msg import TransformStamped
-from mavros_msgs.srv import CommandLong
+from mavros_msgs.msg import GimbalManagerSetPitchyaw
+from mavros_msgs.msg import GimbalDeviceAttitudeStatus
 from pupil_apriltags import Detector as AprilTagDetector
+
 
 from .vision_common import TagDefinition
 from .vision_common import CameraIntrinsics
@@ -94,7 +96,7 @@ class AprilTagNode(Node):
             self.get_parameter("create_video").get_parameter_value().bool_value
         )
 
-        self.declare_parameter("video_fps", 30.0)
+        self.declare_parameter("video_fps", 24.0)
         self.video_fps = float(
             self.get_parameter("video_fps").get_parameter_value().double_value
         )
@@ -110,17 +112,17 @@ class AprilTagNode(Node):
         )
 
         # Only used in webcam mode: how fast we pull fresh frames off the device.
-        self.declare_parameter("frame_capture_rate", 30.0)
+        self.declare_parameter("frame_capture_rate", 24.0)
         self._frame_capture_rate = float(
             self.get_parameter("frame_capture_rate").get_parameter_value().double_value
         )
 
-        self.declare_parameter("imgsz_width", 640)
+        self.declare_parameter("imgsz_width", 960)
         self._image_width = int(
             self.get_parameter("imgsz_width").get_parameter_value().integer_value
         )
 
-        self.declare_parameter("imgsz_height", 480)
+        self.declare_parameter("imgsz_height", 540)
         self._image_height = int(
             self.get_parameter("imgsz_height").get_parameter_value().integer_value
         )
@@ -146,10 +148,11 @@ class AprilTagNode(Node):
         self._gimbal_last_cmd_time = None
 
         self._servo_angle = -90.0
+        self._gimbal_actual_pitch = self._servo_angle
         self._gimbal_servo_ID = 10
 
-        self._servo_min_angle = -135.0
-        self._servo_max_angle = 45.0
+        self._servo_min_angle = -90.0
+        self._servo_max_angle = 25.0
 
         self._servo_pwm_min = 1100
         self._servo_pwm_max = 1900
@@ -166,7 +169,7 @@ class AprilTagNode(Node):
 
         self.detector = AprilTagDetector(
             families="tag36h11",
-            quad_decimate=1.0,
+            quad_decimate=1.5,
             quad_sigma=0.0,
             refine_edges=1,
             decode_sharpening=0.75,
@@ -187,6 +190,12 @@ class AprilTagNode(Node):
             _odom_qos,
         )
         self._odom_buffer = OdometryBuffer(window_s=1.0)
+        self._gimbal_attitude_sub = self.create_subscription(
+            GimbalDeviceAttitudeStatus,
+            "/mavros/gimbal_control/device/attitude_status",
+            self._gimbal_attitude_callback,
+            10,
+        )
 
         # ---- PUBLISHERS ----
         self._bridge = CvBridge()
@@ -200,8 +209,9 @@ class AprilTagNode(Node):
             Vector3Stamped, "/landing_pad/gimbal_angle", 10
         )
 
-        # ---- SERVICES ----
-        self.client = self.create_client(CommandLong, "/mavros/cmd/command")
+        self._gimbal_manager_publisher = self.create_publisher(
+            GimbalManagerSetPitchyaw, "/mavros/gimbal_control/manager/set_pitchyaw", 10
+        )
 
         # ---- TF2 ----
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
@@ -432,7 +442,13 @@ class AprilTagNode(Node):
                     )
 
                 tf_base_to_pad = self._compose_base_to_landing_pad(
-                    stamp, q, self._servo_angle, rvec, tvec, tag_id, tag.position
+                    stamp,
+                    q,
+                    self._gimbal_actual_pitch,
+                    rvec,
+                    tvec,
+                    tag_id,
+                    tag.position,
                 )
                 self._tf_broadcaster.sendTransform(tf_base_to_pad)
                 # This TF broadcast IS the AprilTag measurement update the UKF
@@ -453,10 +469,10 @@ class AprilTagNode(Node):
         gimbal_msg = Vector3Stamped()
         gimbal_msg.header.stamp = self.get_clock().now().to_msg()
         gimbal_msg.header.frame_id = "gimbal_angle"
-        gimbal_msg.vector.x = float(self._servo_angle)
+        gimbal_msg.vector.x = float(self._gimbal_actual_pitch)
         self._gimbal_angle_publisher.publish(gimbal_msg)
 
-        self._gimbal_publisher(self._servo_angle)
+        self._gimbal_manager_control(self._servo_angle)
 
         if self.show_debug_window:
             self._show_apriltag_debug(frame, apriltag_detections)
@@ -502,18 +518,18 @@ class AprilTagNode(Node):
                 2,
             )
 
-    def _send_servo_command(self, servo_id, pwm_value) -> None:
-        """ Sends servo command via Mavlink.
+    def _gimbal_attitude_callback(self, msg: GimbalDeviceAttitudeStatus) -> None:
+        """Store the actual measured gimbal pitch from the attitude quaternion."""
 
-        :param servo_id: Servo ID to actuate
-        :param pwm_value: PWM value to command to servo
-        """
-        req = CommandLong.Request()
-        req.command = 183
-        req.param1 = float(servo_id)
-        req.param2 = float(pwm_value)
+        q = [msg.q.x, msg.q.y, msg.q.z, msg.q.w,]
+        _, pitch, _ = tf_transformations.euler_from_quaternion(q)
 
-        self.client.call_async(req)
+        self._gimbal_actual_pitch = float(np.degrees(pitch))
+
+        # self.get_logger().info(
+        #     f"Gimbal actual pitch: {self._gimbal_actual_pitch:.2f} deg",
+        #     throttle_duration_sec=1.0,
+        # )
 
     def _gimbal_controller(self, image_points) -> None:
         """ Determines gimbal required output to centre on tag.
@@ -548,19 +564,13 @@ class AprilTagNode(Node):
             self._servo_angle - correction, self._servo_min_angle, self._servo_max_angle
         )
 
-    def _gimbal_publisher(self, servo_angle) -> None:
-        """ Publish the commanded gimbal angle to the gimbal as a PWM signal.
-
-        :param servo_angle: Desired gimbal angle to servo
-        """
-        pwm = int(
-            ((servo_angle - self._servo_min_angle) / 180.0)
-            * (self._servo_pwm_max - self._servo_pwm_min)
-            + self._servo_pwm_min
-        )
-        pwm = np.clip(pwm, self._servo_pwm_min, self._servo_pwm_max)
-
-        self._send_servo_command(self._gimbal_servo_ID, pwm)
+    def _gimbal_manager_control(self, pitch_angle_deg: float):
+        msg = GimbalManagerSetPitchyaw()
+        msg.pitch = float(np.deg2rad(pitch_angle_deg))  # check units - some mavros versions want rad, some deg; verify against `ros2 interface show`
+        msg.yaw = float(np.deg2rad(0.0))  # see NaN note below
+        msg.pitch_rate = float("nan")
+        msg.yaw_rate = float("nan")
+        self._gimbal_manager_publisher.publish(msg)
 
     @staticmethod
     def _compose_base_to_landing_pad(

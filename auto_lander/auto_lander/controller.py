@@ -60,7 +60,7 @@ class Orchestrator(Node):
         self.LANDING_HEIGHT_THRESHOLD = 0.3  # m above landing pad
         self.LANDING_ERROR_THRESHOLD = 0.1  # m error
 
-        self.target_z = 4.0  # m
+        self.target_z = 2.0  # m
 
         self.controller_state = 0
         self.fcu_state = State()

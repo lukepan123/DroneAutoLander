@@ -76,7 +76,7 @@ class CameraIntrinsics:
 
     width: int
     height: int
-    fov_horizontal: float = 2.0  # radians (~114.6 deg) - tune for your camera
+    fov_horizontal: float = 2.7925268  # radians (~160 deg) - tuned for SIYI A2 Mini
 
     def __post_init__(self):
         self.fov_vertical = 2 * np.arctan(

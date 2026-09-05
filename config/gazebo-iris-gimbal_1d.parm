@@ -1,0 +1,21 @@
+# Iris is X frame
+FRAME_CLASS      1
+FRAME_TYPE       1
+
+# Match servo output for motors
+MOT_PWM_MIN      1100
+MOT_PWM_MAX      1900
+
+# Gimbal/Mount
+MNT1_TYPE        1
+
+MNT1_PITCH_MAX   25
+MNT1_PITCH_MIN   -90
+
+RC7_MAX          1900
+RC7_MIN          1100
+RC7_OPTION       213
+
+SERVO10_FUNCTION 7
+SERVO10_MIN      1100
+SERVO10_MAX      1900

@@ -111,10 +111,11 @@
         <gz_frame_id>tilt_link</gz_frame_id>
         <pose degrees="true">0 0 0 -90 -90 0</pose>
         <camera>
-          <horizontal_fov>2.0</horizontal_fov>
+          <!-- SIYI A2 mini: horizontal FOV = 160 degrees -->
+          <horizontal_fov>2.7925268</horizontal_fov>
           <image>
-            <width>640</width>
-            <height>480</height>
+            <width>960</width>
+            <height>540</height>
           </image>
           <clip>
             <near>0.05</near>
@@ -122,7 +123,8 @@
           </clip>
         </camera>
         <always_on>1</always_on>
-        <update_rate>30</update_rate>
+        <!-- SIYI A2 mini: capped at 24 -->
+        <update_rate>24</update_rate>
         <visualize>1</visualize>
 
         <plugin name="GstCameraPlugin"
@@ -139,6 +141,7 @@
     <plugin filename="gz-sim-joint-state-publisher-system"
       name="gz::sim::systems::JointStatePublisher">
     </plugin>
+    
     <joint name='tilt_joint' type='revolute'>
       <parent>base_link</parent>
       <child>tilt_link</child>

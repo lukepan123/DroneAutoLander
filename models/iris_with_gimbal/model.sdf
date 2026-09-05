@@ -280,17 +280,17 @@
         <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
       </control>
 
-      <!-- pitch range is -135 to +45 deg -->
-      <control channel="9">
-        <jointName>gimbal::tilt_joint</jointName>
-        <multiplier>-3.14159265</multiplier>
-        <offset>-0.75</offset>
-        <servo_min>1100</servo_min>
-        <servo_max>1900</servo_max>
-        <type>COMMAND</type>
-        <cmd_topic>/gimbal/cmd_pitch</cmd_topic>
-        <p_gain>5</p_gain>
-      </control>
+	<!-- pitch range is -90 to +25 deg -->
+	<control channel="9">
+	  <jointName>gimbal::tilt_joint</jointName>
+	  <multiplier>-2.007129</multiplier>
+	  <offset>-0.7826087</offset>
+	  <servo_min>1100</servo_min>
+	  <servo_max>1900</servo_max>
+	  <type>COMMAND</type>
+	  <cmd_topic>/gimbal/cmd_pitch</cmd_topic>
+	  <p_gain>5</p_gain>
+	</control>
 
     </plugin>
       
@@ -300,6 +300,16 @@
       <joint_name>gimbal::tilt_joint</joint_name>
       <topic>/gimbal/cmd_pitch</topic>
       <p_gain>5</p_gain>
+    </plugin>
+    
+        
+    <plugin filename="gz-sim-odometry-publisher-system"
+      name="gz::sim::systems::OdometryPublisher">
+      <topic>/quadcopter/odom</topic>
+      <odom_frame_id>map</odom_frame_id>
+      <child_frame_id>base_link</child_frame_id>
+      <world_frame>true</world_frame>
+      <publish_odom>true</publish_odom>
     </plugin>
 
   </model>
