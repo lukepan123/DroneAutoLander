@@ -91,7 +91,7 @@ class YoloNode(Node):
             self.get_parameter("create_video").get_parameter_value().bool_value
         )
 
-        self.declare_parameter("video_fps", 24.0)
+        self.declare_parameter("video_fps", 10.0)
         self.video_fps = float(
             self.get_parameter("video_fps").get_parameter_value().double_value
         )
@@ -132,14 +132,14 @@ class YoloNode(Node):
         # ---- YOLO MODEL ----
         workspace_root = get_workspace_root()
         default_yolo_model = (
-            os.path.join(workspace_root, "ugv_yolo11n_openvino_model")
+            os.path.join(workspace_root, "ugv_sim_yolo11n_openvino_model")
             if workspace_root
-            else "ugv_yolo11n_openvino_model"
+            else "ugv_sim_yolo11n_openvino_model"
         )
 
         self.declare_parameter("yolo_enabled", True)
         self.declare_parameter("yolo_model_path", default_yolo_model)
-        self.declare_parameter("yolo_conf_threshold", 0.80)
+        self.declare_parameter("yolo_conf_threshold", 0.60)
 
         self.yolo_enabled = (
             self.get_parameter("yolo_enabled").get_parameter_value().bool_value
@@ -324,12 +324,6 @@ class YoloNode(Node):
         if detection is not None:
             cx, cy, bw, bh, confidence = detection
 
-            # If we have a detection, then the landing pad is found. Note: unlike
-            # apriltag.py, this branch only ever publishes True - it never asserts
-            # "not found", since a missed YOLO detection on any given tick shouldn't
-            # override AprilTag's own found/not-found signal on the shared topic.
-            self._landing_pad_found_publisher.publish(Bool(data=True))
-
             # A single 2D box gives a bearing to the pad, not depth or orientation,
             # so we recover (x, y, z) via a flat-ground assumption: cast the ray
             # through the box centre and intersect it with the ground plane, using
@@ -340,6 +334,11 @@ class YoloNode(Node):
             )
 
             if translation is not None:
+                # If we have a detection, then the landing pad is found. Note: unlike
+                # apriltag.py, this branch only ever publishes True - it never asserts
+                # "not found", since a missed YOLO detection on any given tick shouldn't
+                # override AprilTag's own found/not-found signal on the shared topic.
+                self._landing_pad_found_publisher.publish(Bool(data=True))
                 tf_base_to_pad_yolo = self._compose_base_to_landing_pad_yolo(
                     stamp, translation
                 )

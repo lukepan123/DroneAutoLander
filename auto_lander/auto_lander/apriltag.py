@@ -402,11 +402,9 @@ class AprilTagNode(Node):
         q, _altitude = odom  # altitude unused here - solvePnP gives metric depth directly
 
         apriltag_detections = self._apriltag_detection(frame)
-
-        landing_pad_found = len(apriltag_detections) > 0
-        self._landing_pad_found_publisher.publish(Bool(data=landing_pad_found))
-
-        if landing_pad_found:
+        landing_pad_found = False
+        
+        if len(apriltag_detections) > 0:
             # Select the largest visible tag by apparent (pixel) area
             best = max(
                 apriltag_detections,
@@ -429,6 +427,7 @@ class AprilTagNode(Node):
             )
 
             if success:
+                landing_pad_found = True
                 self._gimbal_controller(image_points)
 
                 if self.show_debug_window:
@@ -453,6 +452,8 @@ class AprilTagNode(Node):
                 self._tf_broadcaster.sendTransform(tf_base_to_pad)
                 # This TF broadcast IS the AprilTag measurement update the UKF
                 # consumes (full 6-DOF: translation + rotation, from solvePnP).
+        
+        self._landing_pad_found_publisher.publish(Bool(data=landing_pad_found))
 
         # Pipeline Latency Diagnostics
         if self.diagnostics_enabled:

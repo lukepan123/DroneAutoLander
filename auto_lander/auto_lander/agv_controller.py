@@ -82,7 +82,7 @@ def straight_trajectory() -> Trajectory:
     """ Straight line trajectory.
     """
     return Trajectory([
-        TrajectorySegment(t_start=0.0,  t_end=10.0,  v_start=0.0,  v_end=10.0, w_start=0.0, w_end=0.0),
+        TrajectorySegment(t_start=0.0,  t_end=30.0,  v_start=0.0,  v_end=30.0, w_start=0.0, w_end=0.0),
     ])
 
 def turn_trajectory() -> Trajectory:
@@ -127,7 +127,7 @@ def mix_trajectory2() -> Trajectory:
 class AGV_Controller(Node):
     def __init__(self,
                  trajectory: Optional[Trajectory] = None,
-                 add_noise: bool = True,
+                 add_noise: bool = False,
                  linear_noise_std: float = 0.05,
                  angular_noise_std: float = 0.01,
                  angular_speed_limit: Optional[float] = 1.0,

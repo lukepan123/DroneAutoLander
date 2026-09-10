@@ -4,7 +4,7 @@
 gnome-terminal --tab -- bash -c '
 export GZ_SIM_SYSTEM_PLUGIN_PATH=$HOME/ardupilot_gazebo/build:$GZ_SIM_SYSTEM_PLUGIN_PATH
 cd ~/ardupilot_gazebo/worlds
-gz sim iris_runway_new.sdf -v -r
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only gz sim iris_runway_new.sdf -v -r
 exec bash
 '
 

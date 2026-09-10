@@ -60,7 +60,7 @@ class Orchestrator(Node):
         self.LANDING_HEIGHT_THRESHOLD = 0.3  # m above landing pad
         self.LANDING_ERROR_THRESHOLD = 0.1  # m error
 
-        self.target_z = 2.0  # m
+        self.target_z = 3.0  # m
 
         self.controller_state = 0
         self.fcu_state = State()
@@ -677,9 +677,9 @@ class Orchestrator(Node):
                 # Update measurement noise
                 self._UKF_filter.R = np.diag(
                     [
-                        0.010,
-                        0.010,
-                        0.050,
+                        0.100,
+                        0.100,
+                        0.100,
                         1e6, # We get no yaw information
                     ]
                 )
@@ -721,8 +721,8 @@ class Orchestrator(Node):
 
         # Forward predict by the time it would take for the drone to drop from its 
         # altitude to the landing pad. This is the value used by the controller
-        # Added a fudge factor...
-        t = np.sqrt(2 * 9.81 * self.LANDING_HEIGHT_THRESHOLD) / 9.81
+        # Added a fudge factor (approx the delay in the img feed (20ms))
+        t = 0.02 + np.sqrt(2 * 9.81 * self.LANDING_HEIGHT_THRESHOLD) / 9.81
         self._UKF_forward_predict_x = self._UKF_filter.forward_predict(
                 self.quad_vel, 
                 t, 
@@ -1023,7 +1023,7 @@ class Orchestrator(Node):
             return
         
         # Check UKF health (when not landed)
-        if (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] > 20.0):
+        if (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] > 50.0):
             self.get_logger().warn(
                 f"UKF: max eigenvalue {self._UKF_diag['covar_max_eig']:.3f} — filter diverging - aborting",
                 throttle_duration_sec=1.0
