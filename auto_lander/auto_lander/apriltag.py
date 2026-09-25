@@ -26,7 +26,10 @@ from .vision_common import TagDefinition
 from .vision_common import CameraIntrinsics
 from .vision_common import OdometryBuffer
 from .vision_common import FrameRecorder
+from .vision_common import LatestValueBuffer
 from .vision_common import camera_pose_in_level_frame
+from .vision_common import pixel_row_to_angle_error
+from .vision_common import stamp_to_sec
 
 """ AprilTag Landing Pad Detection Node.
 
@@ -49,6 +52,15 @@ from .vision_common import camera_pose_in_level_frame
     commanded gimbal angle on /landing_pad/gimbal_angle: YOLO needs to know where the
     camera was actually pointed at its own frame's timestamp for its ground-plane
     back-projection, but no longer has direct access to this node's in-memory state.
+
+    This node is also the only one that ever commands the gimbal servo. AprilTag's own
+    detection is the priority input to the gimbal PD controller whenever it's
+    available on a given tick. On ticks where it misses, this node falls back to
+    yolo.py's own centring error - published on /landing_pad/yolo_gimbal_error - as
+    long as it's still fresh (see gimbal_yolo_fallback_enabled /
+    gimbal_yolo_fallback_max_age_s below, and _apriltag_timer_callback /
+    _drive_gimbal). If neither is available, the gimbal simply holds its last
+    commanded angle, as before.
 """
 
 
@@ -96,7 +108,7 @@ class AprilTagNode(Node):
             self.get_parameter("create_video").get_parameter_value().bool_value
         )
 
-        self.declare_parameter("video_fps", 24.0)
+        self.declare_parameter("video_fps", 10.0)
         self.video_fps = float(
             self.get_parameter("video_fps").get_parameter_value().double_value
         )
@@ -106,7 +118,7 @@ class AprilTagNode(Node):
             self.get_parameter("output_dir").get_parameter_value().string_value
         )
 
-        self.declare_parameter("apriltag_processing_rate", 15.0)
+        self.declare_parameter("apriltag_processing_rate", 10.0)
         self._apriltag_processing_rate = float(
             self.get_parameter("apriltag_processing_rate").get_parameter_value().double_value
         )
@@ -127,12 +139,37 @@ class AprilTagNode(Node):
             self.get_parameter("imgsz_height").get_parameter_value().integer_value
         )
 
+        # ---- GIMBAL YOLO-FALLBACK PARAMETERS ----
+        # Whether to let yolo.py's centring error drive the gimbal on ticks where
+        # this node's own AprilTag detection misses. AprilTag always takes priority
+        # when available, regardless of this setting - see _apriltag_timer_callback.
+        self.declare_parameter("gimbal_yolo_fallback_enabled", True)
+        self._gimbal_yolo_fallback_enabled = (
+            self.get_parameter("gimbal_yolo_fallback_enabled")
+            .get_parameter_value()
+            .bool_value
+        )
+
+        # How old (seconds) a buffered yolo.py gimbal error is allowed to be before
+        # it's treated as stale and ignored (e.g. yolo.py has stalled or isn't
+        # running). Judged against the YOLO frame's own timestamp, not arrival time.
+        self.declare_parameter("gimbal_yolo_fallback_max_age_s", 0.5)
+        self._gimbal_yolo_fallback_max_age_s = float(
+            self.get_parameter("gimbal_yolo_fallback_max_age_s")
+            .get_parameter_value()
+            .double_value
+        )
+
         self.get_logger().info(
             f"AprilTag processing rate: {self._apriltag_processing_rate} Hz"
         )
         self.get_logger().info(
             f"Video recording parameters: save_frames={self.save_frames}, "
             f"create_video={self.create_video}, video_fps={self.video_fps}"
+        )
+        self.get_logger().info(
+            f"Gimbal YOLO fallback: enabled={self._gimbal_yolo_fallback_enabled}, "
+            f"max_age_s={self._gimbal_yolo_fallback_max_age_s}"
         )
 
         # ---- CAMERA INTRINSICS ----
@@ -146,6 +183,10 @@ class AprilTagNode(Node):
         self._gimbal_prev_error = 0.0
         self._gimbal_max_slew_deg_s = 60.0
         self._gimbal_last_cmd_time = None
+        # Tracks which pipeline last drove the controller ("apriltag" / "yolo" /
+        # None), purely so _drive_gimbal can avoid differentiating across a switch
+        # between two independent error sources - see _drive_gimbal.
+        self._gimbal_last_source = None
 
         self._servo_angle = -90.0
         self._gimbal_actual_pitch = self._servo_angle
@@ -169,7 +210,7 @@ class AprilTagNode(Node):
 
         self.detector = AprilTagDetector(
             families="tag36h11",
-            quad_decimate=1.5,
+            quad_decimate=1.0,
             quad_sigma=0.0,
             refine_edges=1,
             decode_sharpening=0.75,
@@ -196,6 +237,16 @@ class AprilTagNode(Node):
             self._gimbal_attitude_callback,
             10,
         )
+
+        # yolo.py's fallback gimbal-centring error - see module docstring above and
+        # _apriltag_timer_callback / _drive_gimbal.
+        self._yolo_gimbal_error_sub = self.create_subscription(
+            Vector3Stamped,
+            "/landing_pad/yolo_gimbal_error",
+            self._yolo_gimbal_error_callback,
+            10,
+        )
+        self._yolo_gimbal_error_buffer = LatestValueBuffer()
 
         # ---- PUBLISHERS ----
         self._bridge = CvBridge()
@@ -358,6 +409,19 @@ class AprilTagNode(Node):
 
         self._odom_buffer.push(msg)
 
+    def _yolo_gimbal_error_callback(self, msg: Vector3Stamped) -> None:
+        """ Buffer yolo.py's published gimbal-centring angle error, used as a
+            fallback gimbal control input on ticks where this node's own AprilTag
+            detection misses (see _apriltag_timer_callback). Keyed on the YOLO
+            frame's own timestamp so staleness is judged against when that
+            detection was actually made, not when this message happened to arrive.
+
+        :param msg: Vector3Stamped with the angle error (degrees) in vector.x and
+                    detection confidence in vector.y
+        """
+        t = stamp_to_sec(msg.header.stamp)
+        self._yolo_gimbal_error_buffer.push(float(msg.vector.x), t)
+
     def _get_new_frame(self):
         """ Pull the latest frame, but only if it's newer than the last frame this
             node already processed.
@@ -385,7 +449,8 @@ class AprilTagNode(Node):
 
     def _apriltag_timer_callback(self) -> None:
         """ Fires at apriltag_processing_rate. Detects AprilTags, estimates pose,
-            drives the gimbal controller, and broadcasts the base_link ->
+            drives the gimbal controller (falling back to yolo.py's centring error
+            when its own detection misses), and broadcasts the base_link ->
             landing_pad_link TF.
         """
 
@@ -428,7 +493,15 @@ class AprilTagNode(Node):
 
             if success:
                 landing_pad_found = True
-                self._gimbal_controller(image_points)
+
+                # AprilTag detection takes priority whenever it's available on a
+                # tick - see _drive_gimbal / module docstring.
+                centre_y = np.mean(image_points[:, 1])
+                fy = self._camera_matrix[1, 1]
+                angle_error = pixel_row_to_angle_error(
+                    centre_y, self._image_height, fy
+                )
+                self._drive_gimbal(angle_error, "apriltag")
 
                 if self.show_debug_window:
                     cv2.drawFrameAxes(
@@ -452,7 +525,19 @@ class AprilTagNode(Node):
                 self._tf_broadcaster.sendTransform(tf_base_to_pad)
                 # This TF broadcast IS the AprilTag measurement update the UKF
                 # consumes (full 6-DOF: translation + rotation, from solvePnP).
-        
+
+        if not landing_pad_found and self._gimbal_yolo_fallback_enabled:
+            # AprilTag missed this tick - fall back to yolo.py's own centring
+            # error, if it's still fresh. This does NOT affect landing_pad_found /
+            # the /landing_pad/found publish below, which stays keyed only to this
+            # node's own AprilTag detection, as before.
+            t_now = self.get_clock().now().nanoseconds / 1e9
+            yolo_angle_error = self._yolo_gimbal_error_buffer.get_if_fresh(
+                t_now, self._gimbal_yolo_fallback_max_age_s
+            )
+            if yolo_angle_error is not None:
+                self._drive_gimbal(yolo_angle_error, "yolo")
+
         self._landing_pad_found_publisher.publish(Bool(data=landing_pad_found))
 
         # Pipeline Latency Diagnostics
@@ -532,10 +617,32 @@ class AprilTagNode(Node):
         #     throttle_duration_sec=1.0,
         # )
 
-    def _gimbal_controller(self, image_points) -> None:
-        """ Determines gimbal required output to centre on tag.
+    def _drive_gimbal(self, angle_error: float, source: str) -> None:
+        """ Feed an angle error into the gimbal PD controller (_gimbal_controller),
+            resetting the derivative term's baseline whenever the error's source
+            switches between "apriltag" and "yolo". The two pipelines are
+            independent sensors on different cadences/resolutions, so their error
+            signals aren't continuous with each other - differentiating straight
+            across a switch would produce a spurious derivative kick in the servo
+            command.
 
-        :param image_points: Tag corner points
+        :param angle_error: Signed vertical angle error (degrees) - see
+                             pixel_row_to_angle_error in vision_common.py
+        :param source:      "apriltag" or "yolo", identifying which pipeline this
+                             error came from
+        """
+        if self._gimbal_last_source is not None and self._gimbal_last_source != source:
+            self._gimbal_prev_error = angle_error
+        self._gimbal_last_source = source
+        self._gimbal_controller(angle_error)
+
+    def _gimbal_controller(self, angle_error: float) -> None:
+        """ PD control law that steps the commanded servo angle towards centring the
+            current target (whichever pipeline supplied angle_error - see
+            _drive_gimbal) in the image row.
+
+        :param angle_error: Signed vertical angle error (degrees) of the target from
+                             the image row centre; positive = target below centre
         """
 
         now = self.get_clock().now()
@@ -545,11 +652,6 @@ class AprilTagNode(Node):
             dt = (now - self._gimbal_last_cmd_time).nanoseconds / 1e9
             dt = max(dt, 1e-3)
         self._gimbal_last_cmd_time = now
-
-        centre_y = np.mean(image_points[:, 1])
-        pixel_error = centre_y - self._image_height / 2
-        fy = self._camera_matrix[1, 1]
-        angle_error = np.degrees(np.arctan2(pixel_error, fy))
 
         derivative = (angle_error - self._gimbal_prev_error) / dt
         self._gimbal_prev_error = angle_error

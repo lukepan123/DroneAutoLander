@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 2
+names: ['Car', 'Landing Pad']
+
+roboflow:
+  workspace: luke-p-s-workspace
+  project: landing-pad-detection-on-car
+  version: dataset
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/luke-p-s-workspace/landing-pad-detection-on-car/dataset/dataset

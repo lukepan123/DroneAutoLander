@@ -26,8 +26,8 @@ from datetime import datetime
 
 from .state_definitions import QUAD_State
 from .state_definitions import LP_State
+from .state_definitions import LP_Meas
 from .ukf import UKF
-from .mpc_controller import MPCController
 from .pid_controller import PIDController
 
 """ Main orchestrator control loop, handles high level controller state logic and 
@@ -53,14 +53,17 @@ class Orchestrator(Node):
             self.get_parameter("ground_truth_available").get_parameter_value().bool_value
         )
 
-
         # ---- Global State Variables ----
         self.MAX_RUNTIME = 200.0  # secs
         self.BOUNDARY_LIMIT = 500.0  # m x m square
-        self.LANDING_HEIGHT_THRESHOLD = 0.3  # m above landing pad
-        self.LANDING_ERROR_THRESHOLD = 0.1  # m error
 
-        self.target_z = 3.0  # m
+        self.LANDING_RECOVERY_HEIGHT  = 1.5  # m above landing pad
+        self.LANDING_HEIGHT_ABOVE_GND = 1.5  # m above landing pad
+        self.LANDING_HEIGHT_THRESHOLD = 0.4  # m above landing pad
+        self.LANDING_ERROR_THRESHOLD  = 0.1  # m error
+        self.LANDING_CENTERED_ERROR_THRESHOLD = 1.0 # m error
+
+        self.target_z = 3.5  # m above landing pad
 
         self.controller_state = 0
         self.fcu_state = State()
@@ -91,17 +94,17 @@ class Orchestrator(Node):
         self._tko_requested = False
         self._tko_reached = False
         self._tko_complete_time = None
-        self._tko_altitude_SP = self.target_z  # Inititalise at initial target altitude
+        self._tko_altitude_SP = self.target_z + self.LANDING_HEIGHT_ABOVE_GND  # Inititalise at initial target altitude
 
         # ---- State 2xxx (Searching for Landing Pad) Variables ----
         self._landing_pad_found = False
         self._landing_pad_first_seen_time = None
-        self._landing_pad_visual_time_SP = 2.0
+        self._landing_pad_visual_time_SP = 1.0
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
         self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 20.0
         self._landing_pad_lost_time = None
-        self._landing_pad_lost_time_SP = 2.0
+        self._landing_pad_lost_time_SP = 4.0
 
         # ---- State 4xxx (Beginning Landing Descent) Variables ----
         self._landed_time = None
@@ -118,6 +121,7 @@ class Orchestrator(Node):
 
         # ---- CONTROL CLASS INITIALISATIONS ----
         self._UKF_start = False
+        self._UKF_seed_pending = False
         self._UKF_last_update = self.get_clock().now()
         self._UKF_timer_rate = 0.05
         self._UKF_filter = UKF()
@@ -129,9 +133,13 @@ class Orchestrator(Node):
         self._UKF_raw_measurement = [0.0, 0.0, 0.0, 0.0]
         self._UKF_raw_measurement_stamp = 0.0
 
-        self._UKF_yolo_raw_measurement = [0.0, 0.0, 0.0, 0.0]
-        self._UKF_yolo_raw_measurement_stamp = 0.0
-        self._UKF_last_yolo_stamp = Time().to_msg()
+        self._UKF_yolo_LP_raw_measurement = [0.0, 0.0, 0.0, 0.0]
+        self._UKF_yolo_LP_raw_measurement_stamp = 0.0
+        self._UKF_last_yolo_LP_stamp = Time().to_msg()
+
+        self._UKF_yolo_car_raw_measurement = [0.0, 0.0, 0.0, 0.0]
+        self._UKF_yolo_car_raw_measurement_stamp = 0.0
+        self._UKF_last_yolo_car_stamp = Time().to_msg()
 
         self._cam_to_image_lag = None
         self._image_to_transform_lag = None
@@ -141,8 +149,7 @@ class Orchestrator(Node):
         self._yolo_transform_to_UKF_lag = None
         self._UKF_meas_age = 0.0
 
-        self._control_timer_rate = 0.1
-        # self._mpc_controller = MPCController()
+        self._control_timer_rate = 0.05
         self._pid_controller = PIDController(self._control_timer_rate)
 
         # ---- SUBSCRIPTIONS ----
@@ -531,6 +538,7 @@ class Orchestrator(Node):
         if self._landing_pad_found and not self._UKF_start:
             self._UKF_filter.reset()
             self._UKF_start = True
+            self._UKF_seed_pending = True   # add this
 
         # Get timestamp from last cycle
         now = self.get_clock().now()
@@ -607,15 +615,19 @@ class Orchestrator(Node):
                         0.00009 * cov_adj_x,
                         0.00009 * cov_adj_y,
                         0.00009 * cov_adj_z,
-                        0.002 * cov_adj_z,
+                        0.00050 * cov_adj_z,
                     ]
                 )
 
-                accepted = self._UKF_filter.update(measurement, stamp_sec)
-                if not accepted:
-                    self.get_logger().warn(
-                        f"UKF last update failed!"
-                    )
+                # Seed if this is the first measurement since a (re)start
+                if self._UKF_seed_pending:
+                    self._UKF_filter.seed_position(measurement, stamp_sec)
+                    self._UKF_seed_pending = False
+                    accepted = True
+                else:
+                    accepted = self._UKF_filter.update(measurement, stamp_sec)
+                    if not accepted:
+                        self.get_logger().warn("UKF last update failed!")
 
                 # Log diagnostics if enabled
                 if self.diagnostics_enabled:
@@ -640,15 +652,15 @@ class Orchestrator(Node):
         except Exception:
             pass  # Predict-only cycle, no correction this tick
 
-        # Update YOLO UKF step
+        # Update YOLO Landing Pad UKF step
         try:
             tf_msg = self._tf_map_landing_pad_buffer.lookup_transform(
                 "local", "landing_pad_link_yolo", Time()
             )
             stamp_sec = Time.from_msg(tf_msg.header.stamp).nanoseconds / 1e9
             stamp_is_new = (
-                tf_msg.header.stamp.sec != self._UKF_last_yolo_stamp.sec
-                or tf_msg.header.stamp.nanosec != self._UKF_last_yolo_stamp.nanosec
+                tf_msg.header.stamp.sec != self._UKF_last_yolo_LP_stamp.sec
+                or tf_msg.header.stamp.nanosec != self._UKF_last_yolo_LP_stamp.nanosec
             )
 
             if stamp_is_new:
@@ -671,24 +683,37 @@ class Orchestrator(Node):
                 measurement = np.array([t[0], t[1], t[2], yaw])
 
                 # Store raw measurement
-                self._UKF_yolo_raw_measurement = [t[0], t[1], t[2], yaw]
-                self._UKF_yolo_raw_measurement_stamp = stamp_sec
+                self._UKF_yolo_LP_raw_measurement = [t[0], t[1], t[2], yaw]
+                self._UKF_yolo_LP_raw_measurement_stamp = stamp_sec
 
-                # Update measurement noise
+                # Update measurement noise, infalte yolo covar as altitude drops since 
+                # bounding box becomes a worse estimate of the landing pad (and also 
+                # moves around a lot more)
+                alt = -self.landing_pad_relative_position_forward_predict[LP_State.PZ]
+
+                d_near, d_far = 0.0, self.LANDING_HEIGHT_ABOVE_GND + 2.5
+                scale_max, gamma = 25.0, 2.0  # tune against NIS, see below
+                t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
+                yolo_scale = 1.0 + (scale_max - 1.0) * t ** gamma
+
                 self._UKF_filter.R = np.diag(
                     [
-                        0.100,
-                        0.100,
-                        0.100,
-                        1e6, # We get no yaw information
+                        0.200 * yolo_scale,
+                        0.200 * yolo_scale,
+                        1.000,  # Pass through the drones AGL + known GV height, as a rough estimate
+                        1e9,    # We get no yaw information
                     ]
                 )
 
-                accepted = self._UKF_filter.update(measurement, stamp_sec)
-                if not accepted:
-                    self.get_logger().warn(
-                        f"UKF last update failed!"
-                    )
+                # Seed if this is the first measurement since a (re)start
+                if self._UKF_seed_pending:
+                    self._UKF_filter.seed_position(measurement, stamp_sec)
+                    self._UKF_seed_pending = False
+                    accepted = True
+                else:
+                    accepted = self._UKF_filter.update(measurement, stamp_sec)
+                    if not accepted:
+                        self.get_logger().warn("UKF last update failed!")
 
                 # Log diagnostics if enabled
                 if self.diagnostics_enabled:
@@ -702,16 +727,80 @@ class Orchestrator(Node):
                         self._yolo_cam_to_image_lag = (t1 - t0) * 1000.0
                         self._yolo_image_to_transform_lag = (t2 - t1) * 1000.0
                         self._yolo_transform_to_UKF_lag = (now_sec - t2) * 1000.0
-                    else:
-                        self.get_logger().warn(
-                            "No matching pipeline_timing message for this TF — lag breakdown skipped",
-                            throttle_duration_sec=2.0,
-                        )
 
-            self._UKF_last_yolo_stamp = tf_msg.header.stamp
+            self._UKF_last_yolo_LP_stamp = tf_msg.header.stamp
 
         except Exception:
             pass  # Predict-only cycle, no correction this tick
+
+        # Update YOLO Car UKF step
+        try:
+            tf_msg = self._tf_map_landing_pad_buffer.lookup_transform(
+                "local", "car_link_yolo", Time(),
+            )
+
+            stamp_sec = Time.from_msg(tf_msg.header.stamp).nanoseconds / 1e9
+            stamp_is_new = (
+                tf_msg.header.stamp.sec != self._UKF_last_yolo_car_stamp.sec
+                or tf_msg.header.stamp.nanosec != self._UKF_last_yolo_car_stamp.nanosec
+            )
+
+            if stamp_is_new:
+                # Measurement age — how stale is this TF?
+                self._UKF_meas_age = (
+                    now - Time.from_msg(tf_msg.header.stamp)
+                ).nanoseconds / 1e6
+
+                # Extract pose measurement
+                t = np.array([
+                    tf_msg.transform.translation.x,
+                    tf_msg.transform.translation.y,
+                    tf_msg.transform.translation.z,
+                ])
+
+                q = tf_msg.transform.rotation
+                _, _, yaw = tf_transformations.euler_from_quaternion(
+                    [q.x, q.y, q.z, q.w]
+                )
+                measurement = np.array([t[0], t[1], t[2], yaw])
+
+                # Store raw measurement
+                self._UKF_yolo_car_raw_measurement = [t[0], t[1], t[2], yaw]
+                self._UKF_yolo_car_raw_measurement_stamp = stamp_sec
+
+                # Update measurement noise, infalte yolo covar as altitude drops since 
+                # bounding box becomes a worse estimate of the landing pad (and also 
+                # moves around a lot more)
+                alt = -self.landing_pad_relative_position_forward_predict[LP_State.PZ]
+
+                d_near, d_far = 0.0, self.LANDING_HEIGHT_ABOVE_GND + 5.0
+                scale_max, gamma = 25.0, 2.0  # tune against NIS, see below
+                t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
+                yolo_scale = 1.0 + (scale_max - 1.0) * t ** gamma
+
+                self._UKF_filter.R = np.diag(
+                    [
+                        2.000 * yolo_scale,
+                        2.000 * yolo_scale,
+                        1.000,  # Pass through the drones AGL + known GV height, as a rough estimate
+                        1e9,    # We get no yaw information
+                    ]
+                )
+
+                # Seed if this is the first measurement since a (re)start
+                if self._UKF_seed_pending:
+                    self._UKF_filter.seed_position(measurement, stamp_sec)
+                    self._UKF_seed_pending = False
+                    accepted = True
+                else:
+                    accepted = self._UKF_filter.update(measurement, stamp_sec)
+                    if not accepted:
+                        self.get_logger().warn("UKF last update failed!")
+
+            self._UKF_last_yolo_car_stamp = tf_msg.header.stamp
+
+        except Exception:
+            pass
 
         # ---- Grab per-state covariance diagnostics every tick ----
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
@@ -735,8 +824,13 @@ class Orchestrator(Node):
         )
 
         self.landing_pad_yaw_forward_predict = self._UKF_forward_predict_x[LP_State.YAW]
-        rel_vx = self._UKF_forward_predict_x[LP_State.V] * np.cos(self.landing_pad_yaw_forward_predict) - self.quad_vel[0]
-        rel_vy = self._UKF_forward_predict_x[LP_State.V] * np.sin(self.landing_pad_yaw_forward_predict) - self.quad_vel[1]
+        pad_vx = self._UKF_forward_predict_x[LP_State.V] * np.cos(self.landing_pad_yaw_forward_predict)
+        pad_vy = self._UKF_forward_predict_x[LP_State.V] * np.sin(self.landing_pad_yaw_forward_predict)
+        pad_vz = 0.0
+        self.landing_pad_velocity_forward_predict = np.array([pad_vx, pad_vy, pad_vz])
+
+        rel_vx = pad_vx - self.quad_vel[0]
+        rel_vy = pad_vy - self.quad_vel[1]
         rel_vz = -self.quad_vel[2]
         self.landing_pad_relative_velocity_forward_predict = np.array([rel_vx, rel_vy, rel_vz])
         
@@ -747,8 +841,13 @@ class Orchestrator(Node):
         )
 
         yaw = x[LP_State.YAW]
-        rel_vx = x[LP_State.V] * np.cos(yaw) - self.quad_vel[0]
-        rel_vy = x[LP_State.V] * np.sin(yaw) - self.quad_vel[1]
+        pad_vx = x[LP_State.V] * np.cos(yaw)
+        pad_vy = x[LP_State.V] * np.sin(yaw)
+        pad_vz = 0.0
+        self.landing_pad_velocity = np.array([pad_vx, pad_vy, pad_vz])
+        
+        rel_vx = pad_vx - self.quad_vel[0]
+        rel_vy = pad_vy - self.quad_vel[1]
         rel_vz = -self.quad_vel[2]
         self.landing_pad_relative_velocity = np.array([rel_vx, rel_vy, rel_vz])
 
@@ -785,6 +884,11 @@ class Orchestrator(Node):
 
         # Get timestamp
         start = self.get_clock().now()
+
+        # Calculate errors
+        err_x = abs(self.landing_pad_relative_position_forward_predict[0])
+        err_y = abs(self.landing_pad_relative_position_forward_predict[1])
+        err = np.hypot(err_x, err_y)
 
         # ---- State 0000 (Pre-arm)
         # Below conditions need to be met ALWAYS so we check regardless of state
@@ -872,11 +976,12 @@ class Orchestrator(Node):
         # ---- State 3000 (Move over and Maintain Landing Pad Lock)
         if self.controller_state == 3000:
             now = self.get_clock().now().nanoseconds / 1e9
+
             if self._landing_pad_found:
                 self._landing_pad_lost_time = None
                 if (
                     now - self._landing_pad_first_seen_time
-                ) > self._landing_pad_locked_time_SP:
+                ) > self._landing_pad_locked_time_SP and err < self.LANDING_CENTERED_ERROR_THRESHOLD:
                     self.get_logger().info("Landing Pad Acquired")
                     self.controller_state = 4000
             else:
@@ -911,22 +1016,16 @@ class Orchestrator(Node):
                         self.get_logger().info("Landing Pad Lost!")
                         self.controller_state = 2000
 
-            # Check target error is not bad compared to where we want to be
-            err_x = abs(self.landing_pad_relative_position_forward_predict[0])
-            err_y = abs(self.landing_pad_relative_position_forward_predict[1])
-
             if (
-                self.quad_pose[QUAD_State.Z] <= 0.6
-                and err_x < self.LANDING_ERROR_THRESHOLD
-                and err_y < self.LANDING_ERROR_THRESHOLD
+                -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= self.LANDING_HEIGHT_THRESHOLD
+                and err < self.LANDING_ERROR_THRESHOLD
             ):
                 self.cutoff = True
                 self._landed_time = now
                 self.get_logger().info(f"Throttle Cut Engaged - Err_x = {err_x}, Err_y = {err_y}")
                 self.controller_state = 6000
-            elif self.quad_pose[QUAD_State.Z] <= 0.6 and (
-                err_x >= self.LANDING_ERROR_THRESHOLD 
-                or err_y >= self.LANDING_ERROR_THRESHOLD
+            elif -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= self.LANDING_HEIGHT_THRESHOLD and (
+                err >= self.LANDING_ERROR_THRESHOLD
             ):
                 self.get_logger().info(
                     f"Landing Aborted - Trying Again Err_x = {err_x}, Err_y = {err_y}"
@@ -958,8 +1057,8 @@ class Orchestrator(Node):
                             self.controller_state = 2000
                 
                 # Regain altitude, then try again
-                self.target_z = 3.0
-                if self.quad_pose[QUAD_State.Z] > 2.5:
+                self.target_z = self.LANDING_RECOVERY_HEIGHT
+                if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] > self.target_z - 0.5:
                     self.controller_state = 3000
 
         # ---- State 6000 (Landing Success - Idle Until RTL)
@@ -1023,7 +1122,7 @@ class Orchestrator(Node):
             return
         
         # Check UKF health (when not landed)
-        if (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] > 50.0):
+        if (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] > 1000.0):
             self.get_logger().warn(
                 f"UKF: max eigenvalue {self._UKF_diag['covar_max_eig']:.3f} — filter diverging - aborting",
                 throttle_duration_sec=1.0
@@ -1138,11 +1237,17 @@ class Orchestrator(Node):
                 "quad_true_yaw",
 
                 # Landing pad relative data
-                "landing_pad_raw_stamp",
-                "landing_pad_rel_x_raw",
-                "landing_pad_rel_y_raw",
-                "landing_pad_rel_z_raw",
-                "landing_pad_rel_yaw_raw",
+                "landing_pad_april_raw_stamp",
+                "landing_pad_april_rel_x_raw",
+                "landing_pad_april_rel_y_raw",
+                "landing_pad_april_rel_z_raw",
+                "landing_pad_april_rel_yaw_raw",
+                "landing_pad_yolo_LP_raw_stamp",
+                "landing_pad_yolo_LP_rel_x_raw",
+                "landing_pad_yolo_LP_rel_y_raw",
+                "landing_pad_yolo_car_raw_stamp",
+                "landing_pad_yolo_car_rel_x_raw",
+                "landing_pad_yolo_car_rel_y_raw",
                 "landing_pad_rel_x",
                 "landing_pad_rel_y",
                 "landing_pad_rel_z",
@@ -1159,10 +1264,14 @@ class Orchestrator(Node):
                 "landing_pad_rel_true_yaw",
 
                 # Landing pad global data
-                "landing_pad_glob_x_raw",
-                "landing_pad_glob_y_raw",
-                "landing_pad_glob_z_raw",
-                "landing_pad_glob_yaw_raw",
+                "landing_pad_april_glob_x_raw",
+                "landing_pad_april_glob_y_raw",
+                "landing_pad_april_glob_z_raw",
+                "landing_pad_april_glob_yaw_raw",
+                "landing_pad_yolo_LP_glob_x_raw",
+                "landing_pad_yolo_LP_glob_y_raw",
+                "landing_pad_yolo_car_glob_x_raw",
+                "landing_pad_yolo_car_glob_y_raw",
                 "landing_pad_glob_x",
                 "landing_pad_glob_y",
                 "landing_pad_glob_z",
@@ -1220,9 +1329,9 @@ class Orchestrator(Node):
         UKF_raw_msg = Vector3Stamped()
         UKF_raw_msg.header.stamp = self.landing_pad_relative_odometry.header.stamp # Compare at same timestamp
         UKF_raw_msg.header.frame_id = "local"
-        UKF_raw_msg.vector.x = self._UKF_raw_measurement[QUAD_State.X]
-        UKF_raw_msg.vector.y = self._UKF_raw_measurement[QUAD_State.Y]
-        UKF_raw_msg.vector.z = self._UKF_raw_measurement[QUAD_State.Z]
+        UKF_raw_msg.vector.x = self._UKF_raw_measurement[LP_Meas.PX]
+        UKF_raw_msg.vector.y = self._UKF_raw_measurement[LP_Meas.PY]
+        UKF_raw_msg.vector.z = self._UKF_raw_measurement[LP_Meas.PZ]
         self.landing_pad_relative_raw_pub.publish(UKF_raw_msg)
 
         current_time = self.get_clock().now().nanoseconds / 1e9
@@ -1299,10 +1408,16 @@ class Orchestrator(Node):
 
                     # Landing pad relative data
                     self._UKF_raw_measurement_stamp,
-                    self._UKF_raw_measurement[QUAD_State.X],
-                    self._UKF_raw_measurement[QUAD_State.Y],
-                    self._UKF_raw_measurement[QUAD_State.Z],
-                    self._UKF_raw_measurement[QUAD_State.YAW] - true_yaw,
+                    self._UKF_raw_measurement[LP_Meas.PX],
+                    self._UKF_raw_measurement[LP_Meas.PY],
+                    self._UKF_raw_measurement[LP_Meas.PZ],
+                    self._UKF_raw_measurement[LP_Meas.YAW] - true_yaw,
+                    self._UKF_yolo_LP_raw_measurement_stamp,
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PX],
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PY],
+                    self._UKF_yolo_car_raw_measurement_stamp,
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PX],
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PY],
                     self.landing_pad_relative_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y,
                     self.landing_pad_relative_odometry.pose.pose.position.z,
@@ -1312,7 +1427,7 @@ class Orchestrator(Node):
                     self.landing_pad_yaw - true_yaw,
                     self.landing_pad_true_odometry.pose.pose.position.x - self.quad_true_odometry.pose.pose.position.x,
                     self.landing_pad_true_odometry.pose.pose.position.y - self.quad_true_odometry.pose.pose.position.y,
-                    self.landing_pad_true_odometry.pose.pose.position.z - self.quad_true_odometry.pose.pose.position.z,
+                    self.landing_pad_true_odometry.pose.pose.position.z - self.quad_vel[QUAD_State.Z],
                     # Fix velocity because it is given in body frame not world frame...
                     self.landing_pad_true_odometry.twist.twist.linear.x * np.cos(lp_pad_true_yaw) - self.quad_true_odometry.twist.twist.linear.x * np.cos(true_yaw),
                     self.landing_pad_true_odometry.twist.twist.linear.x * np.sin(lp_pad_true_yaw) - self.quad_true_odometry.twist.twist.linear.x * np.sin(true_yaw),
@@ -1320,13 +1435,17 @@ class Orchestrator(Node):
                     lp_pad_true_yaw - true_yaw,
 
                     # Landing pad global data
-                    self._UKF_raw_measurement[QUAD_State.X] + self.quad_true_odometry.pose.pose.position.x,
-                    self._UKF_raw_measurement[QUAD_State.Y] + self.quad_true_odometry.pose.pose.position.y,
-                    self._UKF_raw_measurement[QUAD_State.Z] + self.quad_true_odometry.pose.pose.position.z,
-                    self._UKF_raw_measurement[QUAD_State.YAW],
+                    self._UKF_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
+                    self._UKF_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
+                    self._UKF_raw_measurement[LP_Meas.PZ] + self.quad_vel[QUAD_State.Z],
+                    self._UKF_raw_measurement[LP_Meas.YAW],
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
                     self.landing_pad_relative_odometry.pose.pose.position.x + self.quad_true_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y + self.quad_true_odometry.pose.pose.position.y,
-                    self.landing_pad_relative_odometry.pose.pose.position.z + self.quad_true_odometry.pose.pose.position.z,
+                    self.landing_pad_relative_odometry.pose.pose.position.z + self.quad_vel[QUAD_State.Z],
                     self.landing_pad_relative_odometry.twist.twist.linear.x + self.quad_true_odometry.twist.twist.linear.x * np.cos(true_yaw),
                     self.landing_pad_relative_odometry.twist.twist.linear.y + self.quad_true_odometry.twist.twist.linear.x * np.sin(true_yaw),
                     self.landing_pad_relative_odometry.twist.twist.linear.z + self.quad_true_odometry.twist.twist.linear.z,
@@ -1387,10 +1506,16 @@ class Orchestrator(Node):
 
                     # Landing pad relative data
                     self._UKF_raw_measurement_stamp,
-                    self._UKF_raw_measurement[QUAD_State.X],
-                    self._UKF_raw_measurement[QUAD_State.Y],
-                    self._UKF_raw_measurement[QUAD_State.Z],
+                    self._UKF_raw_measurement[LP_Meas.PX],
+                    self._UKF_raw_measurement[LP_Meas.PY],
+                    self._UKF_raw_measurement[LP_Meas.PZ],
                     0,
+                    self._UKF_yolo_LP_raw_measurement_stamp,
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PX],
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PY],
+                    self._UKF_yolo_car_raw_measurement_stamp,
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PX],
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PY],
                     self.landing_pad_relative_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y,
                     self.landing_pad_relative_odometry.pose.pose.position.z,
@@ -1411,6 +1536,10 @@ class Orchestrator(Node):
                     0,
                     0,
                     self._UKF_raw_measurement[QUAD_State.YAW],
+                    0,
+                    0,
+                    0,
+                    0,
                     0,
                     0,
                     0,

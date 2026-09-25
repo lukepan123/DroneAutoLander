@@ -14,16 +14,16 @@ def generate_launch_description():
         parameters=[{"use_sim_time": True}],
         arguments=[
             "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image",
-            "/model/LandingVehicle/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
+            "/landing_pad/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry",
             "/model/iris_with_gimbal/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
-            "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/joint_state@sensor_msgs/msg/JointState[gz.msgs.Model",
+
             "/cmd_rover_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
+
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+
             "--ros-args",
             "-r",
             "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image:=/camera/image_raw",
-            "-r",
-            "/model/LandingVehicle/odometry:=/landing_pad/odom",
             "-r",
             "/model/iris_with_gimbal/odometry:=/quadcopter/true_odom",
         ],
@@ -74,8 +74,9 @@ def generate_launch_description():
             {"image_source": "topic"},
             {"show_debug_window": True},
             {"enable_debug_publish": False},
-            {"create_video": False},
+            {"create_video": True},
             {"use_sim_time": True},
+            {"ground_z": 1.5},
         ],
     )
 

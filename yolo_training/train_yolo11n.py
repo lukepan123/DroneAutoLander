@@ -1,14 +1,27 @@
 from ultralytics import YOLO
 
-model = YOLO('ugv_yolo11n.pt')  # your existing UGV checkpoint
+model = YOLO('ugv_yolo11n_V0.pt')  # your existing UGV checkpoint
 
 results = model.train(
-    data='dataset1/data.yaml',
-    epochs=50,        # fewer than a from-scratch run — it's already trained, not starting cold
+    data="dataset2/data.yaml",
+    epochs=150,
     imgsz=640,
-    batch=16,
-    lr0=0.001,        # lower than the default (0.01) so updates are gentler on existing weights
-    patience=15,      # early stopping if val performance plateaus, to avoid overfitting the new subset
-    freeze=10         # freezes the first 10 layers (the backbone) so general features stay intact;
-                       # only the detection head adapts to your new data
+    batch=8,
+
+    lr0=0.001,
+    lrf=0.01,
+
+    patience=30,
+
+    freeze=None,
+
+    degrees=30,
+    translate=0.1,
+    scale=0.4,
+    fliplr=0.5,
+
+    mosaic=0.5,
+
+    plots=True,
+    save=True,
 )

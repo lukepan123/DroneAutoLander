@@ -20,9 +20,16 @@ from typing import cast
     no longer stall AprilTag's gimbal control / TF broadcast loop.
 
     Everything in this module that defines a GEOMETRIC CONVENTION (camera intrinsics,
-    camera->level-frame pose) must be shared verbatim by both nodes. Now that they are
-    separate processes, they can no longer drift apart on camera mount/gimbal offsets
-    simply because they import the same function.
+    camera->level-frame pose, pixel-row-to-angle-error) must be shared verbatim by
+    both nodes. Now that they are separate processes, they can no longer drift apart
+    on camera mount/gimbal offsets simply because they import the same function.
+
+    pixel_row_to_angle_error and LatestValueBuffer exist specifically so apriltag.py's
+    gimbal controller (which owns the only actuator, the servo) can be driven by
+    EITHER pipeline's detection: AprilTag's own image_points when available, or
+    yolo.py's bounding-box centre - published on /landing_pad/yolo_gimbal_error - as a
+    fallback when AprilTag misses on a given tick. See apriltag.py's
+    _apriltag_timer_callback / _drive_gimbal for the priority logic.
 """
 
 
@@ -43,6 +50,27 @@ def get_workspace_root() -> str | None:
 def stamp_to_sec(stamp) -> float:
     """ builtin_interfaces/Time -> float seconds. """
     return stamp.sec + stamp.nanosec * 1e-9
+
+
+def pixel_row_to_angle_error(centre_y: float, image_height: int, fy: float) -> float:
+    """ Convert a detection's vertical pixel centre into a signed angle (degrees)
+        off the image's optical-axis row. This is the exact calculation
+        apriltag.py's gimbal controller has always used on its own AprilTag corner
+        points; it's pulled out here so yolo.py can produce a directly comparable
+        error from its own bounding-box centre using its own (different-resolution)
+        camera intrinsics, and apriltag.py can treat the two as interchangeable
+        inputs to the same PD control law. Purely a function of that frame's own
+        image geometry - independent of the drone's attitude or the current servo
+        angle.
+
+    :param centre_y:     Detection centre row, in pixels of the frame it came from
+    :param image_height: Height (pixels) of that same frame
+    :param fy:           Vertical focal length (pixels) of that same frame's camera
+                          intrinsics (CameraIntrinsics.matrix[1, 1])
+    :return: Signed angle error in degrees; positive = detection below image centre
+    """
+    pixel_error = centre_y - image_height / 2
+    return float(np.degrees(np.arctan2(pixel_error, fy)))
 
 
 @dataclass
@@ -170,6 +198,39 @@ class TimeInterpolatedBuffer:
 
         fraction = (t_query - t0) / (t1 - t0)
         return interp_fn(v0, v1, fraction)
+
+
+class LatestValueBuffer:
+    """ Holds only the most recent (value, timestamp) sample and reports whether it
+        is still fresh relative to some query time. Unlike TimeInterpolatedBuffer,
+        this is NOT for aligning data to a specific past image timestamp - it's for
+        live control-loop fallback signals where the question is simply "is this
+        still current enough to act on right now?" (e.g. apriltag.py deciding
+        whether yolo.py's last published gimbal-centering error is recent enough to
+        drive the servo with, on a tick where its own AprilTag detection missed).
+    """
+
+    def __init__(self):
+        self._value = None
+        self._t: float | None = None
+
+    def push(self, value, t: float) -> None:
+        self._value = value
+        self._t = t
+
+    def get_if_fresh(self, t_now: float, max_age_s: float):
+        """
+        :param t_now:     Current time (seconds) to judge freshness against
+        :param max_age_s: Maximum allowed age (seconds) before the sample is
+                           considered stale
+        :return: The buffered value if it exists and is within max_age_s of t_now,
+                 otherwise None
+        """
+        if self._value is None or self._t is None:
+            return None
+        if (t_now - self._t) > max_age_s:
+            return None
+        return self._value
 
 
 class OdometryBuffer:

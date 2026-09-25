@@ -22,7 +22,7 @@ class LP_State(IntEnum):
     YAW_RATE = 6
 
 
-class LP_Measurement(IntEnum):
+class LP_Meas(IntEnum):
     """Measurement vector for the landing platform."""
 
     PX = 0

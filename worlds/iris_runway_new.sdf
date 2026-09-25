@@ -67,15 +67,9 @@
     </include>
 
     <include>
-      <uri>model://X1</uri>
+      <uri>model://prius_hybrid</uri>
       <name>LandingVehicle</name>
-      <pose degrees="true">-2 -300 0.195 0 0 90</pose>
-    </include>
-    
-    <include>
-      <uri>model://camera_calibrate_wall</uri>
-      <name>Wall</name>
-      <pose degrees="true">0 -8 0 0 0 0</pose>
+      <pose degrees="true">0 -320 0.195 0 0 90</pose>
     </include>
 
   </world>

@@ -3,7 +3,7 @@ from collections import deque
 from collections import namedtuple
 
 from .state_definitions import LP_State
-from .state_definitions import LP_Measurement
+from .state_definitions import LP_Meas
 
 """ UKF Class definitions to implement a target/chaser kinematic model. Consists of all 
     higher level UKF logic for prediction and updating of kinematic model, as well as 
@@ -36,7 +36,7 @@ class UKF:
         # ---- UKF PARAMETERS ----
         # Dimensions
         self.dim_x = len(LP_State)
-        self.dim_z = len(LP_Measurement)
+        self.dim_z = len(LP_Meas)
 
         # UKF scaling parameters (Merwe)
         self.alpha = 1.0
@@ -77,17 +77,19 @@ class UKF:
         # ---- UKF INITIALISATION ----
         # Initial state
         self.x = np.zeros(self.dim_x)
+        self.x[LP_State.PZ] = 1.5         # m above ground
+        self.x[LP_State.YAW] = np.pi/2.0  # rad
 
         # Initial covariance
         self.P_init = np.diag(
             [
-                0.15,
-                0.15,
-                0.15,
-                0.50,
+                3.00,
+                3.00,
+                3.00,
+                3.00,
+                3.00,
                 1.50,
-                0.15,
-                0.50,
+                1.50,
             ]
         )
         self.P = self.P_init.copy()
@@ -353,6 +355,78 @@ class UKF:
         self.Z.fill(0.0)
 
 
+    def seed_position(
+        self, z, timestamp: float, R=None, ignore_above: float = 1e6
+    ) -> None:
+        """ Directly seed the position/yaw states (and their covariance) from a
+            measurement, instead of letting them converge from zero via the
+            normal Kalman gain over several update() calls. Call this once,
+            right after reset(), as soon as the first valid measurement of any
+            stream becomes available.
+
+            Axes whose R is >= ignore_above are treated as carrying no real
+            information for this stream (e.g. YOLO's pz/yaw, R~1e9) and are
+            left untouched - neither x nor P is modified for that axis. This
+            matters because seeding P from a sentinel-large R would otherwise
+            blow past covar_max_eig safety thresholds on a perfectly healthy
+            filter. Those axes get filled in normally (via Kalman gain) the
+            next time a stream that does trust them provides an update.
+
+            Velocity/acceleration/yaw-rate are always left at reset() defaults
+            since no stream measures them directly.
+
+        :param z:            Measurement of landing pad pose (px, py, pz, yaw)
+        :param timestamp:     Timestamp of the seeding measurement (s)
+        :param R:             Measurement noise for this stream. Defaults to
+                            self.R. Also used to decide which axes to skip.
+        :param ignore_above:  R[axis,axis] at or above this is treated as "no
+                            information" and that axis is left unseeded.
+        """
+        z = np.asarray(z, dtype=float)
+        if R is None:
+            R = self.R
+        R = np.asarray(R, dtype=float)
+
+        pos_states = [LP_State.PX, LP_State.PY, LP_State.PZ, LP_State.YAW]
+        meas_states = [LP_Meas.PX, LP_Meas.PY, LP_Meas.PZ, LP_Meas.YAW]
+
+        seeded_any = False
+        for xs, zs in zip(pos_states, meas_states):
+            r = R[zs, zs]
+            if r >= ignore_above:
+                continue  # no real info on this axis for this stream - leave as-is
+
+            if xs == LP_State.YAW:
+                self.x[xs] = self._wrap(z[zs])
+            else:
+                self.x[xs] = z[zs]
+
+            # Pad a bit above raw R since this is a single sample, not a
+            # filtered estimate - avoids being overconfident off one measurement.
+            self.P[xs, xs] = max(r * 4.0, 1e-4)
+            seeded_any = True
+
+        if not seeded_any:
+            return  # nothing trustworthy in this measurement, don't bother logging an event
+
+        self._last_update_time = timestamp
+
+        # Re-seed X_prop from the (possibly partially) seeded x/P, so an OOSM
+        # rewind that later lands exactly on this event sees sigma points
+        # consistent with it, not stale pre-seed ones.
+        try:
+            S = self.gamma * np.linalg.cholesky(self.P)
+        except np.linalg.LinAlgError:
+            self._repair_P()
+            S = self.gamma * np.linalg.cholesky(self.P)
+        self.X_prop[0] = self.x
+        for i in range(self.dim_x):
+            self.X_prop[i + 1] = self.x + S[:, i]
+            self.X_prop[self.dim_x + i + 1] = self.x - S[:, i]
+
+        self._push_update_event(timestamp, z, R)
+
+
     def _update_apply(self, z, R=None) -> bool:
         """ Do update step for UKF. Handles lower level UKF update functions such as 
             actual covariance and state updates. Called via the public .update() 
@@ -374,13 +448,13 @@ class UKF:
 
         # Predicted measurement mean
         z_pred = (self.Wm[:, None] * self.Z).sum(axis=0)
-        z_pred[LP_Measurement.YAW] = self._circular_mean(
-            self.Z[:, LP_Measurement.YAW], self.Wm
+        z_pred[LP_Meas.YAW] = self._circular_mean(
+            self.Z[:, LP_Meas.YAW], self.Wm
         )  # circular mean for yaw
 
         # Measurement deviations
         dZ = self.Z - z_pred
-        dZ[:, LP_Measurement.YAW] = self._wrap(dZ[:, LP_Measurement.YAW])
+        dZ[:, LP_Meas.YAW] = self._wrap(dZ[:, LP_Meas.YAW])
 
         # State deviations
         dX = self.X_prop - self.x
@@ -400,7 +474,7 @@ class UKF:
 
         # Innovation
         y = z - z_pred
-        y[LP_Measurement.YAW] = self._wrap(y[LP_Measurement.YAW])
+        y[LP_Meas.YAW] = self._wrap(y[LP_Meas.YAW])
 
         # Update state
         self.x += K @ y
@@ -539,10 +613,10 @@ class UKF:
         :param Z: Measurement vector
         """
 
-        Z[:, LP_Measurement.PX] = X[:, LP_State.PX]
-        Z[:, LP_Measurement.PY] = X[:, LP_State.PY]
-        Z[:, LP_Measurement.PZ] = X[:, LP_State.PZ]
-        Z[:, LP_Measurement.YAW] = self._wrap(X[:, LP_State.YAW])
+        Z[:, LP_Meas.PX] = X[:, LP_State.PX]
+        Z[:, LP_Meas.PY] = X[:, LP_State.PY]
+        Z[:, LP_Meas.PZ] = X[:, LP_State.PZ]
+        Z[:, LP_Meas.YAW] = self._wrap(X[:, LP_State.YAW])
 
 
     def _push_predict_event(self, timestamp: float, quad_vel) -> None:

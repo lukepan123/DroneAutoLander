@@ -21,8 +21,8 @@ class PIDController:
         # ---- PID PARAMETERS ----
         # PN/PD Gains
         self.lam_0 = 2.0
-        self.Kp_0 = 6.0
-        self.Kd_0 = 3.0
+        self.Kp_0 = 6.5
+        self.Kd_0 = 3.25
 
         # P/PI Altitude Gains
         self.Kp_z_pos = 0.2
@@ -49,6 +49,9 @@ class PIDController:
         self.prev_theta = 0.0
         self.prev_yaw = 1.5707963
 
+        self.d_blend_start = 3.0   # start blending toward marker yaw
+        self.d_blend_end   = 1.0   # fully aligned with marker yaw
+        self.d_hold_radius = 3.0   # inside this, hold yaw if tag lost
 
         # ---- STATE VARIABLES ----
         self.lam = self.lam_0
@@ -60,7 +63,7 @@ class PIDController:
     def controller(
         self,
         target_altitude,
-        target_yaw,
+        marker_yaw,
         cutoff,
         quad_yaw,
         quad_vel,
@@ -70,7 +73,8 @@ class PIDController:
         """PN/PD Controller Logic
 
         :param target_altitude: desired hover/approach altitude (m, ENU z)
-        :param target_yaw:      desired heading (rad, ENU convention)
+        :param marker_yaw:      AprilTag-measured pad yaw (rad, ENU), or None/NaN
+                                if no tag is currently detected
         :param cutoff:          bool — if True, zero thrust and hold yaw (kill switch)
         :param quad_yaw:        drone yaw   ψ   (rad)
         :param quad_vel:        drone velocity  v_a (m/s) — 3-vector [vx, vy, vz]
@@ -78,9 +82,31 @@ class PIDController:
         :param du:              drone-target velocity v_m (m/s) (globally aligned) — 3-vector [vx, vy, vz]
         :return: AttitudeTarget msg (attitude quaternion + normalised throttle)
         """
+        tag_detected = (marker_yaw is not None) and not np.isnan(marker_yaw)
+
+        if cutoff:
+            # kill switch — skip blend/hold logic entirely, just freeze yaw
+            target_yaw = self.prev_yaw
+        else:
+            dist_to_pad = np.hypot(u[0], u[1])        # horizontal range to pad
+            heading_to_pad = np.arctan2(-u[1], -u[0])   # bearing drone -> pad
+
+            if tag_detected:
+                if dist_to_pad > self.d_blend_start:
+                    target_yaw = heading_to_pad
+                elif dist_to_pad > self.d_blend_end:
+                    alpha = (self.d_blend_start - dist_to_pad) / (self.d_blend_start - self.d_blend_end)
+                    target_yaw = self._blend_angle(heading_to_pad, marker_yaw, alpha)
+                else:
+                    target_yaw = marker_yaw
+            else:
+                if dist_to_pad < self.d_hold_radius:
+                    target_yaw = self.prev_yaw    # hold — don't chase a noisy/unavailable bearing near the pad
+                else:
+                    target_yaw = heading_to_pad   # still far out, LOS heading is fine
 
         # Condition yaw
-        target_yaw = (target_yaw + np.pi) % (2 * np.pi) - np.pi
+        target_yaw = (target_yaw + np.pi) % (2 * np.pi) - np.pi #type: ignore
         target_yaw = self._slew_angle(target_yaw, self.prev_yaw, self.max_angle_rate)
         self.prev_yaw = target_yaw
 
@@ -111,11 +137,10 @@ class PIDController:
         lam_gain_factor = 1 - np.exp(-drop_off_strength * r)
 
         terminal_gain = 1.0
-        drop_off = 5.0
-        peak_gain_dist = 0.0
+        drop_off = 3.0
 
         u_norm = np.linalg.norm(u)
-        gain_factor = terminal_gain * drop_off / ((u_norm - peak_gain_dist)**2 + drop_off)
+        gain_factor = terminal_gain * drop_off / (u_norm**2 + drop_off)
 
         self.lam = self.lam_0 * lam_gain_factor
         self.Kp = self.Kp_0 * gain_factor
@@ -247,9 +272,18 @@ class PIDController:
         """ Update the PID controller with current state to generate new controller 
             commands.
         """
+
+        # Only pass through marker yaw if uncertainty on yaw is low enough
+        if node._UKF_diag["sigma_yaw"] <= 0.075:
+            marker_yaw = node.landing_pad_yaw_forward_predict
+        else:
+            marker_yaw = None 
+
+        node.get_logger().info(f"{marker_yaw}")
+
         msg = self.controller(
             target_altitude=node.target_z,
-            target_yaw=node.landing_pad_yaw_forward_predict,
+            marker_yaw=marker_yaw,
             cutoff=node.cutoff,
             quad_yaw=node.quad_yaw,
             quad_vel=np.array(
@@ -291,3 +325,9 @@ class PIDController:
         diff = (target - prev + np.pi) % (2 * np.pi) - np.pi
         result = prev + np.clip(diff, -max_step, max_step)
         return (result + np.pi) % (2 * np.pi) - np.pi
+
+    @staticmethod
+    def _blend_angle(a, b, alpha):
+        """Interpolate from angle a to angle b via unit vectors (shortest-arc, wrap-safe)."""
+        v = (1 - alpha) * np.array([np.cos(a), np.sin(a)]) + alpha * np.array([np.cos(b), np.sin(b)])
+        return np.arctan2(v[1], v[0])
