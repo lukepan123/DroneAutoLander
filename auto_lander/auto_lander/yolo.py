@@ -162,7 +162,7 @@ class YoloNode(Node):
 
         self.declare_parameter("yolo_enabled", True)
         self.declare_parameter("yolo_model_path", default_yolo_model)
-        self.declare_parameter("yolo_conf_threshold", 0.70)
+        self.declare_parameter("yolo_conf_threshold", 0.60)
 
         self.yolo_enabled = (
             self.get_parameter("yolo_enabled").get_parameter_value().bool_value

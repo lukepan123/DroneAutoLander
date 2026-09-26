@@ -43,6 +43,10 @@ class UKF:
         self.beta = 2.0
         self.kappa = 0.0
 
+        # Mahalanobis_threshold (prevent bad measurements going into filter)
+        self._mahalanobis_threshold = 50   # chi^2, 4 DOF, ~99.9%
+        self._rejected_measurements = 0
+
         self.lambda_ = self.alpha**2 * (self.dim_x + self.kappa) - self.dim_x
         self.gamma = np.sqrt(self.dim_x + self.lambda_)
 
@@ -83,13 +87,13 @@ class UKF:
         # Initial covariance
         self.P_init = np.diag(
             [
-                3.00,
-                3.00,
-                3.00,
-                3.00,
-                3.00,
-                1.50,
-                1.50,
+                1.00,
+                1.00,
+                1.00,
+                1.00,
+                2.00,
+                0.20,
+                0.20,
             ]
         )
         self.P = self.P_init.copy()
@@ -99,7 +103,7 @@ class UKF:
             [
                 0.005,
                 0.005,
-                0.005,  # px, py, pz
+                0.050,  # px, py, pz
                 0.050,
                 0.200,  # v, a
                 0.005,
@@ -354,6 +358,10 @@ class UKF:
         self.X_prop.fill(0.0)
         self.Z.fill(0.0)
 
+        self._rejected_measurements = 0
+        self._last_nis = np.nan
+        self._nis_ewma = float(self.dim_z)
+
 
     def seed_position(
         self, z, timestamp: float, R=None, ignore_above: float = 1e6
@@ -427,6 +435,133 @@ class UKF:
         self._push_update_event(timestamp, z, R)
 
 
+    def seed_from_window(
+        self, samples: list[tuple[float, np.ndarray, np.ndarray]], ignore_above: float = 1e6
+    ) -> None:
+        """ Seed position, yaw, velocity AND yaw-rate from a short window of raw
+            measurements, instead of a single sample. Differencing several noisy
+            position/yaw samples via least-squares gives a much better initial
+            velocity/yaw-rate estimate than starting from zero and letting the
+            Kalman gain infer it recursively over several update() calls -
+            useful when you have a guaranteed hold period (e.g. ~1s / 10
+            samples) before you need a usable estimate.
+
+            Call this once, right after reset(), in place of seed_position() -
+            not in addition to it - once your window of samples is full.
+
+        :param samples: (timestamp, z, R) tuples, oldest first, ALL FROM THE
+                        SAME STREAM (mixing streams with different noise/rate
+                        characteristics will bias the fit). z = (px,py,pz,yaw).
+        :param ignore_above: as per seed_position - axes with R >= this are
+                            treated as unmeasured by this stream and skipped.
+        """
+        n = len(samples)
+        if n < 3:
+            t0, z0, R0 = samples[-1]
+            self._last_seed_diag = {"path": "single_sample_fallback", "n": n}
+            self.seed_position(z0, t0, R0, ignore_above)
+            return
+
+        t = np.array([s[0] for s in samples])
+        Z = np.array([s[1] for s in samples])
+        R_last = samples[-1][2]
+        dt = t - t[0]  # regress on seconds-since-window-start, not raw epoch time
+        self._last_seed_diag = {
+            "path": "window_fit", "n": n, "span": float(dt[-1] - dt[0]),
+            "dt": dt.tolist(),
+        }
+
+        seeded_any = False
+        vx = vy = 0.0
+        have_xy = False
+
+        for xs, zs in [
+            (LP_State.PX, LP_Meas.PX),
+            (LP_State.PY, LP_Meas.PY),
+            (LP_State.PZ, LP_Meas.PZ),
+        ]:
+            r = R_last[zs, zs]
+            if r >= ignore_above:
+                continue
+            slope, intercept = np.polyfit(dt, Z[:, zs], 1)
+            self.x[xs] = intercept + slope * dt[-1]     # fitted value "now" (denoised)
+            self.P[xs, xs] = max(r * 4.0, 1e-4)         # same padding convention as seed_position
+            if xs == LP_State.PX:
+                vx, have_xy = slope, True
+            elif xs == LP_State.PY:
+                vy = slope
+            seeded_any = True
+
+        r_yaw = R_last[LP_Meas.YAW, LP_Meas.YAW]
+        if r_yaw < ignore_above:
+            yaw_unwrapped = np.unwrap(Z[:, LP_Meas.YAW])   # critical: unwrap before fitting
+            slope_w, intercept_w = np.polyfit(dt, yaw_unwrapped, 1)
+            self.x[LP_State.YAW] = self._wrap(intercept_w + slope_w * dt[-1])
+            self.x[LP_State.YAW_RATE] = slope_w
+            self.P[LP_State.YAW, LP_State.YAW] = max(r_yaw * 4.0, 1e-4)
+            span = dt[-1] - dt[0]
+            var_omega = 12.0 * r_yaw / max(n * (n**2 - 1) * (span / (n - 1)) ** 2, 1e-9)
+            self.P[LP_State.YAW_RATE, LP_State.YAW_RATE] = max(4.0 * var_omega, 1e-3)
+            seeded_any = True
+
+        if have_xy:
+            speed_mag = float(np.hypot(vx, vy))
+            r_pos = max(R_last[LP_Meas.PX, LP_Meas.PX], R_last[LP_Meas.PY, LP_Meas.PY])
+            span = dt[-1] - dt[0]
+            var_v = 12.0 * r_pos / max(n * (n**2 - 1) * (span / (n - 1)) ** 2, 1e-9)
+
+            yaw_was_seeded = R_last[LP_Meas.YAW, LP_Meas.YAW] < ignore_above
+
+            if yaw_was_seeded:
+                # This stream also measured yaw directly (e.g. AprilTag) - project
+                # the fitted velocity vector onto that independently-measured heading.
+                yaw0 = self.x[LP_State.YAW]
+                self.x[LP_State.V] = vx * np.cos(yaw0) + vy * np.sin(yaw0)
+                self.P[LP_State.V, LP_State.V] = max(4.0 * var_v, 1e-3)
+            else:
+                # No yaw from this stream (YOLO: R_yaw ~ 1e9). self.x[LP_State.YAW]
+                # is still the reset() default, so projecting onto it silently
+                # corrupts V - that was the bug (v0 above == vx, because yaw0 was
+                # stuck at 0.0). Instead derive heading AND speed from the direction
+                # of travel - valid for a target that points the way it moves, but
+                # only trustworthy if it's actually moving: near-zero displacement
+                # gives a heading dominated by position noise, not motion.
+                MIN_SPEED_FOR_HEADING = 0.3  # m/s - tune against your position noise floor
+                if speed_mag >= MIN_SPEED_FOR_HEADING:
+                    self.x[LP_State.YAW] = self._wrap(np.arctan2(vy, vx))
+                    self.x[LP_State.V] = speed_mag
+                    # sigma_yaw ~ sigma_v / speed via atan2 error propagation -
+                    # correctly blows up as speed -> 0.
+                    var_yaw = var_v / max(speed_mag**2, 1e-6)
+                    self.P[LP_State.YAW, LP_State.YAW] = max(4.0 * var_yaw, 1e-3)
+                    self.P[LP_State.V, LP_State.V] = max(4.0 * var_v, 1e-3)
+                # else: leave x[V]/x[YAW]/P at reset() defaults - can't distinguish
+                # "barely moving" from "stationary" given this stream's noise floor,
+                # so don't force a heading out of it.
+
+        self._last_seed_diag.update({"vx": float(vx), "vy": float(vy),
+                                "v0": float(self.x[LP_State.V]),
+                                "yaw0": float(self.x[LP_State.YAW]),
+                                "yaw_rate": float(self.x[LP_State.YAW_RATE])})
+            
+        if not seeded_any:
+            return
+
+        self._last_update_time = t[-1]
+        try:
+            S = self.gamma * np.linalg.cholesky(self.P)
+        except np.linalg.LinAlgError:
+            self._repair_P()
+            S = self.gamma * np.linalg.cholesky(self.P)
+        self.X_prop[0] = self.x
+        for i in range(self.dim_x):
+            self.X_prop[i + 1] = self.x + S[:, i]
+            self.X_prop[self.dim_x + i + 1] = self.x - S[:, i]
+
+        self._UKF_buffer.clear() # Clear buffer incase any predicts were called prior (shouldnt be)
+        self._push_update_event(t[-1], samples[-1][1], R_last)
+
+
     def _update_apply(self, z, R=None) -> bool:
         """ Do update step for UKF. Handles lower level UKF update functions such as 
             actual covariance and state updates. Called via the public .update() 
@@ -466,15 +601,30 @@ class UKF:
         # Innovation covariance
         S = (dZ.T * self.Wc) @ dZ + R
 
+        # Innovation
+        y = z - z_pred
+        y[LP_Meas.YAW] = self._wrap(y[LP_Meas.YAW])
+
+        # Mahalanobis / NIS measurement gate
+        try:
+            # NIS = y^T S^-1 y
+            nis = float(y @ np.linalg.solve(S, y))
+        except np.linalg.LinAlgError:
+            return False
+
+        self._last_nis = nis
+
+        # Reject statistically implausible measurements BEFORE updating
+        # state or covariance.
+        if nis > self._mahalanobis_threshold:
+            self._rejected_measurements += 1
+            return False
+
         # Kalman gain, if S is singular skip update
         try:
             K = np.linalg.solve(S.T, P_xz.T).T
         except np.linalg.LinAlgError:
             return False
-
-        # Innovation
-        y = z - z_pred
-        y[LP_Meas.YAW] = self._wrap(y[LP_Meas.YAW])
 
         # Update state
         self.x += K @ y
@@ -484,10 +634,11 @@ class UKF:
         self.P -= K @ S @ K.T
         self.P = 0.5 * (self.P + self.P.T)
 
-        # Log the NIS
-        self._last_nis = float(y @ np.linalg.solve(S, y))
-        self._nis_ewma = (self._nis_ewma_beta * self._nis_ewma
-                        + (1 - self._nis_ewma_beta) * self._last_nis)
+        # EWMA NIS only gets updated for accepted measurements
+        self._nis_ewma = (
+            self._nis_ewma_beta * self._nis_ewma
+            + (1 - self._nis_ewma_beta) * nis
+        )
 
         return True
 
@@ -534,6 +685,8 @@ class UKF:
             "covar_max_eig": max_eig,
             "is_pd": is_pd,
             "nis": self._last_nis,
+            "mahalanobis_threshold": self._mahalanobis_threshold,
+            "rejected_measurements": self._rejected_measurements,
         }
 
 

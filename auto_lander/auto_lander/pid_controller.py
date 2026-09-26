@@ -21,14 +21,14 @@ class PIDController:
         # ---- PID PARAMETERS ----
         # PN/PD Gains
         self.lam_0 = 2.0
-        self.Kp_0 = 6.5
+        self.Kp_0 = 7.0
         self.Kd_0 = 3.25
 
         # P/PI Altitude Gains
-        self.Kp_z_pos = 0.2
+        self.Kp_z_pos = 0.3
 
-        self.Kp_vel_z = 5.0
-        self.Ki_vel_z = 2.0
+        self.Kp_vel_z = 2.0
+        self.Ki_vel_z = 0.15
 
         self.vel_z_err = 0.0
         self.vel_z_integral = 0.0
@@ -36,22 +36,20 @@ class PIDController:
 
         # Constant Parameters
         self.m = 1.98
-        self.max_thrust = 46.0
+        self.max_thrust = 40.0
         self.g = 9.81
-        self.cD = -0.002 #TODO: I believe the current velocity and acceleration for the 
-                         #      quad are negated, and hence is why a negative CD gives 
-                         #      the correct effect... will fix later.
+        self.cD = 0.002
 
-        self.max_throttle_rate = 0.4   # unit/s
+        self.max_throttle_rate = 1.0   # unit/s
         self.max_angle_rate = 1.0      # rad/s
         self.prev_throttle = 0.0
         self.prev_phi = 0.0
         self.prev_theta = 0.0
-        self.prev_yaw = 1.5707963
+        self.prev_yaw =  None
 
-        self.d_blend_start = 3.0   # start blending toward marker yaw
+        self.d_blend_start = 4.0   # start blending toward marker yaw
         self.d_blend_end   = 1.0   # fully aligned with marker yaw
-        self.d_hold_radius = 3.0   # inside this, hold yaw if tag lost
+        self.d_hold_radius = 4.0   # inside this, hold yaw if tag lost
 
         # ---- STATE VARIABLES ----
         self.lam = self.lam_0
@@ -78,18 +76,21 @@ class PIDController:
         :param cutoff:          bool — if True, zero thrust and hold yaw (kill switch)
         :param quad_yaw:        drone yaw   ψ   (rad)
         :param quad_vel:        drone velocity  v_a (m/s) — 3-vector [vx, vy, vz]
-        :param u:               drone-target relative position p_m (globally aligned) (m) — 3-vector [x, y, z]
-        :param du:              drone-target velocity v_m (m/s) (globally aligned) — 3-vector [vx, vy, vz]
+        :param u:               target-drone relative position p_m (ENU globally aligned) (m) — 3-vector [x, y, z]
+        :param du:              target-drone velocity v_m (m/s) (ENU globally aligned) — 3-vector [vx, vy, vz]
         :return: AttitudeTarget msg (attitude quaternion + normalised throttle)
         """
         tag_detected = (marker_yaw is not None) and not np.isnan(marker_yaw)
+
+        if self.prev_yaw is None:
+            self.prev_yaw = quad_yaw
 
         if cutoff:
             # kill switch — skip blend/hold logic entirely, just freeze yaw
             target_yaw = self.prev_yaw
         else:
             dist_to_pad = np.hypot(u[0], u[1])        # horizontal range to pad
-            heading_to_pad = np.arctan2(-u[1], -u[0])   # bearing drone -> pad
+            heading_to_pad = np.arctan2(u[1], u[0])   # bearing drone -> pad
 
             if tag_detected:
                 if dist_to_pad > self.d_blend_start:
@@ -112,7 +113,7 @@ class PIDController:
 
         # Cuttoff condition
         if cutoff is True:
-            # ---- Build MAVROS message
+            # ---- Build MAVROS message (ENU)
             q = quaternion_from_euler(0, 0, target_yaw)
 
             msg = AttitudeTarget()
@@ -130,14 +131,14 @@ class PIDController:
 
             return msg
 
-        # ---- PN/PD Controller ----
+        # ---- PN/PD Controller (ENU) ----
         # Drop off bearing/PN gain as we close to target
         r = np.linalg.norm(u[:2])
         drop_off_strength = 0.5
         lam_gain_factor = 1 - np.exp(-drop_off_strength * r)
 
         terminal_gain = 1.0
-        drop_off = 3.0
+        drop_off = 6.0
 
         u_norm = np.linalg.norm(u)
         gain_factor = terminal_gain * drop_off / (u_norm**2 + drop_off)
@@ -164,17 +165,19 @@ class PIDController:
 
         # ---- Altitude Controller ----
         # Outer P loop: position error → velocity command
-        z_err = u[QUAD_State.Z] - target_altitude
+        # Negate u[Z] since the relative distance is given as a negative, but the target 
+        # offset is always given as a positive
+        z_err = target_altitude - (-u[QUAD_State.Z])
         vel_z_des = np.clip(self.Kp_z_pos * z_err, -1.5, 1.5)
 
         # Inner PI loop: velocity error → acceleration command
-        vel_z_err = vel_z_des - quad_vel[2]
+        vel_z_err = vel_z_des - quad_vel[QUAD_State.Z]
         self.vel_z_integral = np.clip(
             self.vel_z_integral + vel_z_err * self.dt,
             -self.vel_z_i_clamp,
             self.vel_z_i_clamp,
         )
-        accel[2] = np.clip(
+        accel[QUAD_State.Z] = np.clip(
             self.Kp_vel_z * vel_z_err + self.Ki_vel_z * self.vel_z_integral,
             -1.0 * self.g,
             1.0 * self.g,
@@ -189,21 +192,36 @@ class PIDController:
         # Rewrite in terms of forces
         F_x = self.m * accel[QUAD_State.X] + drag_x
         F_y = self.m * accel[QUAD_State.Y] + drag_y
-        F_z = self.m * (accel[QUAD_State.Z] - self.g) + drag_z
+        F_z = self.m * (accel[QUAD_State.Z] + self.g) + drag_z
+        F_z = np.clip(F_z, 0.0, self.max_thrust)  # never let vertical alone exceed budget
 
         # Thrust/Throttle
-        thrust = np.sqrt(F_x**2 + F_y**2 + F_z**2)
-        throttle = np.clip(thrust / self.max_thrust, 0.0, 1.0)
+        # Whatever thrust is left after guaranteeing F_z gets allocated to horizontal
+        horiz_budget = np.sqrt(max(self.max_thrust**2 - F_z**2, 0.0))
+        F_horiz = np.hypot(F_x, F_y)
+        if F_horiz > horiz_budget:
+            scale = horiz_budget / F_horiz
+            F_x *= scale
+            F_y *= scale
 
-        # Roll φ
-        phi = np.arcsin(-(F_x * np.sin(quad_yaw) - F_y * np.cos(quad_yaw)) / (thrust))
-        phi = max(-1, min(phi, 1))
+        thrust = np.sqrt(F_x**2 + F_y**2 + F_z**2)  # now guaranteed <= max_thrust
 
-        # Pitch θ (nose down positive in NED)
-        theta = np.arcsin(
-            -(F_x * np.cos(quad_yaw) + F_y * np.sin(quad_yaw)) / (thrust * np.cos(phi))
-        )
-        theta = max(-1, min(theta, 1))
+        if thrust < 1e-6:
+            # Thrust direction is undefined; hold previous attitude.
+            phi = self.prev_phi
+            theta = self.prev_theta
+            throttle = 0.0
+        else:
+            # Perform control
+            throttle = np.clip(thrust / self.max_thrust, 0.0, 1.0)
+
+            # Roll φ
+            phi = np.arcsin((F_x * np.sin(quad_yaw) - F_y * np.cos(quad_yaw)) / (thrust))
+            phi = max(-1, min(phi, 1))
+
+            # Pitch θ (nose down positive in ENU)
+            theta = np.arctan2((F_x * np.cos(quad_yaw) + F_y * np.sin(quad_yaw)), F_z)
+            theta = max(-1, min(theta, 1))
 
         # Restrict/ramp outputs
         throttle = self._slew(throttle, self.prev_throttle, self.max_throttle_rate)
@@ -274,12 +292,10 @@ class PIDController:
         """
 
         # Only pass through marker yaw if uncertainty on yaw is low enough
-        if node._UKF_diag["sigma_yaw"] <= 0.075:
+        if node._UKF_diag["sigma_yaw"] <= 0.15:
             marker_yaw = node.landing_pad_yaw_forward_predict
         else:
             marker_yaw = None 
-
-        node.get_logger().info(f"{marker_yaw}")
 
         msg = self.controller(
             target_altitude=node.target_z,
@@ -293,8 +309,8 @@ class PIDController:
                     node.odometry.twist.twist.linear.z,
                 ]
             ),
-            u=-np.array(node.landing_pad_relative_position_forward_predict),
-            du=-np.array(node.landing_pad_relative_velocity_forward_predict),
+            u=np.array(node.landing_pad_relative_position_forward_predict),
+            du=np.array(node.landing_pad_relative_velocity_forward_predict),
         )
 
         # Drive outputs to quadcopter via MAVROS

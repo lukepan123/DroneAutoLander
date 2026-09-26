@@ -82,14 +82,14 @@ def straight_trajectory() -> Trajectory:
     """ Straight line trajectory.
     """
     return Trajectory([
-        TrajectorySegment(t_start=0.0,  t_end=30.0,  v_start=0.0,  v_end=10.0, w_start=0.0, w_end=0.0),
+        TrajectorySegment(t_start=0.0,  t_end=5.0,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=0.0),
     ])
 
 def turn_trajectory() -> Trajectory:
     """ Turning trajectory.
     """
     return Trajectory([
-        TrajectorySegment(t_start=0.0,  t_end=15.0,  v_start=0.0,  v_end=8.0, w_start=0.0, w_end=-0.2),
+        TrajectorySegment(t_start=0.0,  t_end=4.0,  v_start=0.0,  v_end=11.0, w_start=0.0, w_end=-0.2),
     ])
 
 def mix_trajectory1() -> Trajectory:
@@ -191,7 +191,7 @@ def main():
 
     # Swap in your own list of TrajectorySegment(...) here to script a
     # different test run.
-    trajectory = turn_trajectory()
+    trajectory = mix_trajectory1()
 
     node = AGV_Controller(
         trajectory=trajectory,

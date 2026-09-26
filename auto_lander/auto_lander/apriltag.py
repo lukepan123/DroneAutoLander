@@ -210,7 +210,7 @@ class AprilTagNode(Node):
 
         self.detector = AprilTagDetector(
             families="tag36h11",
-            quad_decimate=1.0,
+            quad_decimate=2.0,
             quad_sigma=0.0,
             refine_edges=1,
             decode_sharpening=0.75,

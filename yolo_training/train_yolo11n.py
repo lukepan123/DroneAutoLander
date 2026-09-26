@@ -4,18 +4,18 @@ model = YOLO('ugv_yolo11n_V0.pt')  # your existing UGV checkpoint
 
 results = model.train(
     data="dataset2/data.yaml",
-    epochs=150,
+    epochs=200,
     imgsz=640,
     batch=8,
 
     lr0=0.001,
     lrf=0.01,
 
-    patience=30,
+    patience=100,
 
     freeze=None,
 
-    degrees=30,
+    degrees=50,
     translate=0.1,
     scale=0.4,
     fliplr=0.5,

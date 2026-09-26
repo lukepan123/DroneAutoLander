@@ -23,6 +23,7 @@ from mavros_msgs.srv import CommandTOL
 from mavros_msgs.srv import SetMode
 from mavros_msgs.srv import MessageInterval
 from datetime import datetime
+from collections import deque
 
 from .state_definitions import QUAD_State
 from .state_definitions import LP_State
@@ -55,15 +56,15 @@ class Orchestrator(Node):
 
         # ---- Global State Variables ----
         self.MAX_RUNTIME = 200.0  # secs
-        self.BOUNDARY_LIMIT = 500.0  # m x m square
+        self.BOUNDARY_LIMIT = 600.0  # m x m square
 
-        self.LANDING_RECOVERY_HEIGHT  = 1.5  # m above landing pad
+        self.LANDING_RECOVERY_HEIGHT  = 2.0  # m above landing pad
         self.LANDING_HEIGHT_ABOVE_GND = 1.5  # m above landing pad
         self.LANDING_HEIGHT_THRESHOLD = 0.4  # m above landing pad
         self.LANDING_ERROR_THRESHOLD  = 0.1  # m error
-        self.LANDING_CENTERED_ERROR_THRESHOLD = 1.0 # m error
+        self.LANDING_CENTERED_ERROR_THRESHOLD = 2.0 # m error
 
-        self.target_z = 3.5  # m above landing pad
+        self.target_z = 6.0  # m above landing pad
 
         self.controller_state = 0
         self.fcu_state = State()
@@ -99,10 +100,10 @@ class Orchestrator(Node):
         # ---- State 2xxx (Searching for Landing Pad) Variables ----
         self._landing_pad_found = False
         self._landing_pad_first_seen_time = None
-        self._landing_pad_visual_time_SP = 1.0
+        self._landing_pad_visual_time_SP = 0.6
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
-        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 20.0
+        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 15.0
         self._landing_pad_lost_time = None
         self._landing_pad_lost_time_SP = 4.0
 
@@ -122,6 +123,9 @@ class Orchestrator(Node):
         # ---- CONTROL CLASS INITIALISATIONS ----
         self._UKF_start = False
         self._UKF_seed_pending = False
+        self._UKF_seed_window_n = 5
+        self._UKF_seed_window_min_dt = self._landing_pad_visual_time_SP - 0.1
+        self._UKF_seed_buffers = {"apriltag": deque(), "yolo_lp": deque(), "yolo_car": deque()}
         self._UKF_last_update = self.get_clock().now()
         self._UKF_timer_rate = 0.05
         self._UKF_filter = UKF()
@@ -546,12 +550,8 @@ class Orchestrator(Node):
         self._UKF_last_update = now
 
         # Predict UKF step (after first measurement)
-        if self._UKF_start:
-            self._UKF_filter.predict(
-                self.quad_vel, 
-                dt, 
-                now.nanoseconds * 1e-9
-            )
+        if self._UKF_start and not self._UKF_seed_pending:
+            self._UKF_filter.predict(self.quad_vel, dt, now.nanoseconds * 1e-9)
 
         # Warn in logs if filter goes non-PD or any sigma blows up
         if not self._UKF_diag["is_pd"]:
@@ -589,6 +589,8 @@ class Orchestrator(Node):
                 )
                 measurement = np.array([t[0], t[1], t[2], yaw])
 
+                self.get_logger().info(f"{t[2]}")
+
                 # Store raw measurement
                 self._UKF_raw_measurement = [t[0], t[1], t[2], yaw]
                 self._UKF_raw_measurement_stamp = stamp_sec
@@ -612,17 +614,26 @@ class Orchestrator(Node):
 
                 self._UKF_filter.R = np.diag(
                     [
-                        0.00009 * cov_adj_x,
-                        0.00009 * cov_adj_y,
-                        0.00009 * cov_adj_z,
-                        0.00050 * cov_adj_z,
+                        0.10 * cov_adj_x,
+                        0.10 * cov_adj_y,
+                        0.10 * cov_adj_z,
+                        0.10 * cov_adj_z,
                     ]
                 )
 
                 # Seed if this is the first measurement since a (re)start
                 if self._UKF_seed_pending:
-                    self._UKF_filter.seed_position(measurement, stamp_sec)
-                    self._UKF_seed_pending = False
+                    buf = self._UKF_seed_buffers["apriltag"]  # swap key per block
+                    buf.append((stamp_sec, measurement.copy(), self._UKF_filter.R.copy()))
+                    span = buf[-1][0] - buf[0][0]
+                    if len(buf) >= self._UKF_seed_window_n or span >= self._UKF_seed_window_min_dt:
+                        self._UKF_filter.seed_from_window(list(buf))
+                        self._UKF_seed_pending = False
+                        for b in self._UKF_seed_buffers.values():
+                            b.clear()
+
+                        self.get_logger().info(f"UKF seed diag (apriltag): {self._UKF_filter._last_seed_diag}")  #TODO: REMOVE
+                            
                     accepted = True
                 else:
                     accepted = self._UKF_filter.update(measurement, stamp_sec)
@@ -707,8 +718,17 @@ class Orchestrator(Node):
 
                 # Seed if this is the first measurement since a (re)start
                 if self._UKF_seed_pending:
-                    self._UKF_filter.seed_position(measurement, stamp_sec)
-                    self._UKF_seed_pending = False
+                    buf = self._UKF_seed_buffers["yolo_lp"]  # swap key per block
+                    buf.append((stamp_sec, measurement.copy(), self._UKF_filter.R.copy()))
+                    span = buf[-1][0] - buf[0][0]
+                    if len(buf) >= self._UKF_seed_window_n or span >= self._UKF_seed_window_min_dt:
+                        self._UKF_filter.seed_from_window(list(buf))
+                        self._UKF_seed_pending = False
+                        for b in self._UKF_seed_buffers.values():
+                            b.clear()
+
+                        self.get_logger().info(f"UKF seed diag (yolo_lp): {self._UKF_filter._last_seed_diag}")  #TODO: REMOVE
+
                     accepted = True
                 else:
                     accepted = self._UKF_filter.update(measurement, stamp_sec)
@@ -780,8 +800,8 @@ class Orchestrator(Node):
 
                 self._UKF_filter.R = np.diag(
                     [
-                        2.000 * yolo_scale,
-                        2.000 * yolo_scale,
+                        1.000 * yolo_scale,
+                        1.000 * yolo_scale,
                         1.000,  # Pass through the drones AGL + known GV height, as a rough estimate
                         1e9,    # We get no yaw information
                     ]
@@ -789,8 +809,17 @@ class Orchestrator(Node):
 
                 # Seed if this is the first measurement since a (re)start
                 if self._UKF_seed_pending:
-                    self._UKF_filter.seed_position(measurement, stamp_sec)
-                    self._UKF_seed_pending = False
+                    buf = self._UKF_seed_buffers["yolo_car"]  # swap key per block
+                    buf.append((stamp_sec, measurement.copy(), self._UKF_filter.R.copy()))
+                    span = buf[-1][0] - buf[0][0]
+                    if len(buf) >= self._UKF_seed_window_n or span >= self._UKF_seed_window_min_dt:
+                        self._UKF_filter.seed_from_window(list(buf))
+                        self._UKF_seed_pending = False
+                        for b in self._UKF_seed_buffers.values():
+                            b.clear()
+
+                        self.get_logger().info(f"UKF seed diag (yolo_car): {self._UKF_filter._last_seed_diag}")  #TODO: REMOVE
+
                     accepted = True
                 else:
                     accepted = self._UKF_filter.update(measurement, stamp_sec)
@@ -1301,6 +1330,7 @@ class Orchestrator(Node):
                 "covar_det_log",
                 "covar_max_eig",
                 "nis",
+                "rejected_measurements",
                 "nees",
 
                 # Latency through pipeline
@@ -1472,6 +1502,7 @@ class Orchestrator(Node):
                     d["covar_det_log"],
                     d["covar_max_eig"],
                     d["nis"],
+                    d["rejected_measurements"],
                     nees,
 
                     # Latency through pipeline
@@ -1569,6 +1600,7 @@ class Orchestrator(Node):
                     d["covar_det_log"],
                     d["covar_max_eig"],
                     d["nis"],
+                    d["rejected_measurements"],
                     0,
 
                     # Latency through pipeline
