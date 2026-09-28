@@ -191,7 +191,7 @@ def main():
 
     # Swap in your own list of TrajectorySegment(...) here to script a
     # different test run.
-    trajectory = mix_trajectory1()
+    trajectory = straight_trajectory()
 
     node = AGV_Controller(
         trajectory=trajectory,

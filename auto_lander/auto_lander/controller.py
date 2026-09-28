@@ -12,12 +12,15 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy 
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import DurabilityPolicy
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Bool
 from geometry_msgs.msg import TwistStamped
 from geometry_msgs.msg import Vector3Stamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
 from mavros_msgs.msg import AttitudeTarget
+from mavros_msgs.msg import GlobalPositionTarget
 from mavros_msgs.srv import CommandBool
 from mavros_msgs.srv import CommandTOL
 from mavros_msgs.srv import SetMode
@@ -53,6 +56,8 @@ class Orchestrator(Node):
         self.ground_truth_available = (
             self.get_parameter("ground_truth_available").get_parameter_value().bool_value
         )
+        self.declare_parameter("run_id", "")
+        self.run_id = self.get_parameter("run_id").get_parameter_value().string_value
 
         # ---- Global State Variables ----
         self.MAX_RUNTIME = 200.0  # secs
@@ -65,6 +70,9 @@ class Orchestrator(Node):
         self.LANDING_CENTERED_ERROR_THRESHOLD = 2.0 # m error
 
         self.target_z = 6.0  # m above landing pad
+        self.target_z_rate = -1.50 # m/s for landing rate
+        self.alt_pos_control = True
+        self.go_target = dict(lat=-35.365876, lon=149.164137, alt=self.target_z + self.LANDING_HEIGHT_ABOVE_GND)
 
         self.controller_state = 0
         self.fcu_state = State()
@@ -96,6 +104,7 @@ class Orchestrator(Node):
         self._tko_reached = False
         self._tko_complete_time = None
         self._tko_altitude_SP = self.target_z + self.LANDING_HEIGHT_ABOVE_GND  # Inititalise at initial target altitude
+        self._global_position = None
 
         # ---- State 2xxx (Searching for Landing Pad) Variables ----
         self._landing_pad_found = False
@@ -103,7 +112,7 @@ class Orchestrator(Node):
         self._landing_pad_visual_time_SP = 0.6
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
-        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 15.0
+        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 10.0
         self._landing_pad_lost_time = None
         self._landing_pad_lost_time_SP = 4.0
 
@@ -132,6 +141,7 @@ class Orchestrator(Node):
         self._UKF_forward_predict_x = None
 
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
+        self._UKF_unhealthy_counter = 0
 
         self._UKF_last_apriltag_stamp = Time().to_msg()
         self._UKF_raw_measurement = [0.0, 0.0, 0.0, 0.0]
@@ -178,12 +188,14 @@ class Orchestrator(Node):
             self._odometry_callback,
             _odom_qos,
         )
-        self._twist_sub = self.create_subscription(
-            TwistStamped,
-            "/mavros/local_position/velocity_local", #TODO: Check on real drone if local
-            self._vel_accel_callback,
-            _odom_qos,
+
+        self._gps_sub = self.create_subscription(
+            NavSatFix,
+            "/mavros/global_position/global",
+            self._gps_callback,
+            qos_profile_sensor_data,
         )
+
         self._landing_pad_found_sub = self.create_subscription(
             Bool, "/landing_pad/found", self._landing_pad_found_callback, 1
         )
@@ -194,6 +206,9 @@ class Orchestrator(Node):
         )
         self.vel_pub = self.create_publisher(
             TwistStamped, "/mavros/setpoint_velocity/cmd_vel", 10
+        )
+        self.global_pos_pub = self.create_publisher(
+            GlobalPositionTarget, "/mavros/setpoint_raw/global", 10
         )
 
         # ---- TF2 ----
@@ -227,6 +242,11 @@ class Orchestrator(Node):
         #  ---- DIAGNOSTICS AND LOGGING ----
         """ Generate a log if diagnostics and logging enabled."""
         self.quad_true_odometry = Odometry()
+        self._quad_true_recv = 0.0
+        self._pad_true_recv = 0.0
+        self._UKF_est_time = 0.0
+        self._UKF_fwd_horizon = 0.0
+        self._rtl_reason = ""
         self.landing_pad_true_odometry = Odometry()
         if self.diagnostics_enabled:
             self.start_diagnostics()
@@ -342,11 +362,12 @@ class Orchestrator(Node):
         )
         self.home_pose = self.quad_pose.copy()
 
+        # For some reason velocity is negative (invert so that up = +, down= -)
         self.quad_vel = np.array(
             [
                 self.odometry.twist.twist.linear.x,
                 self.odometry.twist.twist.linear.y,
-                self.odometry.twist.twist.linear.z,
+                -self.odometry.twist.twist.linear.z,
             ]
         )
 
@@ -362,15 +383,13 @@ class Orchestrator(Node):
             )
 
 
-    def _vel_accel_callback(self, msg: TwistStamped) -> None:
-        """Obtain FCU linear and angular velocities rates and derive accelerations.
-
-        :param msg: TwistStamped msg from quadcopter
+    def _gps_callback(self, msg) -> None:
+        """Obtain GPS coords.
+        
+        :param msg: GPS coords
         """
 
-        self.odometry.twist.twist.angular.x = msg.twist.angular.x
-        self.odometry.twist.twist.angular.y = msg.twist.angular.y
-        self.odometry.twist.twist.angular.z = msg.twist.angular.z
+        self._global_position = msg
 
 
     def _landing_pad_found_callback(self, msg: Bool) -> None:
@@ -501,6 +520,7 @@ class Orchestrator(Node):
             return
 
         self._rtl_initiated = True
+        self._rtl_reason = str(reason)
 
         self.get_logger().warn(f"SAFETY: Initiating RTL due to {reason}")
 
@@ -539,7 +559,7 @@ class Orchestrator(Node):
 
         # Latch start of UKF for landing pad on aquisition of landing pad from detector 
         # node, if its been too long since we've seen the landing pad, reset the UKF
-        if self._landing_pad_found and not self._UKF_start:
+        if self._landing_pad_found and not self._UKF_start and self.controller_state >= 2000:
             self._UKF_filter.reset()
             self._UKF_start = True
             self._UKF_seed_pending = True   # add this
@@ -588,8 +608,6 @@ class Orchestrator(Node):
                     [q.x, q.y, q.z, q.w]
                 )
                 measurement = np.array([t[0], t[1], t[2], yaw])
-
-                self.get_logger().info(f"{t[2]}")
 
                 # Store raw measurement
                 self._UKF_raw_measurement = [t[0], t[1], t[2], yaw]
@@ -800,8 +818,8 @@ class Orchestrator(Node):
 
                 self._UKF_filter.R = np.diag(
                     [
-                        1.000 * yolo_scale,
-                        1.000 * yolo_scale,
+                        0.750 * yolo_scale,
+                        0.750 * yolo_scale,
                         1.000,  # Pass through the drones AGL + known GV height, as a rough estimate
                         1e9,    # We get no yaw information
                     ]
@@ -841,6 +859,8 @@ class Orchestrator(Node):
         # altitude to the landing pad. This is the value used by the controller
         # Added a fudge factor (approx the delay in the img feed (20ms))
         t = 0.02 + np.sqrt(2 * 9.81 * self.LANDING_HEIGHT_THRESHOLD) / 9.81
+        self._UKF_est_time = now.nanoseconds * 1e-9   # instant the estimate is valid at
+        self._UKF_fwd_horizon = t
         self._UKF_forward_predict_x = self._UKF_filter.forward_predict(
                 self.quad_vel, 
                 t, 
@@ -913,6 +933,7 @@ class Orchestrator(Node):
 
         # Get timestamp
         start = self.get_clock().now()
+        self._pid_controller.reset_outputs() # Reset logging
 
         # Calculate errors
         err_x = abs(self.landing_pad_relative_position_forward_predict[0])
@@ -940,6 +961,8 @@ class Orchestrator(Node):
         # If RTL initiated, exit early
         if self._rtl_initiated:
             self.controller_state = 7100
+            if self.diagnostics_enabled:
+                self.log_diagnostics()
             return
 
         if (
@@ -968,7 +991,17 @@ class Orchestrator(Node):
 
         # ---- State 1100 (Wait for Takeoff to finish)
         if self.controller_state == 1100 and self._tko_reached:
-            self.controller_state = 2000
+            self.controller_state = 1200
+
+        # ---- State 1200 (Go to predesignated waiting point)
+        if self.controller_state == 1200:
+            if self._global_position is not None:
+                d_north = (self.go_target["lat"] - self._global_position.latitude) * 111132.0
+                d_east = (self.go_target["lon"] - self._global_position.longitude) * 111320.0 * np.cos(np.radians(self.go_target["lat"]))
+
+                if np.hypot(d_north, d_east) <= 2.0:
+                    self.get_logger().info(f"At designated wait position...")
+                    self.controller_state = 2000
 
         # ---- State 2000 (Searching for Landing Pad)
         if self.controller_state == 2000:
@@ -1105,11 +1138,28 @@ class Orchestrator(Node):
             self._initiate_rtl("Returning Home")
 
         # ---- Run Controller ----
-        if self.controller_state >= 2000 and self.controller_state < 3000:
+        if self.controller_state == 1200:
+            self.alt_pos_control = True
+            self._pid_controller.goPosition(self, **self.go_target, yaw=self.quad_yaw) # Go to GPS point
+        elif self.controller_state >= 2000 and self.controller_state < 3000:
+            self.alt_pos_control = True
             self._pid_controller.stop(self) # Sit still and observe
-        elif self.controller_state >= 3000 and self.controller_state <= 6000:
-            # self._mpc_controller.compute_control(self)
-            self._pid_controller.update(self) # Chase
+        elif self.controller_state >= 3000 and self.controller_state < 4000:
+            self.alt_pos_control = True
+            self._pid_controller.update(self) # Chase and hover above
+        elif self.controller_state == 4000:
+            self.alt_pos_control = False
+            if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= 1.0:
+                self.target_z_rate = -0.5 # Cut descent rate right before landing
+            self._pid_controller.update(self) # Chase and descend with target rate
+        elif self.controller_state == 5000:
+            self.alt_pos_control = False
+            if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= 1.0:
+                self.target_z_rate = 0.5 # Cut descent rate right before landing
+            self._pid_controller.update(self) # Chase and descend with target rate
+        elif self.controller_state > 5000 and self.controller_state <= 6000:
+            self.alt_pos_control = True
+            self._pid_controller.update(self) # Chase and hover above
 
         # Log diagnostics
         if self.diagnostics_enabled:
@@ -1152,27 +1202,32 @@ class Orchestrator(Node):
         
         # Check UKF health (when not landed)
         if (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] > 1000.0):
-            self.get_logger().warn(
-                f"UKF: max eigenvalue {self._UKF_diag['covar_max_eig']:.3f} — filter diverging - aborting",
-                throttle_duration_sec=1.0
-            )
-            self._initiate_rtl("Landing Estimate too Bad")
+            # Counter for 3 loops
+            self._UKF_unhealthy_counter += 1
+            if self._UKF_unhealthy_counter >= 3:
+                self.get_logger().warn(
+                    f"UKF: max eigenvalue {self._UKF_diag['covar_max_eig']:.3f} — filter diverging - aborting",
+                    throttle_duration_sec=1.0
+                )
+                self._initiate_rtl("Landing Estimate too Bad")
+        elif (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] <= 1000.0):
+            self._UKF_unhealthy_counter = 0
 
     
     # ---- DIAGNOSTICS FUNCTION CALLBACKS ----
     def _landing_pad_true_odometry_callback(self, msg: Odometry):
         """ SITL ONLY: Pass true odometry of landing pad for data.
         """
-
         self.landing_pad_true_odometry = msg
+        self._pad_true_recv = self.get_clock().now().nanoseconds * 1e-9
 
 
     def _true_odometry_callback(self, msg: Odometry):
         """ SITL ONLY: Pass true (ground truth) odometry of the quad itself for data 
             logging.
         """
-
         self.quad_true_odometry = msg
+        self._quad_true_recv = self.get_clock().now().nanoseconds * 1e-9
 
 
     def _pipeline_timing_callback(self, msg: Vector3Stamped) -> None:
@@ -1242,7 +1297,7 @@ class Orchestrator(Node):
         )
 
         # Create .csv file for logging
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = self.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self._csv_filename = f"controller_{timestamp}.csv"
         self._csv_file = open(self._csv_filename, "w", newline="")
         self._csv_writer = csv.writer(self._csv_file)
@@ -1274,9 +1329,11 @@ class Orchestrator(Node):
                 "landing_pad_yolo_LP_raw_stamp",
                 "landing_pad_yolo_LP_rel_x_raw",
                 "landing_pad_yolo_LP_rel_y_raw",
+                "landing_pad_yolo_LP_rel_z_raw",
                 "landing_pad_yolo_car_raw_stamp",
                 "landing_pad_yolo_car_rel_x_raw",
                 "landing_pad_yolo_car_rel_y_raw",
+                "landing_pad_yolo_car_rel_z_raw",
                 "landing_pad_rel_x",
                 "landing_pad_rel_y",
                 "landing_pad_rel_z",
@@ -1299,8 +1356,10 @@ class Orchestrator(Node):
                 "landing_pad_april_glob_yaw_raw",
                 "landing_pad_yolo_LP_glob_x_raw",
                 "landing_pad_yolo_LP_glob_y_raw",
+                "landing_pad_yolo_LP_glob_z_raw",
                 "landing_pad_yolo_car_glob_x_raw",
                 "landing_pad_yolo_car_glob_y_raw",
+                "landing_pad_yolo_car_glob_z_raw",
                 "landing_pad_glob_x",
                 "landing_pad_glob_y",
                 "landing_pad_glob_z",
@@ -1333,6 +1392,16 @@ class Orchestrator(Node):
                 "rejected_measurements",
                 "nees",
 
+                # PID diagnostics
+                "F_x", "F_y", "F_z", "F_thrust",
+                "throttle_cmd", "roll_cmd", "pitch_cmd", "yaw_cmd",
+                "accel_perp_x", "accel_perp_y", "accel_par_x", "accel_par_y", "accel_z_cmd",
+                "z_err", "vel_z_err", "vel_z_integral", "gain_factor", "lam",
+                "sat_accel_z", "sat_vel_z_int", "sat_F_z", "sat_F_horiz",
+                "sat_roll_clamp", "sat_pitch_clamp",
+                "slew_throttle", "slew_roll", "slew_pitch", "slew_yaw",
+                "marker_yaw_valid", "cutoff_active",
+
                 # Latency through pipeline
                 "cam_to_image_lag",
                 "image_to_transform_lag",
@@ -1341,6 +1410,27 @@ class Orchestrator(Node):
                 "yolo_image_to_transform_lag",
                 "yolo_transform_to_UKF_lag",
                 "total_lag",
+
+                # Orchestrator state / outcome
+                "controller_state", "pad_found", "pad_lost_for", "cutoff",
+                "landing_attempts", "rtl", "rtl_reason",
+                "target_z", "target_z_rate", "alt_pos_control",
+
+                # What the controller actually consumed
+                "est_time", "fwd_horizon",
+                "fwd_rel_x", "fwd_rel_y", "fwd_rel_z",
+                "fwd_rel_vx", "fwd_rel_vy", "fwd_rel_vz",
+                "fwd_yaw", "fwd_err_xy", "fwd_alt",
+
+                # Attitude (FCU estimate)
+                "quad_roll", "quad_pitch",
+
+                # Ground truth timing and height above pad
+                "quad_true_stamp", "quad_true_recv",
+                "pad_true_stamp", "pad_true_recv", "true_height",
+
+                # Covariance off-diagonals for offline NEES
+                "P_px_py", "P_px_yaw", "P_py_yaw",
             ]
         )
         self.get_logger().info(f"CSV logging initialized: {self._csv_filename}")
@@ -1352,6 +1442,9 @@ class Orchestrator(Node):
 
         # UKF Diagnostics
         d = self._UKF_diag  # shorthand
+
+        # PID Diagnostics
+        p = self._pid_controller.get_control_outputs()
 
         # For live plotting publishing
         self.landing_pad_relative_odometry_pub.publish(self.landing_pad_relative_odometry)
@@ -1365,6 +1458,45 @@ class Orchestrator(Node):
         self.landing_pad_relative_raw_pub.publish(UKF_raw_msg)
 
         current_time = self.get_clock().now().nanoseconds / 1e9
+
+        # ---- Extra diagnostics (shared by both branches) ----
+        fp = self.landing_pad_relative_position_forward_predict
+        fv = self.landing_pad_relative_velocity_forward_predict
+        Pc = self._UKF_filter.P
+
+        if self.ground_truth_available:
+            qs = self.quad_true_odometry.header.stamp
+            ps = self.landing_pad_true_odometry.header.stamp
+            true_cols = [
+                qs.sec + qs.nanosec * 1e-9, self._quad_true_recv,
+                ps.sec + ps.nanosec * 1e-9, self._pad_true_recv,
+                self.landing_pad_true_odometry.pose.pose.position.z
+                - self.quad_true_odometry.pose.pose.position.z,   # true_height
+            ]
+        else:
+            true_cols = [np.nan] * 5
+
+        extra = [
+            self.controller_state, int(self._landing_pad_found),
+            (current_time - self._landing_pad_lost_time)
+            if self._landing_pad_lost_time is not None else 0.0,
+            int(self.cutoff), self._landing_attempts,
+            int(self._rtl_initiated), self._rtl_reason,
+            self.target_z, self.target_z_rate, int(self.alt_pos_control),
+
+            self._UKF_est_time, self._UKF_fwd_horizon,
+            fp[0], fp[1], fp[2],
+            fv[0], fv[1], fv[2],
+            self.landing_pad_yaw_forward_predict,
+            float(np.hypot(fp[0], fp[1])),   # the value the abort check uses
+            float(-fp[2]),
+
+            self.quad_roll, self.quad_pitch,
+        ] + true_cols + [
+            Pc[LP_State.PX, LP_State.PY],
+            Pc[LP_State.PX, LP_State.YAW],
+            Pc[LP_State.PY, LP_State.YAW],
+        ]
 
         # Only if ground-truth is available do we calculate the NEES, otherwise just 
         # log 0
@@ -1445,9 +1577,11 @@ class Orchestrator(Node):
                     self._UKF_yolo_LP_raw_measurement_stamp,
                     self._UKF_yolo_LP_raw_measurement[LP_Meas.PX],
                     self._UKF_yolo_LP_raw_measurement[LP_Meas.PY],
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PZ],
                     self._UKF_yolo_car_raw_measurement_stamp,
                     self._UKF_yolo_car_raw_measurement[LP_Meas.PX],
                     self._UKF_yolo_car_raw_measurement[LP_Meas.PY],
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PZ],
                     self.landing_pad_relative_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y,
                     self.landing_pad_relative_odometry.pose.pose.position.z,
@@ -1457,7 +1591,7 @@ class Orchestrator(Node):
                     self.landing_pad_yaw - true_yaw,
                     self.landing_pad_true_odometry.pose.pose.position.x - self.quad_true_odometry.pose.pose.position.x,
                     self.landing_pad_true_odometry.pose.pose.position.y - self.quad_true_odometry.pose.pose.position.y,
-                    self.landing_pad_true_odometry.pose.pose.position.z - self.quad_vel[QUAD_State.Z],
+                    self.landing_pad_true_odometry.pose.pose.position.z - self.quad_pose[QUAD_State.Z],
                     # Fix velocity because it is given in body frame not world frame...
                     self.landing_pad_true_odometry.twist.twist.linear.x * np.cos(lp_pad_true_yaw) - self.quad_true_odometry.twist.twist.linear.x * np.cos(true_yaw),
                     self.landing_pad_true_odometry.twist.twist.linear.x * np.sin(lp_pad_true_yaw) - self.quad_true_odometry.twist.twist.linear.x * np.sin(true_yaw),
@@ -1467,15 +1601,17 @@ class Orchestrator(Node):
                     # Landing pad global data
                     self._UKF_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
                     self._UKF_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
-                    self._UKF_raw_measurement[LP_Meas.PZ] + self.quad_vel[QUAD_State.Z],
+                    self._UKF_raw_measurement[LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
                     self._UKF_raw_measurement[LP_Meas.YAW],
                     self._UKF_yolo_LP_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
                     self._UKF_yolo_LP_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
                     self._UKF_yolo_car_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
                     self._UKF_yolo_car_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
                     self.landing_pad_relative_odometry.pose.pose.position.x + self.quad_true_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y + self.quad_true_odometry.pose.pose.position.y,
-                    self.landing_pad_relative_odometry.pose.pose.position.z + self.quad_vel[QUAD_State.Z],
+                    self.landing_pad_relative_odometry.pose.pose.position.z + self.quad_pose[QUAD_State.Z],
                     self.landing_pad_relative_odometry.twist.twist.linear.x + self.quad_true_odometry.twist.twist.linear.x * np.cos(true_yaw),
                     self.landing_pad_relative_odometry.twist.twist.linear.y + self.quad_true_odometry.twist.twist.linear.x * np.sin(true_yaw),
                     self.landing_pad_relative_odometry.twist.twist.linear.z + self.quad_true_odometry.twist.twist.linear.z,
@@ -1505,6 +1641,16 @@ class Orchestrator(Node):
                     d["rejected_measurements"],
                     nees,
 
+                    # PID diagnostics
+                    p["F_x"], p["F_y"], p["F_z"], p["F_thrust"],
+                    p["throttle_cmd"], p["roll_cmd"], p["pitch_cmd"], p["yaw_cmd"],
+                    p["accel_perp_x"], p["accel_perp_y"], p["accel_par_x"], p["accel_par_y"], p["accel_z_cmd"],
+                    p["z_err"], p["vel_z_err"], p["vel_z_integral"], p["gain_factor"], p["lam"],
+                    p["sat_accel_z"], p["sat_vel_z_int"], p["sat_F_z"], p["sat_F_horiz"],
+                    p["sat_roll_clamp"], p["sat_pitch_clamp"],
+                    p["slew_throttle"], p["slew_roll"], p["slew_pitch"], p["slew_yaw"],
+                    p["marker_yaw_valid"], p["cutoff_active"],
+
                     # Latency through pipeline
                     self._cam_to_image_lag,
                     self._image_to_transform_lag,
@@ -1513,7 +1659,7 @@ class Orchestrator(Node):
                     self._yolo_image_to_transform_lag,
                     self._yolo_transform_to_UKF_lag,
                     self._UKF_meas_age,
-                ]
+                ] + extra
             )
         else:
             self._csv_writer.writerow(
@@ -1544,9 +1690,11 @@ class Orchestrator(Node):
                     self._UKF_yolo_LP_raw_measurement_stamp,
                     self._UKF_yolo_LP_raw_measurement[LP_Meas.PX],
                     self._UKF_yolo_LP_raw_measurement[LP_Meas.PY],
+                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PZ],
                     self._UKF_yolo_car_raw_measurement_stamp,
                     self._UKF_yolo_car_raw_measurement[LP_Meas.PX],
                     self._UKF_yolo_car_raw_measurement[LP_Meas.PY],
+                    self._UKF_yolo_car_raw_measurement[LP_Meas.PZ],
                     self.landing_pad_relative_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y,
                     self.landing_pad_relative_odometry.pose.pose.position.z,
@@ -1566,7 +1714,7 @@ class Orchestrator(Node):
                     0,
                     0,
                     0,
-                    self._UKF_raw_measurement[QUAD_State.YAW],
+                    self._UKF_raw_measurement[LP_Meas.YAW],
                     0,
                     0,
                     0,
@@ -1603,6 +1751,16 @@ class Orchestrator(Node):
                     d["rejected_measurements"],
                     0,
 
+                    # PID diagnostics
+                    p["F_x"], p["F_y"], p["F_z"], p["F_thrust"],
+                    p["throttle_cmd"], p["roll_cmd"], p["pitch_cmd"], p["yaw_cmd"],
+                    p["accel_perp_x"], p["accel_perp_y"], p["accel_par_x"], p["accel_par_y"], p["accel_z_cmd"],
+                    p["z_err"], p["vel_z_err"], p["vel_z_integral"], p["gain_factor"], p["lam"],
+                    p["sat_accel_z"], p["sat_vel_z_int"], p["sat_F_z"], p["sat_F_horiz"],
+                    p["sat_roll_clamp"], p["sat_pitch_clamp"],
+                    p["slew_throttle"], p["slew_roll"], p["slew_pitch"], p["slew_yaw"],
+                    p["marker_yaw_valid"], p["cutoff_active"],
+
                     # Latency through pipeline
                     self._cam_to_image_lag,
                     self._image_to_transform_lag,
@@ -1611,7 +1769,7 @@ class Orchestrator(Node):
                     self._yolo_image_to_transform_lag,
                     self._yolo_transform_to_UKF_lag,
                     self._UKF_meas_age,
-                ]
+                ] + extra
             )
 
 

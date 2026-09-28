@@ -610,8 +610,6 @@ class YoloNode(Node):
 
         ray_level = R_cam_level @ ray_cam
 
-        camera_altitude_absolute = altitude + camera_offset_level[2]
-
         camera_z = altitude + camera_offset_level[2]
 
         if ray_level[2] >= -1e-3:

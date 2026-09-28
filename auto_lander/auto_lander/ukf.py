@@ -103,7 +103,7 @@ class UKF:
             [
                 0.005,
                 0.005,
-                0.050,  # px, py, pz
+                0.100,  # px, py, pz
                 0.050,
                 0.200,  # v, a
                 0.005,
@@ -188,16 +188,7 @@ class UKF:
         self.P = 0.5 * (self.P + self.P.T)
 
         # Re-seed X_prop with sigma points from the UPDATED predicted covariance
-        try:
-            S_new = self.gamma * np.linalg.cholesky(self.P)
-        except np.linalg.LinAlgError:
-            self._repair_P()
-            S_new = self.gamma * np.linalg.cholesky(self.P)
-
-        self.X_prop[0] = self.x
-        for i in range(self.dim_x):
-            self.X_prop[i + 1] = self.x + S_new[:, i]
-            self.X_prop[self.dim_x + i + 1] = self.x - S_new[:, i]
+        self._reseed_sigma_points()
 
         # Update timestamp/last-known process input, and buffer this event
         self._last_update_time = timestamp
@@ -302,7 +293,10 @@ class UKF:
         # own, so fall back to the nearest preceding predict's quad_vel.
         dt_bridge = measurement_timestamp - anchor.t
         if dt_bridge > 1e-9:
-            bridge_quad_vel = self._nearest_quad_vel(buffer_copy, anchor_idx)
+            bridge_quad_vel = next(
+                (ev.data for ev in future_events if ev.kind == "predict"),
+                self._nearest_quad_vel(buffer_copy, anchor_idx),  # fallback: no later predict
+            )
             self.predict(bridge_quad_vel, dt_bridge, measurement_timestamp, buffer=False)
 
         accepted = self._update_apply(z, R_used)
@@ -332,7 +326,7 @@ class UKF:
                     self.predict(ev.data, dt_step, ev.t)  # buffer=True re-pushes it
             else:  # "update" - replay the other stream's correction too
                 ev_z, ev_R = ev.data
-                if self._update_apply(ev_z, ev_R):
+                if self._update_apply(ev_z, ev_R, replay=True):
                     self._last_update_time = ev.t
                     self._push_update_event(ev.t, ev_z, ev_R)
                 # A failed replay (rare - singular innovation covariance) is
@@ -422,15 +416,7 @@ class UKF:
         # Re-seed X_prop from the (possibly partially) seeded x/P, so an OOSM
         # rewind that later lands exactly on this event sees sigma points
         # consistent with it, not stale pre-seed ones.
-        try:
-            S = self.gamma * np.linalg.cholesky(self.P)
-        except np.linalg.LinAlgError:
-            self._repair_P()
-            S = self.gamma * np.linalg.cholesky(self.P)
-        self.X_prop[0] = self.x
-        for i in range(self.dim_x):
-            self.X_prop[i + 1] = self.x + S[:, i]
-            self.X_prop[self.dim_x + i + 1] = self.x - S[:, i]
+        self._reseed_sigma_points()
 
         self._push_update_event(timestamp, z, R)
 
@@ -548,21 +534,13 @@ class UKF:
             return
 
         self._last_update_time = t[-1]
-        try:
-            S = self.gamma * np.linalg.cholesky(self.P)
-        except np.linalg.LinAlgError:
-            self._repair_P()
-            S = self.gamma * np.linalg.cholesky(self.P)
-        self.X_prop[0] = self.x
-        for i in range(self.dim_x):
-            self.X_prop[i + 1] = self.x + S[:, i]
-            self.X_prop[self.dim_x + i + 1] = self.x - S[:, i]
+        self._reseed_sigma_points()
 
         self._UKF_buffer.clear() # Clear buffer incase any predicts were called prior (shouldnt be)
         self._push_update_event(t[-1], samples[-1][1], R_last)
 
 
-    def _update_apply(self, z, R=None) -> bool:
+    def _update_apply(self, z, R=None, replay: bool = False) -> bool:
         """ Do update step for UKF. Handles lower level UKF update functions such as 
             actual covariance and state updates. Called via the public .update() 
             function (both the in-order path and OOSM replay).
@@ -612,12 +590,14 @@ class UKF:
         except np.linalg.LinAlgError:
             return False
 
-        self._last_nis = nis
+        if not replay:
+            self._last_nis = nis
 
         # Reject statistically implausible measurements BEFORE updating
         # state or covariance.
         if nis > self._mahalanobis_threshold:
-            self._rejected_measurements += 1
+            if not replay:
+                self._rejected_measurements += 1
             return False
 
         # Kalman gain, if S is singular skip update
@@ -634,11 +614,15 @@ class UKF:
         self.P -= K @ S @ K.T
         self.P = 0.5 * (self.P + self.P.T)
 
+        # Re-seed sigma points from the posterior
+        self._reseed_sigma_points()
+
         # EWMA NIS only gets updated for accepted measurements
-        self._nis_ewma = (
-            self._nis_ewma_beta * self._nis_ewma
-            + (1 - self._nis_ewma_beta) * nis
-        )
+        if not replay:
+            self._nis_ewma = (
+                self._nis_ewma_beta * self._nis_ewma
+                + (1 - self._nis_ewma_beta) * nis
+            )
 
         return True
 
@@ -770,6 +754,24 @@ class UKF:
         Z[:, LP_Meas.PY] = X[:, LP_State.PY]
         Z[:, LP_Meas.PZ] = X[:, LP_State.PZ]
         Z[:, LP_Meas.YAW] = self._wrap(X[:, LP_State.YAW])
+
+
+    def _reseed_sigma_points(self) -> None:
+        """ Regenerate X_prop as sigma points about the current (x, P), so the next
+            update() (or an OOSM rewind that anchors on this state) sees sigma
+            points consistent with the current estimate.
+        """
+        try:
+            S = self.gamma * np.linalg.cholesky(self.P)
+        except np.linalg.LinAlgError:
+            self._repair_P()
+            S = self.gamma * np.linalg.cholesky(self.P)
+
+        n = self.dim_x
+        self.X_prop[0] = self.x
+        for i in range(n):
+            self.X_prop[i + 1] = self.x + S[:, i]
+            self.X_prop[n + i + 1] = self.x - S[:, i]
 
 
     def _push_predict_event(self, timestamp: float, quad_vel) -> None:

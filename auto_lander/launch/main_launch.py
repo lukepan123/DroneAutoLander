@@ -1,11 +1,43 @@
+import os
+from datetime import datetime
+
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import TimerAction
-
+from launch.actions import TimerAction, ExecuteProcess
 
 def generate_launch_description():
 
-    # ----- Step 1a: Gazebo Camera + Gimbal Bridge -----
+    # One ID shared by the bag and the controller's CSV/event/truth files
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    bag_dir = os.path.join(os.getcwd(), "bags", run_id)
+
+    # ----- Step 1a: Rosbag recorder -----
+    # bag_record = ExecuteProcess(
+    #     cmd=[
+    #         "ros2", "bag", "record",
+    #         "-s", "mcap",
+    #         "--use-sim-time",
+    #         "-o", bag_dir,
+    #         "/tf", "/tf_static", "/clock",
+    #         "/mavros/state",
+    #         "/mavros/global_position/local",
+    #         "/mavros/global_position/global",
+    #         "/mavros/imu/data",
+    #         "/mavros/setpoint_raw/attitude",
+    #         "/mavros/setpoint_velocity/cmd_vel",
+    #         "/mavros/setpoint_raw/global",
+    #         "/landing_pad/found",
+    #         "/landing_pad/pipeline_timing",
+    #         "/landing_pad/yolo_pipeline_timing",
+    #         "/quadcopter/true_odom",
+    #         "/landing_pad/odom",
+    #     ],
+    #     output="screen",
+    #     sigterm_timeout="20",   # give it time to finalise the bag on Ctrl+C
+    #     sigkill_timeout="30",
+    # )
+
+    # ----- Step 2a: Gazebo Camera + Gimbal Bridge -----
     gz_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
@@ -29,20 +61,6 @@ def generate_launch_description():
         ],
     )
 
-    # ----- Create tf frames -----
-    # base_to_camera_tf_node = Node(
-    #     package='tf2_ros',
-    #     executable='static_transform_publisher',
-    #     name='base_to_camera_tf',
-    #     output='screen',
-    #     arguments=[
-    #         '0.0', '0.0', '-0.1249',
-    #         '-1.570796326', '0.0', '3.1415926535',
-    #         'base_link',
-    #         'camera_link'
-    #     ]
-    # )
-
     # Run target pose detector node
     apriltag_pose_detector = Node(
         package="auto_lander",
@@ -65,7 +83,7 @@ def generate_launch_description():
     yolo_pose_detector = Node(
         package="auto_lander",
         executable="yolo",
-        name="apriltag_node",
+        name="yolo_node",
         output="screen",
         sigterm_timeout="20",
         sigkill_timeout="30",
@@ -90,6 +108,7 @@ def generate_launch_description():
             {"diagnostics_enabled": True},
             {"ground_truth_available": True},
             {"use_sim_time": True},
+            {"run_id": run_id},
         ],
     )
 
@@ -108,8 +127,8 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            #bag_record,
             gz_bridge,
-            # base_to_camera_tf_node,
             apriltag_pose_detector,
             yolo_pose_detector,
             controller,
