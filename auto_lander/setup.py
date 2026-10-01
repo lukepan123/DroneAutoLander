@@ -9,7 +9,13 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/launch", ["launch/main_launch.py"]),
+        (
+	    "share/" + package_name + "/launch",
+	    [
+	        "launch/main_launch.py",
+	        "launch/main_launch_sim.py",
+	   ],
+	),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -21,6 +27,7 @@ setup(
         "console_scripts": [
             "yolo = auto_lander.yolo:main",
             "apriltag = auto_lander.apriltag:main",
+            "gimbal_controller = auto_lander.gimbal_controller:main",
             "controller = auto_lander.controller:main",
             "camera_calibrate = auto_lander.camera_calibrate:main",
             "agv_controller = auto_lander.agv_controller:main",

@@ -1,6 +1,9 @@
 import numpy as np
+import tf_transformations
+
 from collections import deque
 from collections import namedtuple
+from rclpy.time import Time
 
 from .state_definitions import LP_State
 from .state_definitions import LP_Meas
@@ -11,40 +14,44 @@ from .state_definitions import LP_Meas
 """
 
 class UKF:
-    """ Defines the UKF class for the landing platform.
+    """ Defines the UKF class for the landing platform. Every predict() and every 
+        accepted update() call pushes one of these, in chronological order, allowing the
+        filter to rewind to any point in the buffer window and *replay* history exactly 
+        rather than re-simulate over it. This is what lets multiple, independent 
+        measurement streams (e.g. AprilTag + YOLO) each perform out-of-sequence-
+        measurement (OOSM) corrections without one stream's correction silently erasing 
+        the other's.
+    
+        kind == "predict": data = quad_vel used for that process step
+        kind == "update":  data = (z, R) used for that measurement correction
+    
+        x / P / X_prop are the UKF state, covariance, and propagated sigma
+        points immediately AFTER this event was applied.
     """
-    # Define the UKF event-log structure. Every predict() and every accepted
-    # update() call pushes one of these, in chronological order, allowing the
-    # filter to rewind to any point in the buffer window and *replay* history
-    # exactly rather than re-simulate over it. This is what lets multiple,
-    # independent measurement streams (e.g. AprilTag + YOLO) each perform
-    # out-of-sequence-measurement (OOSM) corrections without one stream's
-    # correction silently erasing the other's.
-    #
-    #   kind == "predict": data = quad_vel used for that process step
-    #   kind == "update":  data = (z, R) used for that measurement correction
-    #
-    # x / P / X_prop are the UKF state, covariance, and propagated sigma
-    # points immediately AFTER this event was applied.
+
     _Event = namedtuple("_Event", ["t", "kind", "x", "P", "X_prop", "data"])
 
-    def __init__(self) -> None:
+
+    def __init__(self, P_diag_init, Q_diag_init, 
+                 alpha, beta, kappa,
+                 mahalanobis_threshold, 
+                 init_pos, init_vel, init_yaw,
+                 seed_window_n, seed_window_min_dt) -> None:
         """ Initialise the UKF. Preprocesses and computes the required sigma weights and
             stores them to reduce run-time computation.
         """
-
         # ---- UKF PARAMETERS ----
         # Dimensions
         self.dim_x = len(LP_State)
         self.dim_z = len(LP_Meas)
 
         # UKF scaling parameters (Merwe)
-        self.alpha = 1.0
-        self.beta = 2.0
-        self.kappa = 0.0
+        self.alpha = alpha
+        self.beta = beta
+        self.kappa = kappa
 
         # Mahalanobis_threshold (prevent bad measurements going into filter)
-        self._mahalanobis_threshold = 50   # chi^2, 4 DOF, ~99.9%
+        self._mahalanobis_threshold = mahalanobis_threshold
         self._rejected_measurements = 0
 
         self.lambda_ = self.alpha**2 * (self.dim_x + self.kappa) - self.dim_x
@@ -52,13 +59,7 @@ class UKF:
 
         # Length of UKF Historical Buffer. Must comfortably exceed the WORST
         # CASE end-to-end latency of the slowest measurement stream feeding
-        # this filter (capture -> image -> transform -> UKF), or that
-        # stream's OOSM corrections will fall outside the buffer and be
-        # silently dropped (anchor_idx is None -> update() returns False).
-        # Check the *_transform_to_UKF_lag / *_cam_to_image_lag diagnostics
-        # you're already publishing to size this properly per-stream; 0.5s
-        # is a safer starting point than the previous 0.2s now that a
-        # second, slower (YOLO) stream is in the mix.
+        # this filter
         self._buffer_window = 0.500
 
         # Number of sigma points
@@ -81,47 +82,44 @@ class UKF:
         # ---- UKF INITIALISATION ----
         # Initial state
         self.x = np.zeros(self.dim_x)
-        self.x[LP_State.PZ] = 1.5         # m above ground
-        self.x[LP_State.YAW] = np.pi/2.0  # rad
+        self.x[LP_State.PX]       = init_pos[0]
+        self.x[LP_State.PY]       = init_pos[1]
+        self.x[LP_State.PZ]       = init_pos[2]
+        self.x[LP_State.V]        = np.hypot(init_vel[0], init_vel[1])
+        self.x[LP_State.A]        = 0.0
+        self.x[LP_State.YAW]      = init_yaw
+        self.x[LP_State.YAW_RATE] = 0.0
 
         # Initial covariance
-        self.P_init = np.diag(
-            [
-                1.00,
-                1.00,
-                1.00,
-                1.00,
-                2.00,
-                0.20,
-                0.20,
-            ]
-        )
+        self.P_init = np.diag(P_diag_init)
         self.P = self.P_init.copy()
 
         # Process noise
-        self.Q = np.diag(
-            [
-                0.005,
-                0.005,
-                0.100,  # px, py, pz
-                0.050,
-                0.200,  # v, a
-                0.005,
-                0.100,  # yaw, yaw_rate
-            ]
-        )
-
-        self._nis_ewma = float(self.dim_z)  # start at expected value
-        self._nis_ewma_beta = 0.90          # higher = slower to react, smoother
-        self._q_infl_cap = 8.0              # max multiplier, tune to taste
-
-        # Measurement noise. NOTE: update() snapshots this at call time (see
-        # below), so callers are still free to mutate self.R in place right
-        # before calling update() per-stream, same convention as before.
-        self.R = np.diag([0.01, 0.01, 0.1, 0.01])
+        self.Q = np.diag(Q_diag_init)
 
         # Timestamp of the last predict/update cycle, initialised to None
         self._last_update_time: float | None = None
+
+        # Seeding buffers/variables
+        self._seed_buffers = {"apriltag": deque(), "yolo_lp": deque(), "yolo_car": deque()}
+        self._seed_window_n = seed_window_n
+        self._seed_window_min_dt = seed_window_min_dt
+        self._seed_pending = False
+        self._measurement_last_stamps = {k: None for k in self._seed_buffers}
+        self._measurement_diagnostics = {
+            k: {
+                "raw": np.zeros(4),
+                "raw_stamp": 0.0,
+                "meas_age": 0.0,
+                "cam_to_image_lag": np.nan,
+                "image_to_transform_lag": np.nan,
+                "transform_to_UKF_lag": np.nan,
+                "total_lag": np.nan,
+            }
+            for k in self._seed_buffers
+        }
+        self._last_measurement_type = "apriltag"
+        self._last_yolo_measurement_type = "yolo_lp"
 
         # Most recent process input (quad_vel) seen by ANY predict() call.
         # Used as a fallback when an OOSM anchor happens to be an "update"
@@ -135,6 +133,8 @@ class UKF:
 
         # Diagnostic variables
         self._last_nis = np.nan
+        self._nis_ewma = float(self.dim_z)  # start at expected value
+        self._nis_ewma_beta = 0.90          # higher = slower to react, smoother
 
 
     def predict(self, quad_vel, dt: float, timestamp: float, buffer: bool = True) -> None:
@@ -146,7 +146,6 @@ class UKF:
         :param timestamp:  timestamp (s)
         :param buffer:     update buffer (bool)
         """
-
         # Guarantee P is symmetric positive definite before proceeding, repair if needed
         try:
             S = np.linalg.cholesky(self.P)
@@ -179,12 +178,7 @@ class UKF:
         dX = self.X_prop - self.x
         dX[:, LP_State.YAW] = self._wrap(dX[:, LP_State.YAW])  # wrap yaw deviations
 
-        # infl = np.clip(self._nis_ewma / self.dim_z, 1.0, self._q_infl_cap)
-        # Q_eff = self.Q.copy()
-        # Q_eff[LP_State.A, LP_State.A] *= infl
-        # Q_eff[LP_State.YAW_RATE, LP_State.YAW_RATE] *= infl
         self.P = (dX.T * self.Wc) @ dX + self.Q * dt # scale Q by dt (time-invariant)
-
         self.P = 0.5 * (self.P + self.P.T)
 
         # Re-seed X_prop with sigma points from the UPDATED predicted covariance
@@ -234,32 +228,78 @@ class UKF:
         return x_pred
 
 
-    def update(self, z, measurement_timestamp: float) -> bool:
-        """ Do update step for UKF. Manages higher level update functions such as 
-            checking the measurement timestamp and performing the UKF rewind and 
-            rollback. Safe to call from multiple independent measurement streams
-            (e.g. AprilTag and YOLO) in any interleaving/order - out-of-sequence
+    def update(
+            self,
+            tf_msg,
+            measurement_type: str,
+            now: float,
+            R,
+            pipeline_timing=None,
+    ) -> bool:
+        """ Do update step for UKF from a TF transform. Manages higher level update
+            functions such as checking the measurement timestamp and performing the UKF
+            rewind and rollback. Safe to call from multiple independent measurement
+            streams (e.g. AprilTag and YOLO) in any interleaving/order - out-of-sequence
             measurements are spliced into the correct chronological position and
             every event after that point (predicts AND updates, from every stream)
             is replayed against the corrected timeline.
 
-        :param z:                     Measurement of new landing pad pose
-        :param measurement_timestamp: True timestamp of the measurement (seconds)
+        :param tf_msg:          Measurement of new landing pad pose (structured as a TF message)
+        :param measurement_type: String for measurement type (apriltag, yolo_lp, yolo_car)
+        :param now:             Current timestamp (seconds)
+        :param R:               Measurement covariance
+        :param pipeline_timing: Optional Vector3Stamped containing pipeline timestamps
         :return: True on success, False on failure.
         """
+        measurement_timestamp = Time.from_msg(tf_msg.header.stamp).nanoseconds / 1e9
+        last_timestamp = self._measurement_last_stamps[measurement_type]
 
-        z = np.asarray(z, dtype=float)
-        # Snapshot R at call time rather than reading self.R again later -
-        # avoids a race where a second stream reassigns self.R before this
-        # measurement's correction is actually replayed.
-        R_used = self.R.copy()
+        # Ignore duplicate measurements, but don't error.
+        if last_timestamp is not None and measurement_timestamp == last_timestamp:
+            return True
+
+        # Build up measurement vector z
+        t = np.array([
+            tf_msg.transform.translation.x,
+            tf_msg.transform.translation.y,
+            tf_msg.transform.translation.z,
+        ])
+        q = tf_msg.transform.rotation
+        _, _, yaw = tf_transformations.euler_from_quaternion(
+            [q.x, q.y, q.z, q.w]
+        )
+        z = np.array([t[0], t[1], t[2], yaw])
+
+        # Newest timestamp is tracked per stream; older OOSMs don't move it backwards.
+        if last_timestamp is None or measurement_timestamp > last_timestamp:
+            self._measurement_last_stamps[measurement_type] = measurement_timestamp
+
+        # Record raw measurement/latency for this stream before any update path can fail.
+        self._record_measurement_diagnostics(
+            measurement_type, z, measurement_timestamp, now, pipeline_timing
+        )
+        self._last_measurement_type = measurement_type
+        if measurement_type.startswith("yolo"):
+            self._last_yolo_measurement_type = measurement_type
+
+        # If seeding is required, run the seeding procedure and exit early.
+        if self._seed_pending:
+            buf = self._seed_buffers[measurement_type]
+            buf.append((measurement_timestamp, z.copy(), R.copy()))
+            span = buf[-1][0] - buf[0][0]
+            if len(buf) >= self._seed_window_n or span >= self._seed_window_min_dt:
+                self.seed_from_window(list(buf))
+                self._seed_pending = False
+                for b in self._seed_buffers.values():
+                    b.clear()
+            return True
 
         # In-order path: this is the newest thing we've seen, no rewind needed.
         if self._last_update_time is None or measurement_timestamp >= self._last_update_time:
-            accepted = self._update_apply(z, R_used)
+            accepted = self._update_apply(z, R)
             if accepted:
                 self._last_update_time = measurement_timestamp
-                self._push_update_event(measurement_timestamp, z, R_used)
+                self._push_update_event(measurement_timestamp, z, R)
             return accepted
 
         # ---- OOSM path ----
@@ -299,7 +339,7 @@ class UKF:
             )
             self.predict(bridge_quad_vel, dt_bridge, measurement_timestamp, buffer=False)
 
-        accepted = self._update_apply(z, R_used)
+        accepted = self._update_apply(z, R)
 
         # If the update failed, bail back to current state - real buffer untouched
         if not accepted:
@@ -308,15 +348,15 @@ class UKF:
             return False
 
         # Only commit to the rewind now that we know it succeeded: prune
-        # entries forward of the anchor from the real buffer, then rebuild it
-        # by splicing this OOSM in and replaying every event that originally
+        # entries forward of the anchor from the real buffer, then rebuild
+        # it by splicing this OOSM in and replaying every event that originally
         # came after it - from BOTH streams - in the order it actually
         # happened, instead of blindly re-predicting over lost corrections.
         while self._UKF_buffer and self._UKF_buffer[-1].t > anchor.t:
             self._UKF_buffer.pop()
 
         self._last_update_time = measurement_timestamp
-        self._push_update_event(measurement_timestamp, z, R_used)
+        self._push_update_event(measurement_timestamp, z, R)
 
         prev_t = measurement_timestamp
         for ev in future_events:
@@ -348,6 +388,22 @@ class UKF:
         self._last_quad_vel = np.zeros(3)
         self._UKF_buffer.clear()
 
+        self._seed_pending = True
+        for b in self._seed_buffers.values():
+            b.clear()
+        self._measurement_last_stamps = {k: None for k in self._seed_buffers}
+        self._last_measurement_type = "apriltag"
+        self._last_yolo_measurement_type = "yolo_lp"
+
+        for d in self._measurement_diagnostics.values():
+            d["raw"] = np.zeros(4)
+            d["raw_stamp"] = 0.0
+            d["meas_age"] = 0.0
+            d["cam_to_image_lag"] = np.nan
+            d["image_to_transform_lag"] = np.nan
+            d["transform_to_UKF_lag"] = np.nan
+            d["total_lag"] = np.nan
+
         self.X.fill(0.0)
         self.X_prop.fill(0.0)
         self.Z.fill(0.0)
@@ -357,8 +413,59 @@ class UKF:
         self._nis_ewma = float(self.dim_z)
 
 
+    @property
+    def seed_pending(self) -> bool:
+        """ Return True while the initial measurement window is being collected. """
+        return self._seed_pending
+
+
+    def _record_measurement_diagnostics(
+            self, measurement_type, z, measurement_timestamp, now, pipeline_timing=None
+    ) -> None:
+        """ Store raw measurement and latency diagnostics for one measurement stream. """
+        d = self._measurement_diagnostics[measurement_type]
+        d["raw"] = z.copy()
+        d["raw_stamp"] = measurement_timestamp
+        d["meas_age"] = (now - measurement_timestamp) * 1000.0
+        d["cam_to_image_lag"] = np.nan
+        d["image_to_transform_lag"] = np.nan
+        d["transform_to_UKF_lag"] = np.nan
+        d["total_lag"] = d["meas_age"]
+
+        if pipeline_timing is not None:
+            t1 = pipeline_timing.vector.x
+            t2 = pipeline_timing.vector.y
+            d["cam_to_image_lag"] = (t1 - measurement_timestamp) * 1000.0
+            d["image_to_transform_lag"] = (t2 - t1) * 1000.0
+            d["transform_to_UKF_lag"] = (now - t2) * 1000.0
+            d["total_lag"] = (
+                d["cam_to_image_lag"]
+                + d["image_to_transform_lag"]
+                + d["transform_to_UKF_lag"]
+            )
+
+
+    def get_measurement_diagnostics(self) -> dict:
+        """ Retrieve diagnostics associated with all measurement streams. """
+        d = {
+            k: {
+                "raw": v["raw"].copy(),
+                "raw_stamp": v["raw_stamp"],
+                "meas_age": v["meas_age"],
+                "cam_to_image_lag": v["cam_to_image_lag"],
+                "image_to_transform_lag": v["image_to_transform_lag"],
+                "transform_to_UKF_lag": v["transform_to_UKF_lag"],
+                "total_lag": v["total_lag"],
+            }
+            for k, v in self._measurement_diagnostics.items()
+        }
+        d["latest"] = d[self._last_measurement_type]
+        d["latest_yolo"] = d[self._last_yolo_measurement_type]
+        return d
+
+
     def seed_position(
-        self, z, timestamp: float, R=None, ignore_above: float = 1e6
+        self, z, timestamp: float, R, ignore_above: float = 1e6
     ) -> None:
         """ Directly seed the position/yaw states (and their covariance) from a
             measurement, instead of letting them converge from zero via the
@@ -385,9 +492,6 @@ class UKF:
                             information" and that axis is left unseeded.
         """
         z = np.asarray(z, dtype=float)
-        if R is None:
-            R = self.R
-        R = np.asarray(R, dtype=float)
 
         pos_states = [LP_State.PX, LP_State.PY, LP_State.PZ, LP_State.YAW]
         meas_states = [LP_Meas.PX, LP_Meas.PY, LP_Meas.PZ, LP_Meas.YAW]
@@ -540,7 +644,7 @@ class UKF:
         self._push_update_event(t[-1], samples[-1][1], R_last)
 
 
-    def _update_apply(self, z, R=None, replay: bool = False) -> bool:
+    def _update_apply(self, z, R, replay: bool = False) -> bool:
         """ Do update step for UKF. Handles lower level UKF update functions such as 
             actual covariance and state updates. Called via the public .update() 
             function (both the in-order path and OOSM replay).
@@ -552,10 +656,6 @@ class UKF:
                    that was actually in effect when they first happened.
         :return: True on success, False on failure.
         """
-
-        if R is None:
-            R = self.R
-
         # Propagate sigma points through hx
         self._hx_vectorized(self.X_prop, self.Z)
 
@@ -637,7 +737,6 @@ class UKF:
             covar_max_eig       - largest eigenvalue (worst-case direction)
             is_pd               - True if P is positive definite (Cholesky succeeds)
         """
-
         diag = np.diag(self.P)
 
         # Clamp negatives defensively before sqrt (shouldn't happen after _repair_P)
@@ -672,7 +771,7 @@ class UKF:
             "mahalanobis_threshold": self._mahalanobis_threshold,
             "rejected_measurements": self._rejected_measurements,
         }
-
+    
 
     @staticmethod
     def _f_A(theta):
@@ -701,7 +800,6 @@ class UKF:
         :param quad_vel: Quadcopter velocity
         :param dt: UKF timestep
         """
-
         px = X[:, LP_State.PX]
         py = X[:, LP_State.PY]
         pz = X[:, LP_State.PZ]
@@ -749,7 +847,6 @@ class UKF:
         :param X: State vector
         :param Z: Measurement vector
         """
-
         Z[:, LP_Meas.PX] = X[:, LP_State.PX]
         Z[:, LP_Meas.PY] = X[:, LP_State.PY]
         Z[:, LP_Meas.PZ] = X[:, LP_State.PZ]
@@ -781,7 +878,6 @@ class UKF:
         :param timestamp: Timestamp of this predict event
         :param quad_vel:  Process input used for this predict event
         """
-
         self._UKF_buffer.append(
             self._Event(
                 timestamp,
@@ -803,7 +899,6 @@ class UKF:
         :param z:         Measurement applied for this update event
         :param R:         Measurement noise covariance applied for this event
         """
-
         self._UKF_buffer.append(
             self._Event(
                 timestamp,
@@ -823,7 +918,6 @@ class UKF:
 
         :param latest_timestamp: Most recent timestamp pushed to the buffer
         """
-
         cutoff = latest_timestamp - self._buffer_window
         while self._UKF_buffer and self._UKF_buffer[0].t < cutoff:
             self._UKF_buffer.popleft()
@@ -839,7 +933,6 @@ class UKF:
         :param idx:         Index to walk backward from, inclusive
         :return: Most recent known quad_vel at or before idx
         """
-
         for i in range(idx, -1, -1):
             if buffer_list[i].kind == "predict":
                 return buffer_list[i].data
@@ -848,7 +941,6 @@ class UKF:
 
     def _repair_P(self) -> None:
         """ Force P back to symmetric positive definite via eigendecomposition"""
-
         self.P = 0.5 * (self.P + self.P.T)
         eigvals, eigvecs = np.linalg.eigh(self.P)
         eigvals = np.maximum(eigvals, 1e-6)
@@ -862,7 +954,6 @@ class UKF:
         :param angle: Single float or vector of angles
         :return: Wrapped angle
         """
-
         return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
@@ -874,7 +965,6 @@ class UKF:
         :param weights: Vector of weights for the weighted average
         :return: The weighted mean of the angles
         """
-
         sin_mean = np.sum(weights * np.sin(angles))
         cos_mean = np.sum(weights * np.cos(angles))
         return float(np.arctan2(sin_mean, cos_mean))

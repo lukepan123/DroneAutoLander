@@ -17,50 +17,43 @@ from std_msgs.msg import Bool
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Vector3Stamped
 from geometry_msgs.msg import TransformStamped
-from mavros_msgs.msg import GimbalManagerSetPitchyaw
-from mavros_msgs.msg import GimbalDeviceAttitudeStatus
-from pupil_apriltags import Detector as AprilTagDetector
 
+from pupil_apriltags import Detector as AprilTagDetector
 
 from .vision_common import TagDefinition
 from .vision_common import CameraIntrinsics
 from .vision_common import OdometryBuffer
+from .vision_common import GimbalAngleBuffer
 from .vision_common import FrameRecorder
-from .vision_common import LatestValueBuffer
 from .vision_common import camera_pose_in_level_frame
-from .vision_common import pixel_row_to_angle_error
+from .vision_common import image_target_message
+from .vision_common import load_camera_mount
 from .vision_common import stamp_to_sec
 
 """ AprilTag Landing Pad Detection Node.
 
     Runs the fast, precise perception loop: AprilTag detection -> solvePnP pose ->
-    gimbal control -> base_link -> landing_pad_link TF broadcast. This TF broadcast IS
-    the primary (full 6-DOF, best-conditioned) measurement stream the orchestrator's
-    UKF consumes.
+    landing-pad measurement. This node does not own the gimbal actuator - it publishes
+    its detected target point on the image to gimbal_controller.py, which independently
+    controls the servo.
 
     Split out from the combined vision_perception node into its own process so this
     loop can run on its own executor thread/core, independent of the (much heavier,
     and intentionally slower) YOLO pipeline in yolo.py - a slow YOLO inference tick can
-    no longer delay the timer driving the gimbal and TF broadcast here.
+    no longer delay the AprilTag detector here.
 
     This node subscribes to /camera/image_raw for its frames. In webcam mode it is
     also the one that owns the physical device and republishes raw frames onto
     /camera/image_raw so yolo.py can consume the exact same uniform topic regardless
     of image_source - two processes can't both open the same webcam device reliably.
 
-    Because it's now a separate process from yolo.py, this node also publishes its
-    commanded gimbal angle on /landing_pad/gimbal_angle: YOLO needs to know where the
-    camera was actually pointed at its own frame's timestamp for its ground-plane
-    back-projection, but no longer has direct access to this node's in-memory state.
-
-    This node is also the only one that ever commands the gimbal servo. AprilTag's own
-    detection is the priority input to the gimbal PD controller whenever it's
-    available on a given tick. On ticks where it misses, this node falls back to
-    yolo.py's own centring error - published on /landing_pad/yolo_gimbal_error - as
-    long as it's still fresh (see gimbal_yolo_fallback_enabled /
-    gimbal_yolo_fallback_max_age_s below, and _apriltag_timer_callback /
-    _drive_gimbal). If neither is available, the gimbal simply holds its last
-    commanded angle, as before.
+    The camera pose is built locally rather than read from TF: buffered FCU odometry
+    (attitude) and the gimbal angle from /landing_pad/gimbal_angle are both
+    interpolated to the image timestamp and fed through camera_pose_in_level_frame.
+    That pose is composed with the solvePnP camera -> tag transform and the tag ->
+    landing pad transform to produce the full local -> landing_pad_link measurement
+    used by the UKF. There is no camera TF lookup, so a late-arriving sample can't
+    cause a TF extrapolation error or drop the frame.
 """
 
 
@@ -88,9 +81,15 @@ class AprilTagNode(Node):
             self.get_parameter("image_source").get_parameter_value().string_value
         )
 
+        # ---- WEBCAM PARAMETERS ----
         self.declare_parameter("webcam_index", 0)
-        self.webcam_index = int(
+        self.webcam_index = (
             self.get_parameter("webcam_index").get_parameter_value().integer_value
+        )
+
+        self.declare_parameter("webcam_fps", 30.0)
+        self._webcam_fps = (
+            self.get_parameter("webcam_fps").get_parameter_value().double_value
         )
 
         self.declare_parameter("show_debug_window", False)
@@ -98,6 +97,7 @@ class AprilTagNode(Node):
             self.get_parameter("show_debug_window").get_parameter_value().bool_value
         )
 
+        # ---- RECORDING PARAMETERS ----
         self.declare_parameter("save_frames", False)
         self.save_frames = (
             self.get_parameter("save_frames").get_parameter_value().bool_value
@@ -109,7 +109,7 @@ class AprilTagNode(Node):
         )
 
         self.declare_parameter("video_fps", 10.0)
-        self.video_fps = float(
+        self.video_fps = (
             self.get_parameter("video_fps").get_parameter_value().double_value
         )
 
@@ -118,47 +118,129 @@ class AprilTagNode(Node):
             self.get_parameter("output_dir").get_parameter_value().string_value
         )
 
+        # ---- PROCESSING PARAMETERS ----
         self.declare_parameter("apriltag_processing_rate", 10.0)
-        self._apriltag_processing_rate = float(
-            self.get_parameter("apriltag_processing_rate").get_parameter_value().double_value
-        )
-
-        # Only used in webcam mode: how fast we pull fresh frames off the device.
-        self.declare_parameter("frame_capture_rate", 24.0)
-        self._frame_capture_rate = float(
-            self.get_parameter("frame_capture_rate").get_parameter_value().double_value
-        )
-
-        self.declare_parameter("imgsz_width", 960)
-        self._image_width = int(
-            self.get_parameter("imgsz_width").get_parameter_value().integer_value
-        )
-
-        self.declare_parameter("imgsz_height", 540)
-        self._image_height = int(
-            self.get_parameter("imgsz_height").get_parameter_value().integer_value
-        )
-
-        # ---- GIMBAL YOLO-FALLBACK PARAMETERS ----
-        # Whether to let yolo.py's centring error drive the gimbal on ticks where
-        # this node's own AprilTag detection misses. AprilTag always takes priority
-        # when available, regardless of this setting - see _apriltag_timer_callback.
-        self.declare_parameter("gimbal_yolo_fallback_enabled", True)
-        self._gimbal_yolo_fallback_enabled = (
-            self.get_parameter("gimbal_yolo_fallback_enabled")
-            .get_parameter_value()
-            .bool_value
-        )
-
-        # How old (seconds) a buffered yolo.py gimbal error is allowed to be before
-        # it's treated as stale and ignored (e.g. yolo.py has stalled or isn't
-        # running). Judged against the YOLO frame's own timestamp, not arrival time.
-        self.declare_parameter("gimbal_yolo_fallback_max_age_s", 0.5)
-        self._gimbal_yolo_fallback_max_age_s = float(
-            self.get_parameter("gimbal_yolo_fallback_max_age_s")
+        self._apriltag_processing_rate = (
+            self.get_parameter("apriltag_processing_rate")
             .get_parameter_value()
             .double_value
         )
+
+        self.declare_parameter("frame_capture_rate", 24.0)
+        self._frame_capture_rate = (
+            self.get_parameter("frame_capture_rate")
+            .get_parameter_value()
+            .double_value
+        )
+
+        self.declare_parameter("img_width", 960)
+        self._image_width = (
+            self.get_parameter("img_width").get_parameter_value().integer_value
+        )
+
+        self.declare_parameter("img_height", 540)
+        self._image_height = (
+            self.get_parameter("img_height").get_parameter_value().integer_value
+        )
+
+        # ---- APRILTAG PARAMETERS ----
+        self.declare_parameter("apriltag_family", "tag36h11")
+        self.declare_parameter("apriltag_quad_decimate", 2.0)
+        self.declare_parameter("apriltag_quad_sigma", 0.0)
+        self.declare_parameter("apriltag_refine_edges", 1)
+        self.declare_parameter("apriltag_decode_sharpening", 0.75)
+        self.declare_parameter("apriltag_debug", 0)
+        self.declare_parameter("apriltag_tag_ids", [11, 21, 31])
+        self.declare_parameter("apriltag_spacing_m", 0.341)
+        self.declare_parameter("apriltag_main_offset_m", -0.0912 + 0.15)
+        self.declare_parameter("apriltag_main_tag_size_m", 0.481)
+        self.declare_parameter("apriltag_small_tag_size_m", 0.072)
+        self.declare_parameter("apriltag_tag_to_pad_yaw_deg", 90.0)
+        self._apriltag_family = (
+            self.get_parameter("apriltag_family").get_parameter_value().string_value
+        )
+        self._apriltag_quad_decimate = (
+            self.get_parameter("apriltag_quad_decimate")
+            .get_parameter_value()
+            .double_value
+        )
+        self._apriltag_quad_sigma = (
+            self.get_parameter("apriltag_quad_sigma")
+            .get_parameter_value()
+            .double_value
+        )
+        self._apriltag_refine_edges = (
+            self.get_parameter("apriltag_refine_edges")
+            .get_parameter_value()
+            .integer_value
+        )
+        self._apriltag_decode_sharpening = (
+            self.get_parameter("apriltag_decode_sharpening")
+            .get_parameter_value()
+            .double_value
+        )
+        self._apriltag_debug = (
+            self.get_parameter("apriltag_debug").get_parameter_value().integer_value
+        )
+        tag_ids = [
+            int(v)
+            for v in self.get_parameter("apriltag_tag_ids")
+            .get_parameter_value()
+            .integer_array_value
+        ]
+        self._apriltag_spacing_m = (
+            self.get_parameter("apriltag_spacing_m").get_parameter_value().double_value
+        )
+        self._apriltag_main_offset_m = (
+            self.get_parameter("apriltag_main_offset_m")
+            .get_parameter_value()
+            .double_value
+        )
+        self._apriltag_main_tag_size_m = (
+            self.get_parameter("apriltag_main_tag_size_m")
+            .get_parameter_value()
+            .double_value
+        )
+        self._apriltag_small_tag_size_m = (
+            self.get_parameter("apriltag_small_tag_size_m")
+            .get_parameter_value()
+            .double_value
+        )
+        self._apriltag_tag_to_pad_yaw_rad = np.deg2rad(
+            self.get_parameter("apriltag_tag_to_pad_yaw_deg")
+            .get_parameter_value()
+            .double_value
+        )
+        if len(tag_ids) != 3:
+            raise ValueError("apriltag_tag_ids must contain exactly three IDs")
+
+        # ---- CAMERA PARAMETERS ----
+        self.declare_parameter("camera_fov_horizontal", 2.7925268)
+        self._camera_fov_horizontal = (
+            self.get_parameter("camera_fov_horizontal")
+            .get_parameter_value()
+            .double_value
+        )
+
+        # Camera mount offsets (shared defaults in vision_common.load_camera_mount)
+        self._camera_mount = load_camera_mount(self)
+
+        # How much odometry / gimbal angle history to keep for image-time alignment
+        self.declare_parameter("odometry_buffer_window_s", 1.0)
+        self._odometry_buffer_window_s = (
+            self.get_parameter("odometry_buffer_window_s")
+            .get_parameter_value()
+            .double_value
+        )
+
+        self.declare_parameter("camera_distortion_coeffs", [0.0, 0.0, 0.0, 0.0, 0.0])
+        camera_distortion_coeffs = (
+            self.get_parameter("camera_distortion_coeffs")
+            .get_parameter_value()
+            .double_array_value
+        )
+        if len(camera_distortion_coeffs) != 5:
+            raise ValueError("camera_distortion_coeffs must contain exactly five values")
 
         self.get_logger().info(
             f"AprilTag processing rate: {self._apriltag_processing_rate} Hz"
@@ -167,54 +249,42 @@ class AprilTagNode(Node):
             f"Video recording parameters: save_frames={self.save_frames}, "
             f"create_video={self.create_video}, video_fps={self.video_fps}"
         )
-        self.get_logger().info(
-            f"Gimbal YOLO fallback: enabled={self._gimbal_yolo_fallback_enabled}, "
-            f"max_age_s={self._gimbal_yolo_fallback_max_age_s}"
-        )
-
         # ---- CAMERA INTRINSICS ----
-        self._intrinsics = CameraIntrinsics(self._image_width, self._image_height)
+        self._intrinsics = CameraIntrinsics(
+            self._image_width,
+            self._image_height,
+            self._camera_fov_horizontal,
+            tuple(camera_distortion_coeffs), # type: ignore
+        )
         self._camera_matrix = self._intrinsics.matrix
-        self._dist_coeffs = self._intrinsics.dist_coeffs
+        self._dist_coeffs = self._intrinsics.dist_coeffs_array
 
-        # ---- GIMBAL CONTROLLER PARAMETERS ----
-        self._gimbal_Kp = 0.03                # deg output per deg error
-        self._gimbal_Kd = 0.005
-        self._gimbal_prev_error = 0.0
-        self._gimbal_max_slew_deg_s = 60.0
-        self._gimbal_last_cmd_time = None
-        # Tracks which pipeline last drove the controller ("apriltag" / "yolo" /
-        # None), purely so _drive_gimbal can avoid differentiating across a switch
-        # between two independent error sources - see _drive_gimbal.
-        self._gimbal_last_source = None
-
-        self._servo_angle = -90.0
-        self._gimbal_actual_pitch = self._servo_angle
-        self._gimbal_servo_ID = 10
-
-        self._servo_min_angle = -90.0
-        self._servo_max_angle = 25.0
-
-        self._servo_pwm_min = 1100
-        self._servo_pwm_max = 1900
-
-        # ---- APRILTAG PARAMETERS ----
+        # ---- APRILTAG DEFINITIONS ----
         # IDs must be valid tag36h11 IDs (0-586).
-        SPACING = 0.341
-        MAIN = -0.0912 + 0.15  # Move forward, but actual is at -0.0912
+        SPACING = self._apriltag_spacing_m
+        MAIN = self._apriltag_main_offset_m
         self._tags = {
-            1: TagDefinition(size=0.481, position=(0.0, MAIN, 0.0)),
-            2: TagDefinition(size=0.072, position=(0.0, MAIN + SPACING, 0.0)),
-            3: TagDefinition(size=0.072, position=(0.0, MAIN - SPACING, 0.0)),
+            tag_ids[0]: TagDefinition(
+                size=self._apriltag_main_tag_size_m,
+                position=(0.0, MAIN, 0.0),
+            ),
+            tag_ids[1]: TagDefinition(
+                size=self._apriltag_small_tag_size_m,
+                position=(0.0, MAIN + SPACING, 0.0),
+            ),
+            tag_ids[2]: TagDefinition(
+                size=self._apriltag_small_tag_size_m,
+                position=(0.0, MAIN - SPACING, 0.0),
+            ),
         }
 
         self.detector = AprilTagDetector(
-            families="tag36h11",
-            quad_decimate=2.0,
-            quad_sigma=0.0,
-            refine_edges=1,
-            decode_sharpening=0.75,
-            debug=0,
+            families=self._apriltag_family,
+            quad_decimate=self._apriltag_quad_decimate,
+            quad_sigma=self._apriltag_quad_sigma,
+            refine_edges=self._apriltag_refine_edges,
+            decode_sharpening=self._apriltag_decode_sharpening,
+            debug=self._apriltag_debug,
         )
 
         # ---- SUBSCRIPTIONS ----
@@ -230,62 +300,18 @@ class AprilTagNode(Node):
             self._quad_odometry_callback,
             _odom_qos,
         )
-        self._odom_buffer = OdometryBuffer(window_s=1.0)
-        self._gimbal_attitude_sub = self.create_subscription(
-            GimbalDeviceAttitudeStatus,
-            "/mavros/gimbal_control/device/attitude_status",
-            self._gimbal_attitude_callback,
-            10,
-        )
+        self._odom_buffer = OdometryBuffer(window_s=self._odometry_buffer_window_s)
 
-        # yolo.py's fallback gimbal-centring error - see module docstring above and
-        # _apriltag_timer_callback / _drive_gimbal.
-        self._yolo_gimbal_error_sub = self.create_subscription(
+        # Gimbal angle (deg) from gimbal_controller.py, interpolated to image stamps.
+        self._gimbal_buffer = GimbalAngleBuffer(
+            window_s=self._odometry_buffer_window_s
+        )
+        self._gimbal_angle_sub = self.create_subscription(
             Vector3Stamped,
-            "/landing_pad/yolo_gimbal_error",
-            self._yolo_gimbal_error_callback,
+            "/landing_pad/gimbal_angle",
+            self._gimbal_angle_callback,
             10,
         )
-        self._yolo_gimbal_error_buffer = LatestValueBuffer()
-
-        # ---- PUBLISHERS ----
-        self._bridge = CvBridge()
-        self._webcam_publisher = self.create_publisher(Image, "/image", 10)
-        self._landing_pad_found_publisher = self.create_publisher(
-            Bool, "/landing_pad/found", 10
-        )
-        # Published every tick so yolo.py can time-align the gimbal angle with its
-        # own frames (see docstring above / GimbalAngleBuffer in vision_common.py).
-        self._gimbal_angle_publisher = self.create_publisher(
-            Vector3Stamped, "/landing_pad/gimbal_angle", 10
-        )
-
-        self._gimbal_manager_publisher = self.create_publisher(
-            GimbalManagerSetPitchyaw, "/mavros/gimbal_control/manager/set_pitchyaw", 10
-        )
-
-        # ---- TF2 ----
-        self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
-
-        # ---- DIAGNOSTICS ----
-        self._apriltag_pipeline_timing_publisher = self.create_publisher(
-            Vector3Stamped, "/landing_pad/pipeline_timing", 10
-        )
-
-        # ---- FRAME RECORDING ----
-        self._frame_recorder = FrameRecorder(
-            self.get_logger(), "apriltag", self.output_dir, self.video_fps,
-            self.save_frames, self.create_video,
-        )
-
-        if self.show_debug_window:
-            cv2.namedWindow("AprilTag Debug", cv2.WINDOW_AUTOSIZE)
-
-        # ---- IMAGE SOURCE SETUP ----
-        self._img_msg = None
-        self._img_received_time = None
-        self._img_seq = 0
-        self._last_processed_seq = -1
 
         _img_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -299,7 +325,7 @@ class AprilTagNode(Node):
             )
             self.get_logger().info(
                 "AprilTag (tag36h11) node started in TOPIC mode, waiting for "
-                "MAVROS odometry and image topic..."
+                "image topic, odometry and gimbal angle..."
             )
         else:
             # Webcam mode: this node owns the physical device and republishes raw
@@ -334,10 +360,10 @@ class AprilTagNode(Node):
             if self.cap is None or not self.cap.isOpened():
                 self.get_logger().error(
                     f"Could not open webcam at index {self.webcam_index}. "
-                    f"Make sure your user is in the 'video' group: sudo usermod -a -G video $USER"
+                    "Make sure your user is in the 'video' group: sudo usermod -a -G video $USER"
                 )
             else:
-                self.cap.set(cv2.CAP_PROP_FPS, 30)
+                self.cap.set(cv2.CAP_PROP_FPS, self._webcam_fps)
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._image_width)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._image_height)
 
@@ -357,6 +383,45 @@ class AprilTagNode(Node):
                 1.0 / self._frame_capture_rate, self._frame_capture_timer_callback
             )
 
+        # ---- PUBLISHERS ----
+        self._bridge = CvBridge()
+        self._webcam_publisher = self.create_publisher(Image, "/image", 10)
+        self._landing_pad_found_publisher = self.create_publisher(
+            Bool, "/landing_pad/found", 10
+        )
+        self._apriltag_target_publisher = self.create_publisher(
+            Vector3Stamped, "/landing_pad/apriltag_target", 10
+        )
+
+        # ---- TF2 ----
+        # Broadcast only: this node publishes the landing pad measurement as TF but
+        # no longer listens to /tf.
+        self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+
+        # ---- DIAGNOSTICS ----
+        self._apriltag_pipeline_timing_publisher = self.create_publisher(
+            Vector3Stamped, "/landing_pad/pipeline_timing", 10
+        )
+
+        # ---- FRAME RECORDING ----
+        self._frame_recorder = FrameRecorder(
+            self.get_logger(),
+            "apriltag",
+            self.output_dir,
+            self.video_fps,
+            self.save_frames,
+            self.create_video,
+        )
+
+        if self.show_debug_window:
+            cv2.namedWindow("AprilTag Debug", cv2.WINDOW_AUTOSIZE)
+
+        # ---- IMAGE BUFFER ----
+        self._img_msg = None
+        self._img_received_time = None
+        self._img_seq = 0
+        self._last_processed_seq = -1
+
         # ---- PROCESSING TIMER ----
         self._apriltag_timer = self.create_timer(
             1.0 / self._apriltag_processing_rate, self._apriltag_timer_callback
@@ -368,7 +433,6 @@ class AprilTagNode(Node):
 
         :param msg: Incoming Image message from the camera topic
         """
-
         self._img_msg = msg
         self._img_received_time = self.get_clock().now()
         self._img_seq += 1
@@ -401,27 +465,6 @@ class AprilTagNode(Node):
 
         self._image_raw_publisher.publish(msg)
 
-    def _quad_odometry_callback(self, msg: Odometry) -> None:
-        """ Obtain FCU Odometry, buffering stamped attitude for time-correct lookups.
-
-        :param msg: Incoming Odometry message
-        """
-
-        self._odom_buffer.push(msg)
-
-    def _yolo_gimbal_error_callback(self, msg: Vector3Stamped) -> None:
-        """ Buffer yolo.py's published gimbal-centring angle error, used as a
-            fallback gimbal control input on ticks where this node's own AprilTag
-            detection misses (see _apriltag_timer_callback). Keyed on the YOLO
-            frame's own timestamp so staleness is judged against when that
-            detection was actually made, not when this message happened to arrive.
-
-        :param msg: Vector3Stamped with the angle error (degrees) in vector.x and
-                    detection confidence in vector.y
-        """
-        t = stamp_to_sec(msg.header.stamp)
-        self._yolo_gimbal_error_buffer.push(float(msg.vector.x), t)
-
     def _get_new_frame(self):
         """ Pull the latest frame, but only if it's newer than the last frame this
             node already processed.
@@ -447,28 +490,53 @@ class AprilTagNode(Node):
 
         return frame, stamp
 
+    def _quad_odometry_callback(self, msg: Odometry) -> None:
+        """ Buffer stamped FCU attitude/altitude for image-timestamp alignment.
+
+        :param msg: Incoming Odometry message
+        """
+        self._odom_buffer.push(msg)
+
+    def _gimbal_angle_callback(self, msg: Vector3Stamped) -> None:
+        """ Buffer the measured gimbal pitch for image-timestamp alignment.
+
+        :param msg: Vector3Stamped from gimbal_controller.py; vector.x is the actual
+                    gimbal pitch in degrees
+        """
+        self._gimbal_buffer.push(stamp_to_sec(msg.header.stamp), msg.vector.x)
+
+    def _camera_pose_at(self, stamp):
+        """ Camera pose in the local-level frame at an image timestamp, built from the
+            buffered odometry attitude and gimbal angle (both interpolated to `stamp`).
+
+        :param stamp: builtin_interfaces/Time, the image's header.stamp
+        :return: 4x4 camera pose (level-frame <- camera-frame), or None if either
+                 buffer has no data yet
+        """
+        odom = self._odom_buffer.get_at(stamp)
+        gimbal_deg = self._gimbal_buffer.get_at(stamp)
+        if odom is None or gimbal_deg is None:
+            self.get_logger().warn(
+                "No odometry/gimbal angle buffered yet - skipping pose",
+                throttle_duration_sec=1.0,
+            )
+            return None
+        q, _altitude = odom
+        return camera_pose_in_level_frame(q, gimbal_deg, self._camera_mount)
+
     def _apriltag_timer_callback(self) -> None:
-        """ Fires at apriltag_processing_rate. Detects AprilTags, estimates pose,
-            drives the gimbal controller (falling back to yolo.py's centring error
-            when its own detection misses), and broadcasts the base_link ->
-            landing_pad_link TF.
+        """ Fires at apriltag_processing_rate. Detects AprilTags, publishes the image
+            target for the independent gimbal controller, and broadcasts the local ->
+            landing_pad_link measurement when solvePnP and the camera pose are available.
         """
 
         frame, stamp = self._get_new_frame()
         if frame is None:
             return  # no new frame since this node last ran
 
-        odom = self._odom_buffer.get_at(stamp)
-        if odom is None:
-            self.get_logger().warn(
-                "No odometry buffered yet - skipping frame", throttle_duration_sec=1.0
-            )
-            return
-        q, _altitude = odom  # altitude unused here - solvePnP gives metric depth directly
-
         apriltag_detections = self._apriltag_detection(frame)
         landing_pad_found = False
-        
+
         if len(apriltag_detections) > 0:
             # Select the largest visible tag by apparent (pixel) area
             best = max(
@@ -483,6 +551,16 @@ class AprilTagNode(Node):
             tag = self._tags[tag_id]
             object_points = tag.object_points
 
+            # Publish the detected image point immediately so the independent gimbal
+            # controller can track the target even if solvePnP later fails.
+            centre_x = np.mean(image_points[:, 0])
+            centre_y = np.mean(image_points[:, 1])
+            self._apriltag_target_publisher.publish(
+                image_target_message(
+                    stamp, centre_x, centre_y, self._intrinsics, "apriltag_target"
+                )
+            )
+
             success, rvec, tvec = cv2.solvePnP(
                 object_points,
                 image_points,
@@ -491,17 +569,10 @@ class AprilTagNode(Node):
                 flags=cv2.SOLVEPNP_IPPE_SQUARE,
             )
 
-            if success:
-                landing_pad_found = True
+            T_local_cam = self._camera_pose_at(stamp) if success else None
 
-                # AprilTag detection takes priority whenever it's available on a
-                # tick - see _drive_gimbal / module docstring.
-                centre_y = np.mean(image_points[:, 1])
-                fy = self._camera_matrix[1, 1]
-                angle_error = pixel_row_to_angle_error(
-                    centre_y, self._image_height, fy
-                )
-                self._drive_gimbal(angle_error, "apriltag")
+            if T_local_cam is not None:
+                landing_pad_found = True
 
                 if self.show_debug_window:
                     cv2.drawFrameAxes(
@@ -515,8 +586,7 @@ class AprilTagNode(Node):
 
                 tf_base_to_pad = self._compose_base_to_landing_pad(
                     stamp,
-                    q,
-                    self._gimbal_actual_pitch,
+                    T_local_cam,
                     rvec,
                     tvec,
                     tag_id,
@@ -526,18 +596,6 @@ class AprilTagNode(Node):
                 # This TF broadcast IS the AprilTag measurement update the UKF
                 # consumes (full 6-DOF: translation + rotation, from solvePnP).
 
-        if not landing_pad_found and self._gimbal_yolo_fallback_enabled:
-            # AprilTag missed this tick - fall back to yolo.py's own centring
-            # error, if it's still fresh. This does NOT affect landing_pad_found /
-            # the /landing_pad/found publish below, which stays keyed only to this
-            # node's own AprilTag detection, as before.
-            t_now = self.get_clock().now().nanoseconds / 1e9
-            yolo_angle_error = self._yolo_gimbal_error_buffer.get_if_fresh(
-                t_now, self._gimbal_yolo_fallback_max_age_s
-            )
-            if yolo_angle_error is not None:
-                self._drive_gimbal(yolo_angle_error, "yolo")
-
         self._landing_pad_found_publisher.publish(Bool(data=landing_pad_found))
 
         # Pipeline Latency Diagnostics
@@ -546,19 +604,9 @@ class AprilTagNode(Node):
             timing_msg = Vector3Stamped()
             timing_msg.header.stamp = stamp  # t0 same as the TF's stamp, aligned
             timing_msg.header.frame_id = "pipeline_timing"
-            timing_msg.vector.x = self._img_received_time.nanoseconds / 1e9  # t1 #type: ignore
+            timing_msg.vector.x = self._img_received_time.nanoseconds / 1e9  # t1  #type: ignore
             timing_msg.vector.y = transform_ready_time.nanoseconds / 1e9     # t2
             self._apriltag_pipeline_timing_publisher.publish(timing_msg)
-
-        # Publish gimbal angle every tick (regardless of pose update success) so
-        # yolo.py always has a fresh time-series to interpolate against.
-        gimbal_msg = Vector3Stamped()
-        gimbal_msg.header.stamp = self.get_clock().now().to_msg()
-        gimbal_msg.header.frame_id = "gimbal_angle"
-        gimbal_msg.vector.x = float(self._gimbal_actual_pitch)
-        self._gimbal_angle_publisher.publish(gimbal_msg)
-
-        self._gimbal_manager_control(self._servo_angle)
 
         if self.show_debug_window:
             self._show_apriltag_debug(frame, apriltag_detections)
@@ -579,9 +627,9 @@ class AprilTagNode(Node):
         :return: List of recognised AprilTag detections.
         """
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        detections = self.detector.detect(gray_frame)  # type: ignore
+        detections = self.detector.detect(gray_frame)  #type: ignore
 
-        valid_detections = [d for d in detections if d.tag_id in self._tags]  # type: ignore
+        valid_detections = [d for d in detections if d.tag_id in self._tags]  #type: ignore
         return valid_detections
 
     def _show_apriltag_debug(self, frame, detections):
@@ -590,7 +638,7 @@ class AprilTagNode(Node):
         :param frame: Image frame
         :param detections: Apriltag detections list
         """
-        for d in detections:  # type: ignore
+        for d in detections:  #type: ignore
             pts = d.corners.astype(np.int32)
             colour = (0, 255, 0) if d.tag_id in self._tags else (0, 165, 255)
             cv2.polylines(frame, [pts], isClosed=True, color=colour, thickness=2)
@@ -604,95 +652,22 @@ class AprilTagNode(Node):
                 2,
             )
 
-    def _gimbal_attitude_callback(self, msg: GimbalDeviceAttitudeStatus) -> None:
-        """Store the actual measured gimbal pitch from the attitude quaternion."""
 
-        q = [msg.q.x, msg.q.y, msg.q.z, msg.q.w,]
-        _, pitch, _ = tf_transformations.euler_from_quaternion(q)
-
-        self._gimbal_actual_pitch = float(np.degrees(pitch))
-
-        # self.get_logger().info(
-        #     f"Gimbal actual pitch: {self._gimbal_actual_pitch:.2f} deg",
-        #     throttle_duration_sec=1.0,
-        # )
-
-    def _drive_gimbal(self, angle_error: float, source: str) -> None:
-        """ Feed an angle error into the gimbal PD controller (_gimbal_controller),
-            resetting the derivative term's baseline whenever the error's source
-            switches between "apriltag" and "yolo". The two pipelines are
-            independent sensors on different cadences/resolutions, so their error
-            signals aren't continuous with each other - differentiating straight
-            across a switch would produce a spurious derivative kick in the servo
-            command.
-
-        :param angle_error: Signed vertical angle error (degrees) - see
-                             pixel_row_to_angle_error in vision_common.py
-        :param source:      "apriltag" or "yolo", identifying which pipeline this
-                             error came from
-        """
-        if self._gimbal_last_source is not None and self._gimbal_last_source != source:
-            self._gimbal_prev_error = angle_error
-        self._gimbal_last_source = source
-        self._gimbal_controller(angle_error)
-
-    def _gimbal_controller(self, angle_error: float) -> None:
-        """ PD control law that steps the commanded servo angle towards centring the
-            current target (whichever pipeline supplied angle_error - see
-            _drive_gimbal) in the image row.
-
-        :param angle_error: Signed vertical angle error (degrees) of the target from
-                             the image row centre; positive = target below centre
-        """
-
-        now = self.get_clock().now()
-        if self._gimbal_last_cmd_time is None:
-            dt = 1.0 / self._apriltag_processing_rate
-        else:
-            dt = (now - self._gimbal_last_cmd_time).nanoseconds / 1e9
-            dt = max(dt, 1e-3)
-        self._gimbal_last_cmd_time = now
-
-        derivative = (angle_error - self._gimbal_prev_error) / dt
-        self._gimbal_prev_error = angle_error
-
-        correction = (
-            self._gimbal_Kp * angle_error
-            + self._gimbal_Kd * derivative
-        )
-        max_step = self._gimbal_max_slew_deg_s * dt
-        correction = np.clip(correction, -max_step, max_step)
-
-        self._servo_angle = np.clip(
-            self._servo_angle - correction, self._servo_min_angle, self._servo_max_angle
-        )
-
-    def _gimbal_manager_control(self, pitch_angle_deg: float):
-        msg = GimbalManagerSetPitchyaw()
-        msg.pitch = float(np.deg2rad(pitch_angle_deg))  # check units - some mavros versions want rad, some deg; verify against `ros2 interface show`
-        msg.yaw = float(np.deg2rad(0.0))  # see NaN note below
-        msg.pitch_rate = float("nan")
-        msg.yaw_rate = float("nan")
-        self._gimbal_manager_publisher.publish(msg)
-
-    @staticmethod
     def _compose_base_to_landing_pad(
-        stamp, quad_rotation, servo_angle, rvec, tvec, tag_id, tag_position
+        self, stamp, T_local_cam, rvec, tvec, tag_id, tag_position
     ):
         """ Compose quad_local->quad_body->cam->tag->landing_pad into a single
             base_link->landing_pad_link transform.
 
-        :param stamp:         ROS timestamp
-        :param quad_rotation: Quadcopter rotation quaternion
-        :param servo_angle:   Current gimbal servo angle (degrees)
-        :param rvec:          AprilTag rotation vector (camera->tag)
-        :param tvec:          AprilTag translation vector (camera->tag)
-        :param tag_id:        Detected tag ID (unused here, kept for clarity)
+        :param stamp:       ROS timestamp
+        :param T_local_cam: Camera pose in the local-level frame at the image timestamp
+                            (camera_pose_in_level_frame)
+        :param rvec:         AprilTag rotation vector (camera->tag)
+        :param tvec:         AprilTag translation vector (camera->tag)
+        :param tag_id:       Detected tag ID (unused here, kept for clarity)
         :param tag_position:  (x, y, z) offset of this tag on the landing pad
         :return:              TransformStamped: base_link -> landing_pad_link
         """
-
-        T_quad_cam = camera_pose_in_level_frame(quad_rotation, servo_angle)
 
         # Cam -> Tag
         R_cam_tag, _ = cv2.Rodrigues(rvec)
@@ -701,11 +676,13 @@ class AprilTagNode(Node):
         T_cam_tag[:3, 3] = tvec.reshape(3)
 
         # Tag -> landing pad
-        q_tag_pad = tf_transformations.quaternion_from_euler(0.0, 0.0, 1.5707963)
+        q_tag_pad = tf_transformations.quaternion_from_euler(
+            0.0, 0.0, self._apriltag_tag_to_pad_yaw_rad
+        )
         T_tag_pad = tf_transformations.quaternion_matrix(q_tag_pad)
         T_tag_pad[:3, 3] = np.array(tag_position)
 
-        T_local_pad = T_quad_cam @ T_cam_tag @ T_tag_pad
+        T_local_pad = T_local_cam @ T_cam_tag @ T_tag_pad
 
         t_out = T_local_pad[:3, 3]
         q_out = tf_transformations.quaternion_from_matrix(T_local_pad)

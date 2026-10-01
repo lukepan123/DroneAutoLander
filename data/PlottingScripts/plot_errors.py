@@ -158,13 +158,13 @@ def clean_true_yaw(yaw, t, thresh=np.deg2rad(30), passes=3):
 
 def main():
     script_dir = Path(__file__).parent
-    csv_path = script_dir / 'controller_20260928_214030.csv'
+    csv_path = script_dir / 'controller_20261002_000330.csv'
     out_dir = script_dir / 'plots'
     out_dir.mkdir(exist_ok=True)
 
     # Set to None to disable either limit
     T_START = 20  # seconds
-    T_END   = 50  # seconds
+    T_END   = 150  # seconds
 
     print(f"Reading: {csv_path.name}")
     df = pd.read_csv(csv_path)

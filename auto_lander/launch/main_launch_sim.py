@@ -37,6 +37,30 @@ def generate_launch_description():
     #     sigkill_timeout="30",
     # )
 
+    # ----- Step 2a: Gazebo Camera + Gimbal Bridge -----
+    gz_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="gz_bridge",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+        arguments=[
+            "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/landing_pad/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry",
+            "/model/iris_with_gimbal/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
+
+            "/cmd_rover_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
+
+            "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+
+            "--ros-args",
+            "-r",
+            "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image:=/camera/image_raw",
+            "-r",
+            "/model/iris_with_gimbal/odometry:=/quadcopter/true_odom",
+        ],
+    )
+
     # Run AprilTag landing pad detector node
     apriltag_pose_detector = Node(
         package="auto_lander",
@@ -271,12 +295,27 @@ def generate_launch_description():
         ],
     )
 
+    # Run AGV controller node (SITL only)
+    agv_controller = Node(
+        package="auto_lander",
+        executable="agv_controller",
+        name="agv_controller",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+    delayed_agv_controller = TimerAction(
+        period=25.0,  # Wait a few secs
+        actions=[agv_controller],
+    )
+
     return LaunchDescription(
         [
             #bag_record,
+            gz_bridge,
             #apriltag_pose_detector,
             yolo_pose_detector,
             gimbal_controller,
             controller,
+            delayed_agv_controller,
         ]
     )

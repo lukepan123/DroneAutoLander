@@ -1,8 +1,6 @@
 import numpy as np
-import math
 
 from geometry_msgs.msg import TwistStamped
-from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import GlobalPositionTarget
 from mavros_msgs.msg import AttitudeTarget
 from tf_transformations import quaternion_from_euler
@@ -30,58 +28,84 @@ CONTROL_OUTPUT_KEYS = (
 )
 
 class PIDController:
-    """ Defines the PID Controller Class
-    """
+    """Defines the PD/PN controller class."""
 
-    def __init__(self, dt):
-        """ Initialise the PID Controller node
-        """
+    def __init__(
+        self,
+        lam_0,
+        Kp_0,
+        Kd_0,
+        Kp_pos_z,
+        Kp_vel_z,
+        Ki_vel_z,
+        vel_z_i_clamp,
+        m,
+        max_thrust,
+        g,
+        cD,
+        max_throttle_rate,
+        max_angle_rate,
+        d_blend_start,
+        d_blend_end,
+        d_hold_radius,
+        drop_off_strength,
+        terminal_gain,
+        drop_off,
+        accel_z_limit_g,
+        pos_vel_err_limit,
+    ):
+        """Initialise the PD/PN controller."""
 
         # ---- PID PARAMETERS ----
         # PN/PD Gains
-        self.lam_0 = 2.0
-        self.Kp_0 = 6.5
-        self.Kd_0 = 3.25
+        self.lam_0 = lam_0
+        self.Kp_0 = Kp_0
+        self.Kd_0 = Kd_0
 
         # P/PI Altitude Gains
-        self.Kp_pos_z = 0.2
-        self.Kp_vel_z = 2.0
-        self.Ki_vel_z = 0.2
+        self.Kp_pos_z = Kp_pos_z
+        self.Kp_vel_z = Kp_vel_z
+        self.Ki_vel_z = Ki_vel_z
 
         self.vel_z_err = 0.0
         self.vel_z_integral = 0.0
-        self.vel_z_i_clamp = 2.0  # m/s² — prevents windup
+        self.vel_z_i_clamp = vel_z_i_clamp  # m/s² — prevents windup
 
         # Constant Parameters
-        self.m = 1.98
-        self.max_thrust = 40.0
-        self.g = 9.81
-        self.cD = 0.002
+        self.m = m
+        self.max_thrust = max_thrust
+        self.g = g
+        self.cD = cD
 
-        self.max_throttle_rate = 1.0   # unit/s
-        self.max_angle_rate = 1.0      # rad/s
+        self.max_throttle_rate = max_throttle_rate   # unit/s
+        self.max_angle_rate = max_angle_rate         # rad/s
         self.prev_throttle = self.m * self.g / self.max_thrust
         self.prev_phi = 0.0
         self.prev_theta = 0.0
-        self.prev_yaw =  None
+        self.prev_yaw = None
 
-        self.d_blend_start = 4.0   # start blending toward marker yaw
-        self.d_blend_end   = 1.0   # fully aligned with marker yaw
-        self.d_hold_radius = 4.0   # inside this, hold yaw if tag lost
+        self.d_blend_start = d_blend_start   # start blending toward marker yaw
+        self.d_blend_end = d_blend_end       # fully aligned with marker yaw
+        self.d_hold_radius = d_hold_radius   # inside this, hold yaw if tag lost
+
+        # Guidance tuning
+        self.drop_off_strength = drop_off_strength
+        self.terminal_gain = terminal_gain
+        self.drop_off = drop_off
+        self.accel_z_limit = accel_z_limit_g * self.g
+        self.pos_vel_err_limit = pos_vel_err_limit
 
         # ---- STATE VARIABLES ----
         self.lam = self.lam_0
         self.Kp = self.Kp_0
         self.Kd = self.Kd_0
 
-        self.dt = dt
-
         # Logging
         self._last_outputs = self._nan_outputs()
 
     def controller(
         self,
-        node,
+        dt,
         target_altitude,
         target_desc_rate,
         marker_yaw,
@@ -92,18 +116,21 @@ class PIDController:
         u,
         du,
     ):
-        """PN/PD Controller Logic
+        """PD/PN Controller Logic
 
         :param target_altitude:  desired hover/approach altitude (m, ENU z)
         :param target_desc_rate: desired descent rate (m/s, ENU z)
         :param marker_yaw:       AprilTag-measured pad yaw (rad, ENU), or None/NaN
                                  if no tag is currently detected
         :param cutoff:           bool — if True, zero thrust and hold yaw (kill switch)
-        :param alt_pos_control:  bool - if True, control altitude through position SP, false, control altitude rate
-        :param quad_yaw:         drone yaw   ψ   (rad)
-        :param quad_vel:         drone velocity  v_a (m/s) — 3-vector [vx, vy, vz]
-        :param u:                target-drone relative position p_m (ENU globally aligned) (m) — 3-vector [x, y, z]
-        :param du:               target-drone velocity v_m (m/s) (ENU globally aligned) — 3-vector [vx, vy, vz]
+        :param alt_pos_control:  bool — if True, control altitude through position SP,
+                                 false, control altitude rate
+        :param quad_yaw:         drone yaw ψ (rad)
+        :param quad_vel:         drone velocity v_a (m/s) — 3-vector [vx, vy, vz]
+        :param u:                target-drone relative position p_m (ENU globally aligned)
+                                 (m) — 3-vector [x, y, z]
+        :param du:               target-drone velocity v_m (m/s) (ENU globally aligned)
+                                — 3-vector [vx, vy, vz]
         :return: AttitudeTarget msg (attitude quaternion + normalised throttle)
         """
         tag_detected = (marker_yaw is not None) and not np.isnan(marker_yaw)
@@ -122,7 +149,9 @@ class PIDController:
                 if dist_to_pad > self.d_blend_start:
                     target_yaw = heading_to_pad
                 elif dist_to_pad > self.d_blend_end:
-                    alpha = (self.d_blend_start - dist_to_pad) / (self.d_blend_start - self.d_blend_end)
+                    alpha = (self.d_blend_start - dist_to_pad) / (
+                        self.d_blend_start - self.d_blend_end
+                    )
                     target_yaw = self._blend_angle(heading_to_pad, marker_yaw, alpha)
                 else:
                     target_yaw = marker_yaw
@@ -133,9 +162,9 @@ class PIDController:
                     target_yaw = heading_to_pad   # still far out, LOS heading is fine
 
         # Condition yaw
-        target_yaw = (target_yaw + np.pi) % (2 * np.pi) - np.pi #type: ignore
+        target_yaw = (target_yaw + np.pi) % (2 * np.pi) - np.pi  # type: ignore
         yaw_pre_slew = target_yaw
-        target_yaw = self._slew_angle(target_yaw, self.prev_yaw, self.max_angle_rate)
+        target_yaw = self._slew_angle(target_yaw, self.prev_yaw, self.max_angle_rate, dt)
         slew_yaw = abs((target_yaw - yaw_pre_slew + np.pi) % (2 * np.pi) - np.pi) > 1e-9
         self.prev_yaw = target_yaw
 
@@ -170,19 +199,15 @@ class PIDController:
 
         # ---- PN/PD Controller (ENU) ----
         r = np.linalg.norm(u[:2])
-        drop_off_strength = 0.5
-        lam_gain_factor = 1 - np.exp(-drop_off_strength * r)
+        lam_gain_factor = 1 - np.exp(-self.drop_off_strength * r)
 
-        terminal_gain = 1.0
-        drop_off = 7.0
-
-        u_norm = np.linalg.norm(u)
-        gain_factor = terminal_gain * drop_off / (u_norm**2 + drop_off)
+        gain_factor = self.terminal_gain * self.drop_off / (np.linalg.norm(u)**2 + self.drop_off)
 
         self.lam = self.lam_0 * lam_gain_factor
         self.Kp = self.Kp_0 * gain_factor
         self.Kd = self.Kd_0 * gain_factor
 
+        u_norm = np.linalg.norm(u)
         if u_norm < 1e-6:
             accel_perp = np.zeros(3)
         else:
@@ -196,17 +221,17 @@ class PIDController:
         z_err = target_altitude - (-u[QUAD_State.Z])
 
         if alt_pos_control:
-            vel_z_err = np.clip(self.Kp_pos_z * z_err, -1.5, 1.5) + du[QUAD_State.Z]
+            vel_z_err = np.clip(self.Kp_pos_z * z_err, -self.pos_vel_err_limit, self.pos_vel_err_limit) + du[QUAD_State.Z]
         else:
             vel_z_err = target_desc_rate + du[QUAD_State.Z]
 
-        integral_raw = self.vel_z_integral + vel_z_err * self.dt
+        integral_raw = self.vel_z_integral + vel_z_err * dt
         self.vel_z_integral = np.clip(integral_raw, -self.vel_z_i_clamp, self.vel_z_i_clamp)
         sat_vel_z_int = abs(integral_raw) > self.vel_z_i_clamp
 
         accel_z_raw = self.Kp_vel_z * vel_z_err + self.Ki_vel_z * self.vel_z_integral
-        accel[QUAD_State.Z] = np.clip(accel_z_raw, -1.0 * self.g, 1.0 * self.g)
-        sat_accel_z = abs(accel_z_raw) > self.g
+        accel[QUAD_State.Z] = np.clip(accel_z_raw, -self.accel_z_limit, self.accel_z_limit)
+        sat_accel_z = abs(accel_z_raw) > self.accel_z_limit
 
         # --- Final Output ---
         drag_x = self.cD * quad_vel[QUAD_State.X] * abs(quad_vel[QUAD_State.X])
@@ -247,9 +272,9 @@ class PIDController:
 
         # Restrict/ramp outputs
         throttle_pre, phi_pre, theta_pre = throttle, phi, theta
-        throttle = self._slew(throttle, self.prev_throttle, self.max_throttle_rate)
-        phi = self._slew(phi, self.prev_phi, self.max_angle_rate)
-        theta = self._slew(theta, self.prev_theta, self.max_angle_rate)
+        throttle = self._slew(throttle, self.prev_throttle, self.max_throttle_rate, dt)
+        phi = self._slew(phi, self.prev_phi, self.max_angle_rate, dt)
+        theta = self._slew(theta, self.prev_theta, self.max_angle_rate, dt)
         self.prev_throttle, self.prev_phi, self.prev_theta = throttle, phi, theta
 
         # ---- Stash outputs for logging ----
@@ -294,14 +319,12 @@ class PIDController:
         return msg
 
 
-    def stop(self, node):
-        """ Makes drone stop moving
-        """
+    def stop(self, stamp):
+        """Make drone stop moving."""
 
         msg = TwistStamped()
-        msg.header.stamp = node.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = "base_link"
-        # linear/angular default to 0.0, but explicit for clarity
         msg.twist.linear.x = 0.0
         msg.twist.linear.y = 0.0
         msg.twist.linear.z = 0.0
@@ -309,18 +332,15 @@ class PIDController:
         msg.twist.angular.y = 0.0
         msg.twist.angular.z = 0.0
 
-        # Drive outputs to quadcopter via MAVROS
-        node.vel_pub.publish(msg)
+        return msg
 
 
-    def look(self, node):
-        """ Makes drone yaw to search for target
-        """
+    def look(self, stamp):
+        """Make drone yaw to search for target."""
 
         msg = TwistStamped()
-        msg.header.stamp = node.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = "base_link"
-        # linear/angular default to 0.0, but explicit for clarity
         msg.twist.linear.x = 0.0
         msg.twist.linear.y = 0.0
         msg.twist.linear.z = 0.0
@@ -328,62 +348,56 @@ class PIDController:
         msg.twist.angular.y = 0.0
         msg.twist.angular.z = 0.1
 
-        # Drive outputs to quadcopter via MAVROS
-        node.vel_pub.publish(msg)
+        return msg
 
 
-    def update(self, node):
-        """ Update the PID controller with current state to generate new controller 
-            commands.
-        """
+    def update(
+        self,
+        dt,
+        target_altitude,
+        target_desc_rate,
+        marker_yaw,
+        cutoff,
+        alt_pos_control,
+        quad_yaw,
+        quad_vel,
+        landing_pad_relative_position,
+        landing_pad_relative_velocity,
+    ):
+        """Update the controller with the current state and return a MAVROS command."""
 
-        # Only pass through marker yaw if uncertainty on yaw is low enough
-        if node._UKF_diag["sigma_yaw"] <= 0.15:
-            marker_yaw = node.landing_pad_yaw_forward_predict
-        else:
-            marker_yaw = None 
-
-        msg = self.controller(
-            node=node,
-            target_altitude=node.target_z,
-            target_desc_rate=node.target_z_rate,
+        return self.controller(
+            dt=dt,
+            target_altitude=target_altitude,
+            target_desc_rate=target_desc_rate,
             marker_yaw=marker_yaw,
-            cutoff=node.cutoff,
-            alt_pos_control=node.alt_pos_control,
-            quad_yaw=node.quad_yaw,
-            quad_vel=np.array(
-                [
-                    node.odometry.twist.twist.linear.x,
-                    node.odometry.twist.twist.linear.y,
-                    node.odometry.twist.twist.linear.z,
-                ]
-            ),
-            u=np.array(node.landing_pad_relative_position_forward_predict),
-            du=np.array(node.landing_pad_relative_velocity_forward_predict),
+            cutoff=cutoff,
+            alt_pos_control=alt_pos_control,
+            quad_yaw=quad_yaw,
+            quad_vel=np.asarray(quad_vel),
+            u=np.asarray(landing_pad_relative_position),
+            du=np.asarray(landing_pad_relative_velocity),
         )
 
-        # Drive outputs to quadcopter via MAVROS
-        node.att_pub.publish(msg)
 
+    def goPosition(self, stamp, lat, lon, alt, yaw=None):
+        """Command the drone to fly to a global GPS position via MAVROS.
 
-    def goPosition(self, node, lat, lon, alt, yaw=None):
-        """ Command the drone to fly to a global GPS position via MAVROS.
-    
-            lat, lon : degrees (WGS84)
-            alt      : meters ABOVE HOME (FRAME_GLOBAL_REL_ALT)
-            yaw      : optional heading in radians, ENU convention
-                    (0 = east, pi/2 = north). If None, yaw is ignored and
-                    the FCU holds its current heading.
-    
-            Must be called continuously (>2 Hz) while in GUIDED/OFFBOARD mode.
+        lat, lon : degrees (WGS84)
+        alt      : meters ABOVE HOME (FRAME_GLOBAL_REL_ALT)
+        yaw      : optional heading in radians, ENU convention
+                (0 = east, pi/2 = north). If None, yaw is ignored and
+                the FCU holds its current heading.
+
+        Must be called continuously (>2 Hz) while in GUIDED/OFFBOARD mode.
         """
-    
+
         msg = GlobalPositionTarget()
-        msg.header.stamp = node.get_clock().now().to_msg()  # ROS1: rospy.Time.now()
+        msg.header.stamp = stamp
         msg.header.frame_id = "map"
-    
+
         msg.coordinate_frame = GlobalPositionTarget.FRAME_GLOBAL_REL_ALT
-    
+
         # Use position (+ yaw if given); ignore velocity, accel, yaw rate
         msg.type_mask = (
             GlobalPositionTarget.IGNORE_VX
@@ -394,21 +408,20 @@ class PIDController:
             | GlobalPositionTarget.IGNORE_AFZ
             | GlobalPositionTarget.IGNORE_YAW_RATE
         )
-    
+
         msg.latitude = lat
         msg.longitude = lon
         msg.altitude = alt
-    
+
         if yaw is None:
             msg.type_mask |= GlobalPositionTarget.IGNORE_YAW
         else:
             msg.yaw = yaw
-    
-        # Drive output to quadcopter via MAVROS
-        node.global_pos_pub.publish(msg)
+
+        return msg
 
 
-    def _slew(self, target, prev, max_rate):
+    def _slew(self, target, prev, max_rate, dt):
         """ Slew the PID output to the maximum rate.
 
         :param target: Target output
@@ -416,11 +429,11 @@ class PIDController:
         :param max_rate: Maximum rate of change in output
         :return: Slewed output
         """
-        max_step = max_rate * self.dt
+        max_step = max_rate * dt
         return prev + np.clip(target - prev, -max_step, max_step)
 
 
-    def _slew_angle(self, target, prev, max_rate):
+    def _slew_angle(self, target, prev, max_rate, dt):
         """ Slew the PID angle output to the maximum rate.
 
         :param target: Target output
@@ -428,7 +441,7 @@ class PIDController:
         :param max_rate: Maximum rate of change in output
         :return: Slewed output
         """
-        max_step = max_rate * self.dt
+        max_step = max_rate * dt
         diff = (target - prev + np.pi) % (2 * np.pi) - np.pi
         result = prev + np.clip(diff, -max_step, max_step)
         return (result + np.pi) % (2 * np.pi) - np.pi
@@ -436,7 +449,7 @@ class PIDController:
 
     @staticmethod
     def _blend_angle(a, b, alpha):
-        """Interpolate from angle a to angle b via unit vectors (shortest-arc, wrap-safe)."""
+        """Interpolate from angle a to b via unit vectors (shortest-arc, wrap-safe)."""
         v = (1 - alpha) * np.array([np.cos(a), np.sin(a)]) + alpha * np.array([np.cos(b), np.sin(b)])
         return np.arctan2(v[1], v[0])
 
@@ -444,7 +457,7 @@ class PIDController:
     def _nan_outputs(self) -> dict:
         return {k: float("nan") for k in CONTROL_OUTPUT_KEYS}
 
-    
+
     def reset_outputs(self) -> None:
         """Call once per control tick before the controller may run, so ticks
         where controller() isn't called log NaN instead of stale values."""

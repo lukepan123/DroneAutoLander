@@ -27,10 +27,11 @@ from .vision_common import CameraIntrinsics
 from .vision_common import OdometryBuffer
 from .vision_common import GimbalAngleBuffer
 from .vision_common import FrameRecorder
-from .vision_common import get_workspace_root
 from .vision_common import camera_pose_in_level_frame
-from .vision_common import pixel_row_to_angle_error
+from .vision_common import image_target_message
+from .vision_common import load_camera_mount
 from .vision_common import stamp_to_sec
+from .vision_common import get_workspace_root
 
 """ YOLO Landing Pad Detection Node.
 
@@ -40,20 +41,21 @@ from .vision_common import stamp_to_sec
     that apriltag.py's TF also feeds (translation only - see
     _estimate_yolo_ground_position for why this can't recover rotation/yaw).
 
-    Split out from the combined vision_perception node into its own process so a slow
-    YOLO inference tick (OpenVINO on CPU) can never stall apriltag.py's gimbal
-    control / TF broadcast loop - previously both pipelines ran on one executor
-    thread and contended for it.
+    This node does not command the gimbal servo. It publishes the best available image
+    target on /landing_pad/yolo_target for gimbal_controller.py, preferring the landing
+    pad class and using the car class as a coarse fallback. The gimbal controller owns
+    the actuator independently, so YOLO can continue to drive the gimbal even when the
+    AprilTag node is disabled.
 
-    This node does not command the gimbal servo itself - apriltag.py owns the only
-    actuator. It reads apriltag.py's published servo angle off
-    /landing_pad/gimbal_angle and time-interpolates it (see GimbalAngleBuffer) to
-    recover the angle that was actually in effect when its own frame was captured,
-    for use in _estimate_yolo_ground_position. It also publishes its own detection's
-    vertical centring error on /landing_pad/yolo_gimbal_error so apriltag.py can use
-    it as a FALLBACK gimbal-control input on ticks where its own AprilTag detection
-    misses - AprilTag detection always takes priority when available (see
-    apriltag.py's _apriltag_timer_callback / _drive_gimbal).
+    Split out from the combined vision_perception node into its own process so a slow
+    YOLO inference tick (OpenVINO on CPU) can never stall apriltag.py's detector or the
+    independent gimbal controller.
+
+    For the ground-plane estimate, this node builds the camera pose itself at the image
+    timestamp: buffered FCU odometry (attitude + altitude) and the gimbal angle from
+    /landing_pad/gimbal_angle are both interpolated to the image stamp and fed through
+    camera_pose_in_level_frame. There is no camera TF lookup, so there is nothing to
+    extrapolate and no frame is dropped because a transform arrived a few ms late.
 """
 
 # ---- Ultralytics/OpenVINO runtime safety ----
@@ -87,6 +89,7 @@ class YoloNode(Node):
             self.get_parameter("show_debug_window").get_parameter_value().bool_value
         )
 
+        # ---- RECORDING PARAMETERS ----
         self.declare_parameter("save_frames", False)
         self.save_frames = (
             self.get_parameter("save_frames").get_parameter_value().bool_value
@@ -98,7 +101,7 @@ class YoloNode(Node):
         )
 
         self.declare_parameter("video_fps", 10.0)
-        self.video_fps = float(
+        self.video_fps = (
             self.get_parameter("video_fps").get_parameter_value().double_value
         )
 
@@ -107,52 +110,23 @@ class YoloNode(Node):
             self.get_parameter("output_dir").get_parameter_value().string_value
         )
 
+        # ---- PROCESSING PARAMETERS ----
         self.declare_parameter("yolo_processing_rate", 10.0)
-        self._yolo_processing_rate = float(
+        self._yolo_processing_rate = (
             self.get_parameter("yolo_processing_rate").get_parameter_value().double_value
         )
 
-        self.declare_parameter("imgsz_width", 640)
-        self._image_width = int(
-            self.get_parameter("imgsz_width").get_parameter_value().integer_value
+        self.declare_parameter("img_width", 640)
+        self._image_width = (
+            self.get_parameter("img_width").get_parameter_value().integer_value
         )
 
-        self.declare_parameter("imgsz_height", 384)
-        self._image_height = int(
-            self.get_parameter("imgsz_height").get_parameter_value().integer_value
+        self.declare_parameter("img_height", 384)
+        self._image_height = (
+            self.get_parameter("img_height").get_parameter_value().integer_value
         )
 
-        self.declare_parameter("landing_pad_class_id", 1)
-        self._landing_pad_class_id = int(
-            self.get_parameter("landing_pad_class_id").get_parameter_value().integer_value
-        )
-
-        self.declare_parameter("car_class_id", 0)
-        self._car_class_id = int(
-            self.get_parameter("car_class_id").get_parameter_value().integer_value
-        )
-
-        self.get_logger().info(f"YOLO processing rate: {self._yolo_processing_rate} Hz")
-        self.get_logger().info(
-            f"Video recording parameters: save_frames={self.save_frames}, "
-            f"create_video={self.create_video}, video_fps={self.video_fps}"
-        )
-
-        self.declare_parameter("ground_z", 1.5)
-        self._ground_z = float(
-            self.get_parameter("ground_z").get_parameter_value().double_value
-        )
-        self.get_logger().info(f"Ground plane Z: {self._ground_z:.3f} m")
-
-        # ---- CAMERA INTRINSICS ----
-        # Needed to back-project YOLO pixel detections into camera-frame rays (no
-        # known object size for YOLO, so we can't solvePnP like AprilTag does - see
-        # _estimate_yolo_ground_position). Also used for the vertical
-        # pixel-row-to-angle-error gimbal fallback published below.
-        self._intrinsics = CameraIntrinsics(self._image_width, self._image_height)
-        self._camera_matrix_inv = self._intrinsics.matrix_inv
-
-        # ---- YOLO MODEL ----
+        # ---- YOLO PARAMETERS ----
         workspace_root = get_workspace_root()
         default_yolo_model = (
             os.path.join(workspace_root, "ugv_sim_yolo11n_openvino_model")
@@ -161,19 +135,91 @@ class YoloNode(Node):
         )
 
         self.declare_parameter("yolo_enabled", True)
-        self.declare_parameter("yolo_model_path", default_yolo_model)
-        self.declare_parameter("yolo_conf_threshold", 0.60)
-
         self.yolo_enabled = (
             self.get_parameter("yolo_enabled").get_parameter_value().bool_value
         )
+
+        self.declare_parameter("yolo_model_path", default_yolo_model)
         self.yolo_model_path = (
             self.get_parameter("yolo_model_path").get_parameter_value().string_value
         )
-        self.yolo_conf_threshold = float(
+
+        self.declare_parameter("yolo_conf_threshold", 0.60)
+        self.yolo_conf_threshold = (
             self.get_parameter("yolo_conf_threshold").get_parameter_value().double_value
         )
 
+        self.declare_parameter("yolo_landing_pad_class_id", 1)
+        self._landing_pad_class_id = (
+            self.get_parameter("yolo_landing_pad_class_id")
+            .get_parameter_value()
+            .integer_value
+        )
+
+        self.declare_parameter("yolo_car_class_id", 0)
+        self._car_class_id = (
+            self.get_parameter("yolo_car_class_id").get_parameter_value().integer_value
+        )
+
+        self.declare_parameter("yolo_ground_z", 1.5)
+        self._ground_z = (
+            self.get_parameter("yolo_ground_z").get_parameter_value().double_value
+        )
+
+        self.declare_parameter("yolo_ground_ray_z_epsilon", 1e-3)
+        self._ground_ray_z_epsilon = (
+            self.get_parameter("yolo_ground_ray_z_epsilon")
+            .get_parameter_value()
+            .double_value
+        )
+
+        # ---- CAMERA PARAMETERS ----
+        self.declare_parameter("camera_fov_horizontal", 2.7925268)
+        self._camera_fov_horizontal = (
+            self.get_parameter("camera_fov_horizontal")
+            .get_parameter_value()
+            .double_value
+        )
+
+        self.declare_parameter("camera_distortion_coeffs", [0.0, 0.0, 0.0, 0.0, 0.0])
+        camera_distortion_coeffs = (
+            self.get_parameter("camera_distortion_coeffs")
+            .get_parameter_value()
+            .double_array_value
+        )
+        if len(camera_distortion_coeffs) != 5:
+            raise ValueError("camera_distortion_coeffs must contain exactly five values")
+
+        # ---- BUFFER PARAMETERS ----
+        self.declare_parameter("odometry_buffer_window_s", 1.0)
+        self._odometry_buffer_window_s = (
+            self.get_parameter("odometry_buffer_window_s")
+            .get_parameter_value()
+            .double_value
+        )
+
+        self.get_logger().info(f"YOLO processing rate: {self._yolo_processing_rate} Hz")
+        self.get_logger().info(
+            f"YOLO parameters: model={self.yolo_model_path}, conf={self.yolo_conf_threshold:.2f}, "
+            f"input={self._image_width}x{self._image_height}, "
+            f"landing_pad_id={self._landing_pad_class_id}, car_id={self._car_class_id}"
+        )
+        self.get_logger().info(f"Ground plane Z: {self._ground_z:.3f} m")
+        self.get_logger().info(
+            f"Video recording parameters: save_frames={self.save_frames}, "
+            f"create_video={self.create_video}, video_fps={self.video_fps}"
+        )
+
+        # ---- CAMERA INTRINSICS ----
+        self._intrinsics = CameraIntrinsics(
+            self._image_width,
+            self._image_height,
+            self._camera_fov_horizontal,
+            tuple(camera_distortion_coeffs), # type:ignore
+        )
+        self._camera_matrix_inv = self._intrinsics.matrix_inv
+
+        # ---- YOLO MODEL ----
         self.yolo_model = None
         if self.yolo_enabled:
             try:
@@ -201,18 +247,25 @@ class YoloNode(Node):
             self._quad_odometry_callback,
             _odom_qos,
         )
-        self._odom_buffer = OdometryBuffer(window_s=1.0)
+        self._odom_buffer = OdometryBuffer(window_s=self._odometry_buffer_window_s)
 
-        # apriltag.py owns the gimbal; this node reads its published angle back and
-        # time-aligns it to its own frames.
-        self._gimbal_angle_sub = self.create_subscription(
-            Vector3Stamped, "/landing_pad/gimbal_angle", self._gimbal_angle_callback, 10
+        # Gimbal angle (deg) from gimbal_controller.py, interpolated to image stamps.
+        self._gimbal_buffer = GimbalAngleBuffer(
+            window_s=self._odometry_buffer_window_s
         )
-        self._gimbal_buffer = GimbalAngleBuffer(window_s=1.0)
-        # Used only if no /landing_pad/gimbal_angle messages have arrived yet (e.g.
-        # apriltag.py not running / just started) - matches the original node's
-        # startup default.
-        self._fallback_servo_angle = -90.0
+        self._gimbal_angle_sub = self.create_subscription(
+            Vector3Stamped,
+            "/landing_pad/gimbal_angle",
+            self._gimbal_angle_callback,
+            10,
+        )
+
+        # Camera mount (shared defaults live in vision_common.load_camera_mount)
+        self._camera_mount = load_camera_mount(self)
+
+        # ---- TF2 ----
+        # Broadcast only: this node publishes its landing pad / car measurements as TF
+        # but no longer listens to /tf.
 
         _img_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -232,13 +285,10 @@ class YoloNode(Node):
         self._landing_pad_found_publisher = self.create_publisher(
             Bool, "/landing_pad/found", 10
         )
-        # Fallback gimbal-control input for apriltag.py - see module docstring above
-        # and apriltag.py's _apriltag_timer_callback / _drive_gimbal.
-        self._yolo_gimbal_error_publisher = self.create_publisher(
-            Vector3Stamped, "/landing_pad/yolo_gimbal_error", 10
+        self._yolo_target_publisher = self.create_publisher(
+            Vector3Stamped, "/landing_pad/yolo_target", 10
         )
 
-        # ---- TF2 ----
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         # ---- DIAGNOSTICS ----
@@ -248,8 +298,12 @@ class YoloNode(Node):
 
         # ---- FRAME RECORDING ----
         self._frame_recorder = FrameRecorder(
-            self.get_logger(), "yolo", self.output_dir, self.video_fps,
-            self.save_frames, self.create_video,
+            self.get_logger(),
+            "yolo",
+            self.output_dir,
+            self.video_fps,
+            self.save_frames,
+            self.create_video,
         )
 
         if self.show_debug_window:
@@ -285,13 +339,12 @@ class YoloNode(Node):
         self._odom_buffer.push(msg)
 
     def _gimbal_angle_callback(self, msg: Vector3Stamped) -> None:
-        """ Buffer apriltag.py's published gimbal angle for later time-alignment
-            against this node's own frame timestamps.
+        """ Buffer the measured gimbal pitch for image-timestamp alignment.
 
-        :param msg: Vector3Stamped with the servo angle (degrees) in vector.x
+        :param msg: Vector3Stamped from gimbal_controller.py; vector.x is the actual
+                    gimbal pitch in degrees
         """
-        t = stamp_to_sec(msg.header.stamp)
-        self._gimbal_buffer.push(t, float(msg.vector.x))
+        self._gimbal_buffer.push(stamp_to_sec(msg.header.stamp), msg.vector.x)
 
     def _get_new_frame(self):
         """ Pull the latest frame, but only if it's newer than the last frame this
@@ -320,8 +373,9 @@ class YoloNode(Node):
     def _yolo_timer_callback(self) -> None:
         """ Fires at yolo_processing_rate. Runs the coarse YOLO landing-pad detector
             independently of the AprilTag pipeline and publishes its own measurement
-            update to the UKF (via TF), plus a fallback gimbal-centring error for
-            apriltag.py to use on ticks where its own detection misses.
+            update to the UKF (via TF), plus an image target for the independent gimbal
+            controller. The camera pose used for ground back-projection is built locally
+            from time-aligned odometry and gimbal angle.
         """
 
         if not self.yolo_enabled or self.yolo_model is None:
@@ -339,13 +393,17 @@ class YoloNode(Node):
             return
         q, altitude = odom
 
-        servo_angle = self._gimbal_buffer.get_at(stamp)
-        if servo_angle is None:
-            servo_angle = self._fallback_servo_angle
+        gimbal_deg = self._gimbal_buffer.get_at(stamp)
+        if gimbal_deg is None:
             self.get_logger().warn(
-                "No gimbal angle received from apriltag.py yet - using fallback",
-                throttle_duration_sec=2.0,
+                "No gimbal angle buffered yet - skipping frame",
+                throttle_duration_sec=1.0,
             )
+            return
+
+        # Camera pose in the local-level frame at the image timestamp (attitude and
+        # gimbal angle both interpolated to `stamp`).
+        T_local_cam = camera_pose_in_level_frame(q, gimbal_deg, self._camera_mount)
 
         detections = self._yolo_detections(frame)
 
@@ -354,7 +412,7 @@ class YoloNode(Node):
         car_detection = detections["car"]
         car_translation = None
 
-        # Push a gimbal correction, prioritising centring on the landing_pad vs the car
+        # Push a gimbal target, prioritising the landing pad over the coarse car class.
         any_detection = None
         if landing_pad_detection is not None:
             any_detection = landing_pad_detection
@@ -362,19 +420,12 @@ class YoloNode(Node):
             any_detection = car_detection
 
         if any_detection is not None:
-            cx, cy, bw, bh, confidence = any_detection #type: ignore
-            # Publish this detection's vertical centring error immediately, ahead of
-            # the ground-plane back-projection below - the gimbal fallback only needs
-            # the bounding-box centre and is still valid even on frames where the
-            # ground-plane intersection fails (e.g. gimbal pointed too level).
-            fy = self._intrinsics.matrix[1, 1]
-            angle_error = pixel_row_to_angle_error(cy, self._image_height, fy)
-            gimbal_error_msg = Vector3Stamped()
-            gimbal_error_msg.header.stamp = stamp
-            gimbal_error_msg.header.frame_id = "yolo_gimbal_error"
-            gimbal_error_msg.vector.x = angle_error
-            gimbal_error_msg.vector.y = confidence
-            self._yolo_gimbal_error_publisher.publish(gimbal_error_msg)
+            cx, cy, _bw, _bh, _confidence = any_detection  #type: ignore
+            self._yolo_target_publisher.publish(
+                image_target_message(
+                    stamp, cx, cy, self._intrinsics, "yolo_target"
+                )
+            )
 
         if landing_pad_detection is not None:
             cx, cy, bw, bh, confidence = landing_pad_detection #type: ignore
@@ -385,7 +436,7 @@ class YoloNode(Node):
             # altitude to fix the scale. This carries no rotation information - see
             # _compose_base_to_landing_pad_yolo, which publishes identity rotation.
             landing_pad_translation = self._estimate_yolo_ground_position(
-                cx, cy, q, servo_angle, altitude
+                cx, cy, T_local_cam, altitude
             )
 
             if landing_pad_translation is not None:
@@ -401,18 +452,12 @@ class YoloNode(Node):
                 # This TF broadcast is the YOLO measurement update the UKF consumes -
                 # translation only; the UKF's measurement model for this update
                 # should not read rotation/yaw from it.
-            else:
-                self.get_logger().debug(
-                    "YOLO detection present but camera isn't looking at the ground "
-                    "- skipping ground-plane estimate this frame",
-                    throttle_duration_sec=1.0,
-                )
 
         if car_detection is not None:
             cx, cy, bw, bh, confidence = car_detection #type: ignore
 
             car_translation = self._estimate_yolo_ground_position(
-                cx, cy, q, servo_angle, altitude,
+                cx, cy, T_local_cam, altitude,
             )
 
             if car_translation is not None:
@@ -428,7 +473,7 @@ class YoloNode(Node):
             timing_msg = Vector3Stamped()
             timing_msg.header.stamp = stamp
             timing_msg.header.frame_id = "yolo_pipeline_timing"
-            timing_msg.vector.x = self._img_received_time.nanoseconds / 1e9 #type: ignore
+            timing_msg.vector.x = self._img_received_time.nanoseconds / 1e9  #type: ignore
             timing_msg.vector.y = transform_ready_time.nanoseconds / 1e9
             self._yolo_pipeline_timing_publisher.publish(timing_msg)
 
@@ -451,7 +496,7 @@ class YoloNode(Node):
         Returns:
             {
                 "landing_pad": (cx, cy, width, height, confidence),
-                "car":         (cx, cy, width, height, confidence),
+                "car": (cx, cy, width, height, confidence),
             }
             Missing classes have value None.
         """
@@ -461,7 +506,12 @@ class YoloNode(Node):
         if not self.yolo_enabled or self.yolo_model is None:
             return detections
 
-        results = self.yolo_model(frame, imgsz=(384, 640), verbose=False, device="cpu")
+        results = self.yolo_model(
+            frame,
+            imgsz=(self._image_height, self._image_width),
+            verbose=False,
+            device="cpu",
+        )
 
         for result in results:
             if result.boxes is None:
@@ -493,7 +543,7 @@ class YoloNode(Node):
                 previous = detections[key]
 
                 if previous is None or confidence > previous[4]:
-                    detections[key] = detection #type: ignore
+                    detections[key] = detection  #type: ignore
 
         return detections
 
@@ -526,7 +576,14 @@ class YoloNode(Node):
             cv2.circle(frame, (int(cx), int(cy)), 5, box_color, -1)
 
             # Crosshair
-            cv2.drawMarker(frame, (int(cx), int(cy)), box_color, markerType=cv2.MARKER_CROSS, markerSize=20, thickness=2)
+            cv2.drawMarker(
+                frame,
+                (int(cx), int(cy)),
+                box_color,
+                markerType=cv2.MARKER_CROSS,
+                markerSize=20,
+                thickness=2,
+            )
 
             # Label
             cv2.putText(
@@ -573,14 +630,13 @@ class YoloNode(Node):
         )
 
     def _estimate_yolo_ground_position(
-        self, cx, cy, quad_rotation, servo_angle, altitude
+        self, cx, cy, T_local_cam, altitude
     ) -> np.ndarray | None:
         """ Back-project a YOLO bounding-box centre into a 3D position using a
-            flat-ground assumption: cast the camera ray through (cx, cy) and
-            intersect it with the ground plane at local z=0, using the drone's
-            altitude to fix the scale (a single 2D box alone has no depth
-            information). This gives (x, y, z) translation ONLY - it cannot recover
-            any rotation, including yaw.
+            flat-ground assumption: cast the ray through (cx, cy) and intersect it
+            with the ground plane at local z=0, using altitude to fix the scale (a
+            single 2D box alone has no depth information). This gives (x, y, z)
+            translation ONLY - it cannot recover any rotation, including yaw.
 
             ASSUMPTION: the landing pad sits at the same height as local z=0 (i.e.
             the MAVROS local-frame origin / takeoff point). If the pad is
@@ -589,30 +645,28 @@ class YoloNode(Node):
 
         :param cx, cy:        YOLO bounding-box centre, in pixels of the processing
                                frame (self._image_width x self._image_height)
-        :param quad_rotation: Quadcopter rotation quaternion at the image's timestamp
-        :param servo_angle:   Gimbal servo angle at the image's timestamp (degrees),
-                               as reported by apriltag.py on /landing_pad/gimbal_angle
+        :param T_local_cam:   4x4 camera pose in the local-level frame at the image's
+                               timestamp (camera_pose_in_level_frame)
         :param altitude:      Drone altitude (local-frame position.z) at the image's
                                timestamp
         :return: np.ndarray [x, y, z], drone-relative in the local-level frame (same
-            convention as the AprilTag transform), or None if the camera isn't
-            looking toward the ground (no valid intersection - e.g. gimbal pointed
-            level/up)
+                 convention as the AprilTag transform), or None if the camera isn't
+                 looking toward the ground (no valid intersection - e.g. gimbal pointed
+                 level/up)
         """
 
         pixel_h = np.array([cx, cy, 1.0])
         ray_cam = self._camera_matrix_inv @ pixel_h
         ray_cam = ray_cam / np.linalg.norm(ray_cam)
 
-        T_cam_level = camera_pose_in_level_frame(quad_rotation, servo_angle)
-        R_cam_level = T_cam_level[:3, :3]
-        camera_offset_level = T_cam_level[:3, 3]
+        R_local_cam = T_local_cam[:3, :3]
+        camera_offset_level = T_local_cam[:3, 3]
 
-        ray_level = R_cam_level @ ray_cam
+        ray_level = R_local_cam @ ray_cam
 
         camera_z = altitude + camera_offset_level[2]
 
-        if ray_level[2] >= -1e-3:
+        if ray_level[2] >= -self._ground_ray_z_epsilon:
             return None
 
         t = (self._ground_z - camera_z) / ray_level[2]
@@ -650,8 +704,7 @@ class YoloNode(Node):
 
     @staticmethod
     def _compose_base_to_car_yolo(stamp, translation) -> TransformStamped:
-        """ Pack a YOLO car detection into a translation-only TF.
-        """
+        """ Pack a YOLO car detection into a translation-only TF. """
 
         tf_msg = TransformStamped()
         tf_msg.header.stamp = stamp
@@ -666,6 +719,7 @@ class YoloNode(Node):
         tf_msg.transform.rotation.w = 1.0
 
         return tf_msg
+
 
 # ---- MAIN ----
 def main(args=None):

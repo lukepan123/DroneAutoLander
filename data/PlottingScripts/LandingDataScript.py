@@ -10,7 +10,7 @@ import pandas as pd
 # SETTINGS
 # ============================================================
 
-ROOT_DIR = Path("/home/luke/ros2_ws/StraightLineData/15ms")  # folder containing the 15ms_0_T1, etc. folders
+ROOT_DIR = Path("/home/luke/ros2_ws/TurnRunData/10ms_11degs")  # folder containing the 15ms_0_T1, etc. folders
 
 # A trial is considered to have landed when true_height drops to
 # this value or below.
@@ -29,7 +29,9 @@ SUMMARY_OUTPUT = ROOT_DIR / "trial_summary.csv"
 # ============================================================
 
 TRIAL_RE = re.compile(
-    r"^(?P<speed>\d+(?:\.\d+)?)ms_(?P<angle>-?\d+(?:\.\d+)?)_T(?P<trial>\d+)$"
+    r"^(?P<speed>\d+(?:\.\d+)?)ms_"
+    r"(?:(?P<turn_rate>-?\d+(?:\.\d+)?)degs_)?"
+    r"(?P<angle>-?\d+(?:\.\d+)?)_T(?P<trial>\d+)$"
 )
 
 
@@ -101,6 +103,11 @@ def process_trial(folder):
         return None
 
     speed = float(match.group("speed"))
+    turn_rate = (
+        float(match.group("turn_rate"))
+        if match.group("turn_rate") is not None
+        else 0.0
+    )
     angle = float(match.group("angle"))
     trial = int(match.group("trial"))
 
@@ -179,6 +186,7 @@ def process_trial(folder):
 
     return {
         "speed_mps": speed,
+        "turn_rate_dps": turn_rate,
         "angle_deg": angle,
         "trial": trial,
 
@@ -238,7 +246,7 @@ def main():
 
     summary = (
         trial_df
-        .groupby(["speed_mps", "angle_deg"], dropna=False)
+        .groupby(["speed_mps", "turn_rate_dps", "angle_deg"], dropna=False)
         .agg(
             trials=("trial", "count"),
             avg_landing_error_xy_m=("landing_error_xy_m", "mean"),

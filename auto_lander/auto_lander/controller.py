@@ -26,7 +26,6 @@ from mavros_msgs.srv import CommandTOL
 from mavros_msgs.srv import SetMode
 from mavros_msgs.srv import MessageInterval
 from datetime import datetime
-from collections import deque
 
 from .state_definitions import QUAD_State
 from .state_definitions import LP_State
@@ -45,35 +44,74 @@ class Orchestrator(Node):
 
     def __init__(self) -> None:
         super().__init__("orchestrator")
-        # ---- NODE PARAMETERS ----
+
+        # region ---- STATE PARAMETERS ----
         # Enable logging and certain diagnostics
         self.declare_parameter("diagnostics_enabled", True)
-        self.diagnostics_enabled = (
-            self.get_parameter("diagnostics_enabled").get_parameter_value().bool_value
-        )
+        self.DIAGNOSTICS_ENABLED = self.get_parameter("diagnostics_enabled").get_parameter_value().bool_value
         # If in sim, log ground truth
         self.declare_parameter("ground_truth_available", True)
-        self.ground_truth_available = (
-            self.get_parameter("ground_truth_available").get_parameter_value().bool_value
-        )
-        self.declare_parameter("run_id", "")
-        self.run_id = self.get_parameter("run_id").get_parameter_value().string_value
+        self.GROUND_TRUTH_AVAILABLE = self.get_parameter("ground_truth_available").get_parameter_value().bool_value
+
+        # Max runtime before RTL
+        self.declare_parameter("max_runtime", 120.0)
+        self.MAX_RUNTIME = self.get_parameter("max_runtime").get_parameter_value().double_value
+        # Max boundary limit before RTL
+        self.declare_parameter("boundary_limit", 30.0)
+        self.BOUNDARY_LIMIT = self.get_parameter("boundary_limit").get_parameter_value().double_value
+
+        # Landing height threshold params
+        self.declare_parameter("landing_recovery_height", 2.0)
+        self.LANDING_RECOVERY_HEIGHT = self.get_parameter("landing_recovery_height").get_parameter_value().double_value
+        self.declare_parameter("landing_height_above_gnd", 1.5)
+        self.LANDING_HEIGHT_ABOVE_GND = self.get_parameter("landing_height_above_gnd").get_parameter_value().double_value
+        self.declare_parameter("landing_height_threshold", 0.4)
+        self.LANDING_HEIGHT_THRESHOLD = self.get_parameter("landing_height_threshold").get_parameter_value().double_value
+        self.declare_parameter("landing_error_threshold", 0.10)
+        self.LANDING_ERROR_THRESHOLD = self.get_parameter("landing_error_threshold").get_parameter_value().double_value
+        self.declare_parameter("landing_centered_error_threshold", 2.0)
+        self.LANDING_CENTERED_ERROR_THRESHOLD = self.get_parameter("landing_centered_error_threshold").get_parameter_value().double_value
+
+        # Landing state timers/parameters
+        self.declare_parameter("landing_chase_altitude", 6.0)
+        self.LANDING_CHASE_HEIGHT_SP = self.get_parameter("landing_chase_altitude").get_parameter_value().double_value
+        self.target_alt = self.LANDING_CHASE_HEIGHT_SP
+        self.declare_parameter("landing_descent_rate_far", -1.00)
+        self.DESCENT_RATE_FAR_SP = self.get_parameter("landing_descent_rate_far").get_parameter_value().double_value
+        self.target_alt_rate = self.DESCENT_RATE_FAR_SP
+        self.declare_parameter("landing_descent_rate_close", -0.50)
+        self.DESCENT_RATE_CLOSE_SP = self.get_parameter("landing_descent_rate_close").get_parameter_value().double_value
+        self.declare_parameter("landing_time_visual_min_time (s)", 0.6)
+        self.LANDING_TIME_VISUAL_TIME_SP = self.get_parameter("landing_time_visual_min_time (s)").get_parameter_value().double_value
+        self.declare_parameter("landing_pad_locked_time (s)", 10.0)
+        self.LANDING_PAD_LOCK_TIME_SP = self.get_parameter("landing_pad_locked_time (s)").get_parameter_value().double_value
+        self.declare_parameter("landing_pad_lost_time (s)", 4.0)
+        self.LANDING_PAD_LOST_TIME_SP = self.get_parameter("landing_pad_lost_time (s)").get_parameter_value().double_value
+
+        # Loiter GPS Position
+        self.declare_parameter("gps_lat", 0.00)
+        self.GPS_LOITER_LAT = self.get_parameter("gps_lat").get_parameter_value().double_value
+        self.declare_parameter("gps_lon", 0.00)
+        self.GPS_LOITER_LON = self.get_parameter("gps_lon").get_parameter_value().double_value        
+        self.gps_target = dict(lat=self.GPS_LOITER_LAT, lon=self.GPS_LOITER_LON, alt=self.target_alt + self.LANDING_HEIGHT_ABOVE_GND)
+        self.declare_parameter("gps_in_loc_buffer (m)", 2.0)
+        self.GPS_LOC_BUFFER = self.get_parameter("gps_in_loc_buffer (m)").get_parameter_value().double_value
+
+        # Initial Landing Pad state
+        self.declare_parameter('initial_position_state', [0.0, 0.0, 0.0])
+        self.INIT_LP_POS = self.get_parameter("initial_position_state").get_parameter_value().double_array_value     
+        self.landing_pad_relative_position = self.INIT_LP_POS
+        self.landing_pad_relative_position_forward_predict = self.INIT_LP_POS
+        self.declare_parameter('initial_velocity_state', [0.0, 0.0, 0.0])
+        self.INIT_LP_VEL = self.get_parameter("initial_velocity_state").get_parameter_value().double_array_value     
+        self.landing_pad_relative_velocity = self.INIT_LP_VEL
+        self.landing_pad_relative_velocity_forward_predict = self.INIT_LP_VEL
+        self.declare_parameter('initial_yaw_state', 0.0)
+        self.INIT_LP_YAW = self.get_parameter("initial_yaw_state").get_parameter_value().double_value     
+        self.landing_pad_yaw = self.INIT_LP_YAW
+        self.landing_pad_yaw_forward_predict = self.INIT_LP_YAW
 
         # ---- Global State Variables ----
-        self.MAX_RUNTIME = 200.0  # secs
-        self.BOUNDARY_LIMIT = 600.0  # m x m square
-
-        self.LANDING_RECOVERY_HEIGHT  = 2.0  # m above landing pad
-        self.LANDING_HEIGHT_ABOVE_GND = 1.5  # m above landing pad
-        self.LANDING_HEIGHT_THRESHOLD = 0.4  # m above landing pad
-        self.LANDING_ERROR_THRESHOLD  = 0.1  # m error
-        self.LANDING_CENTERED_ERROR_THRESHOLD = 2.0 # m error
-
-        self.target_z = 6.0  # m above landing pad
-        self.target_z_rate = -1.50 # m/s for landing rate
-        self.alt_pos_control = True
-        self.go_target = dict(lat=-35.365876, lon=149.164137, alt=self.target_z + self.LANDING_HEIGHT_ABOVE_GND)
-
         self.controller_state = 0
         self.fcu_state = State()
         self.odometry  = Odometry()
@@ -82,14 +120,8 @@ class Orchestrator(Node):
         self.quad_roll  = 0.0
         self.quad_pitch = 0.0
         self.quad_yaw   = 0.0
-
         self.landing_pad_relative_odometry = Odometry()
-        self.landing_pad_relative_position = np.zeros(3)
-        self.landing_pad_relative_position_forward_predict = np.zeros(3)
-        self.landing_pad_relative_velocity = np.zeros(3)
-        self.landing_pad_relative_velocity_forward_predict = np.zeros(3)
-        self.landing_pad_yaw = 0.0
-        self.landing_pad_yaw_forward_predict = 0.0
+        self.alt_pos_control = True
 
         # ---- State 0xxx (Pre-arm) Variables ----
         self._mode_requested = False
@@ -103,18 +135,16 @@ class Orchestrator(Node):
         self._tko_requested = False
         self._tko_reached = False
         self._tko_complete_time = None
-        self._tko_altitude_SP = self.target_z + self.LANDING_HEIGHT_ABOVE_GND  # Inititalise at initial target altitude
+        self._tko_altitude_SP = self.target_alt + self.LANDING_HEIGHT_ABOVE_GND  # Inititalise at initial target altitude
         self._global_position = None
 
         # ---- State 2xxx (Searching for Landing Pad) Variables ----
         self._landing_pad_found = False
         self._landing_pad_first_seen_time = None
-        self._landing_pad_visual_time_SP = 0.6
 
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
-        self._landing_pad_locked_time_SP = self._landing_pad_visual_time_SP + 10.0
+        self._landing_pad_locked_time_SP = self.LANDING_TIME_VISUAL_TIME_SP + self.LANDING_PAD_LOCK_TIME_SP
         self._landing_pad_lost_time = None
-        self._landing_pad_lost_time_SP = 4.0
 
         # ---- State 4xxx (Beginning Landing Descent) Variables ----
         self._landed_time = None
@@ -129,44 +159,143 @@ class Orchestrator(Node):
         # ---- State 7xxx (RTL) Variables ----
         self._rtl_initiated = False
 
-        # ---- CONTROL CLASS INITIALISATIONS ----
+        # region ---- UKF PARAMETERS ----
+        self.declare_parameter('UKF_seeding_num_samples', 5)
+        self.UKF_SEED_WINDOW_N = self.get_parameter("UKF_seeding_num_samples").get_parameter_value().integer_value
+        self.declare_parameter('UKF_alpha', 1.0)
+        self.UKF_ALPHA = self.get_parameter("UKF_alpha").get_parameter_value().double_value
+        self.declare_parameter('UKF_beta', 2.0)
+        self.UKF_BETA = self.get_parameter("UKF_beta").get_parameter_value().double_value
+        self.declare_parameter('UKF_kappa', 0.0)
+        self.UKF_KAPPA = self.get_parameter("UKF_kappa").get_parameter_value().double_value
+        self.declare_parameter('UKF_mahalanobis_threshold', 50.0)
+        self.UKF_MAHALANOBIS_THRESH = self.get_parameter("UKF_mahalanobis_threshold").get_parameter_value().double_value
+        self.declare_parameter('UKF_initial_P_diag',
+            [
+                1.00,
+                1.00,
+                1.00,
+                1.00,
+                2.00,
+                0.20,
+                0.20,
+            ])
+        self.UKF_INIT_P_DIAG_ = self.get_parameter("UKF_initial_P_diag").get_parameter_value().double_array_value
+        self.declare_parameter('UKF_initial_Q_diag', 
+            [
+                0.005,
+                0.005,
+                0.100,  # px, py, pz
+                0.050,
+                0.100,  # v, a
+                0.005,
+                0.050,  # yaw, yaw_rate
+            ])
+        self.UKF_INIT_Q_DIAG_ = self.get_parameter("UKF_initial_Q_diag").get_parameter_value().double_array_value
+        self.declare_parameter('UKF_unhealthy_covar', 1000.0)
+        self.UKF_UNHEALTHY_COVAR = self.get_parameter("UKF_unhealthy_covar").get_parameter_value().double_value
+        self.declare_parameter('UKF_freq', 20.0)
+        self.UKF_FREQ = self.get_parameter("UKF_freq").get_parameter_value().double_value  
+
+        # region ---- CTRL PARAMETERS ----
+        self.declare_parameter('CTRL_freq', 20.0)
+        self.CTRL_FREQ = self.get_parameter("CTRL_freq").get_parameter_value().double_value
+
+        # Controller engineering / tuning parameters
+        self.declare_parameter('PID_lam_0', 2.0)
+        self.PID_LAM_0 = self.get_parameter("PID_lam_0").get_parameter_value().double_value
+        self.declare_parameter('PID_Kp_0', 7.0)
+        self.PID_KP_0 = self.get_parameter("PID_Kp_0").get_parameter_value().double_value
+        self.declare_parameter('PID_Kd_0', 3.25)
+        self.PID_KD_0 = self.get_parameter("PID_Kd_0").get_parameter_value().double_value
+
+        self.declare_parameter('PID_Kp_pos_z', 0.2)
+        self.PID_KP_POS_Z = self.get_parameter("PID_Kp_pos_z").get_parameter_value().double_value
+        self.declare_parameter('PID_Kp_vel_z', 2.0)
+        self.PID_KP_VEL_Z = self.get_parameter("PID_Kp_vel_z").get_parameter_value().double_value
+        self.declare_parameter('PID_Ki_vel_z', 0.2)
+        self.PID_KI_VEL_Z = self.get_parameter("PID_Ki_vel_z").get_parameter_value().double_value
+        self.declare_parameter('PID_vel_z_i_clamp', 2.0)
+        self.PID_VEL_Z_I_CLAMP = self.get_parameter("PID_vel_z_i_clamp").get_parameter_value().double_value
+        self.declare_parameter('PID_pos_vel_err_limit', 1.5)
+        self.PID_POS_VEL_ERR_LIMIT = self.get_parameter("PID_pos_vel_err_limit").get_parameter_value().double_value
+
+        self.declare_parameter('PID_mass', 1.98)
+        self.PID_MASS = self.get_parameter("PID_mass").get_parameter_value().double_value
+        self.declare_parameter('PID_max_thrust', 40.0)
+        self.PID_MAX_THRUST = self.get_parameter("PID_max_thrust").get_parameter_value().double_value
+        self.declare_parameter('PID_gravity', 9.81)
+        self.PID_GRAVITY = self.get_parameter("PID_gravity").get_parameter_value().double_value
+        self.declare_parameter('PID_drag_coefficient', 0.002)
+        self.PID_DRAG_COEFFICIENT = self.get_parameter("PID_drag_coefficient").get_parameter_value().double_value
+
+        self.declare_parameter('PID_max_throttle_rate', 1.0)
+        self.PID_MAX_THROTTLE_RATE = self.get_parameter("PID_max_throttle_rate").get_parameter_value().double_value
+        self.declare_parameter('PID_max_angle_rate', 1.0)
+        self.PID_MAX_ANGLE_RATE = self.get_parameter("PID_max_angle_rate").get_parameter_value().double_value
+
+        self.declare_parameter('PID_d_blend_start', 4.0)
+        self.PID_D_BLEND_START = self.get_parameter("PID_d_blend_start").get_parameter_value().double_value
+        self.declare_parameter('PID_d_blend_end', 1.0)
+        self.PID_D_BLEND_END = self.get_parameter("PID_d_blend_end").get_parameter_value().double_value
+        self.declare_parameter('PID_d_hold_radius', 4.0)
+        self.PID_D_HOLD_RADIUS = self.get_parameter("PID_d_hold_radius").get_parameter_value().double_value
+        self.declare_parameter('PID_marker_yaw_sigma_threshold', 0.15)
+        self.PID_MARKER_YAW_SIGMA_THRESHOLD = self.get_parameter("PID_marker_yaw_sigma_threshold").get_parameter_value().double_value
+
+        self.declare_parameter('PID_drop_off_strength', 0.5)
+        self.PID_DROP_OFF_STRENGTH = self.get_parameter("PID_drop_off_strength").get_parameter_value().double_value
+        self.declare_parameter('PID_terminal_gain', 1.0)
+        self.PID_TERMINAL_GAIN = self.get_parameter("PID_terminal_gain").get_parameter_value().double_value
+        self.declare_parameter('PID_drop_off', 7.0)
+        self.PID_DROP_OFF = self.get_parameter("PID_drop_off").get_parameter_value().double_value
+        self.declare_parameter('PID_accel_z_limit_g', 1.0)
+        self.PID_ACCEL_Z_LIMIT_G = self.get_parameter("PID_accel_z_limit_g").get_parameter_value().double_value
+
+        # region ---- INITIALISATIONS ----
         self._UKF_start = False
-        self._UKF_seed_pending = False
-        self._UKF_seed_window_n = 5
-        self._UKF_seed_window_min_dt = self._landing_pad_visual_time_SP - 0.1
-        self._UKF_seed_buffers = {"apriltag": deque(), "yolo_lp": deque(), "yolo_car": deque()}
+        self._UKF_seed_window_min_dt = self.LANDING_TIME_VISUAL_TIME_SP - 0.1
+
         self._UKF_last_update = self.get_clock().now()
-        self._UKF_timer_rate = 0.05
-        self._UKF_filter = UKF()
         self._UKF_forward_predict_x = None
+
+        self._UKF_filter = UKF(
+            self.UKF_INIT_P_DIAG_, self.UKF_INIT_Q_DIAG_,
+            self.UKF_ALPHA, self.UKF_BETA, self.UKF_KAPPA,
+            self.UKF_MAHALANOBIS_THRESH,
+            self.INIT_LP_POS, self.INIT_LP_VEL, self.INIT_LP_YAW,
+            self.UKF_SEED_WINDOW_N, self._UKF_seed_window_min_dt
+        )
 
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
         self._UKF_unhealthy_counter = 0
 
-        self._UKF_last_apriltag_stamp = Time().to_msg()
-        self._UKF_raw_measurement = [0.0, 0.0, 0.0, 0.0]
-        self._UKF_raw_measurement_stamp = 0.0
+        self._pid_last_control_time = None
+        self._pid_controller = PIDController(
+            lam_0=self.PID_LAM_0,
+            Kp_0=self.PID_KP_0,
+            Kd_0=self.PID_KD_0,
+            Kp_pos_z=self.PID_KP_POS_Z,
+            Kp_vel_z=self.PID_KP_VEL_Z,
+            Ki_vel_z=self.PID_KI_VEL_Z,
+            vel_z_i_clamp=self.PID_VEL_Z_I_CLAMP,
+            m=self.PID_MASS,
+            max_thrust=self.PID_MAX_THRUST,
+            g=self.PID_GRAVITY,
+            cD=self.PID_DRAG_COEFFICIENT,
+            max_throttle_rate=self.PID_MAX_THROTTLE_RATE,
+            max_angle_rate=self.PID_MAX_ANGLE_RATE,
+            d_blend_start=self.PID_D_BLEND_START,
+            d_blend_end=self.PID_D_BLEND_END,
+            d_hold_radius=self.PID_D_HOLD_RADIUS,
+            drop_off_strength=self.PID_DROP_OFF_STRENGTH,
+            terminal_gain=self.PID_TERMINAL_GAIN,
+            drop_off=self.PID_DROP_OFF,
+            accel_z_limit_g=self.PID_ACCEL_Z_LIMIT_G,
+            pos_vel_err_limit=self.PID_POS_VEL_ERR_LIMIT,
+        )
 
-        self._UKF_yolo_LP_raw_measurement = [0.0, 0.0, 0.0, 0.0]
-        self._UKF_yolo_LP_raw_measurement_stamp = 0.0
-        self._UKF_last_yolo_LP_stamp = Time().to_msg()
-
-        self._UKF_yolo_car_raw_measurement = [0.0, 0.0, 0.0, 0.0]
-        self._UKF_yolo_car_raw_measurement_stamp = 0.0
-        self._UKF_last_yolo_car_stamp = Time().to_msg()
-
-        self._cam_to_image_lag = None
-        self._image_to_transform_lag = None
-        self._transform_to_UKF_lag = None
-        self._yolo_cam_to_image_lag = None
-        self._yolo_image_to_transform_lag = None
-        self._yolo_transform_to_UKF_lag = None
-        self._UKF_meas_age = 0.0
-
-        self._control_timer_rate = 0.05
-        self._pid_controller = PIDController(self._control_timer_rate)
-
-        # ---- SUBSCRIPTIONS ----
+        # region ---- SUBSCRIPTIONS ----
         _state_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
@@ -200,7 +329,7 @@ class Orchestrator(Node):
             Bool, "/landing_pad/found", self._landing_pad_found_callback, 1
         )
 
-        # ---- PUBLISHERS ----
+        # region ---- PUBLISHERS ----
         self.att_pub = self.create_publisher(
             AttitudeTarget, "/mavros/setpoint_raw/attitude", 10
         )
@@ -211,7 +340,7 @@ class Orchestrator(Node):
             GlobalPositionTarget, "/mavros/setpoint_raw/global", 10
         )
 
-        # ---- TF2 ----
+        # region ---- TF2 ----
         self._tf_map_landing_pad_buffer = tf2_ros.Buffer(
             node=self, cache_time=Duration(seconds=10)
         )
@@ -219,7 +348,7 @@ class Orchestrator(Node):
             self._tf_map_landing_pad_buffer, self
         )
 
-        # ---- CLIENTS ----
+        # region ---- CLIENTS ----
         self._set_mode_client = self.create_client(SetMode, "/mavros/set_mode")
         self._arming_client = self.create_client(CommandBool, "/mavros/cmd/arming")
         self._takeoff_client = self.create_client(CommandTOL, "/mavros/cmd/takeoff")
@@ -227,19 +356,19 @@ class Orchestrator(Node):
             MessageInterval, "/mavros/set_message_interval"
         )
 
-        # ---- CONTROL TIMERS ----
-        self._UKF_timer = self.create_timer(self._UKF_timer_rate, self._UKF_loop)
+        # region ---- CONTROL TIMERS ----
+        self._UKF_timer = self.create_timer(1.0/self.UKF_FREQ, self._UKF_loop)
         self._safety_timer_rate = 1.0
         self._safety_timer = self.create_timer(
             self._safety_timer_rate, self._safety_loop
         )
         self._control_timer = self.create_timer(
-            self._control_timer_rate, self._control_loop
+            1.0/self.CTRL_FREQ, self._control_loop
         )
 
         self._set_message_intervals()  # MAVROS message rates
 
-        #  ---- DIAGNOSTICS AND LOGGING ----
+        # region ---- DIAGNOSTICS AND LOGGING ----
         """ Generate a log if diagnostics and logging enabled."""
         self.quad_true_odometry = Odometry()
         self._quad_true_recv = 0.0
@@ -248,17 +377,16 @@ class Orchestrator(Node):
         self._UKF_fwd_horizon = 0.0
         self._rtl_reason = ""
         self.landing_pad_true_odometry = Odometry()
-        if self.diagnostics_enabled:
+        if self.DIAGNOSTICS_ENABLED:
             self.start_diagnostics()
         
         self.get_logger().info("Auto Lander (callbacks) started")
 
 
-    # ---- CALLBACK IMPLEMENTATIONS ----
+    # region ---- CALLBACK IMPLEMENTATIONS ----
     def _set_message_intervals(self) -> None:
         """ Set specfied message interval rates.
         """
-
         # rate = 40.0  # Hz
         # # Drives global_position/local odometry
         # self._set_single_message_interval(33, rate, "GLOBAL_POSITION_INT")
@@ -275,7 +403,6 @@ class Orchestrator(Node):
         :param rate: Rate (Hz) to set message ID to
         :param description: Description of message ID
         """
-
         if not self._message_interval_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warn(
                 f"MessageInterval service not ready for {description}"
@@ -304,7 +431,6 @@ class Orchestrator(Node):
         :param message_id: ID of the message whose interval is being set
         :param rate: Rate (Hz) to set message ID to
         """
-
         try:
             res = fut.result()
         except Exception as e:
@@ -552,26 +678,28 @@ class Orchestrator(Node):
         else:
             self.get_logger().error(f"RTL command rejected by FCU (reason: {reason})")
 
+
+    # region ---- UKF LOOP ----
     def _UKF_loop(self):
         """ Run UKF predict and update loops. Manages state estimation of the landing
             pad platform. Calls upon both the apriltag and YOLO measurements
         """
 
-        # Latch start of UKF for landing pad on aquisition of landing pad from detector 
+        # Latch start of UKF for landing pad on acquisition of landing pad from detector
         # node, if its been too long since we've seen the landing pad, reset the UKF
         if self._landing_pad_found and not self._UKF_start and self.controller_state >= 2000:
             self._UKF_filter.reset()
             self._UKF_start = True
-            self._UKF_seed_pending = True   # add this
 
         # Get timestamp from last cycle
         now = self.get_clock().now()
         dt = (now - self._UKF_last_update).nanoseconds * 1e-9
         self._UKF_last_update = now
+        now_sec = now.nanoseconds * 1e-9
 
         # Predict UKF step (after first measurement)
-        if self._UKF_start and not self._UKF_seed_pending:
-            self._UKF_filter.predict(self.quad_vel, dt, now.nanoseconds * 1e-9)
+        if self._UKF_start and not self._UKF_filter.seed_pending:
+            self._UKF_filter.predict(self.quad_vel, dt, now_sec)
 
         # Warn in logs if filter goes non-PD or any sigma blows up
         if not self._UKF_diag["is_pd"]:
@@ -579,275 +707,93 @@ class Orchestrator(Node):
                 "UKF: covariance matrix is no longer positive definite!"
             )
 
-        # Update AprilTag UKF step
-        try:
-            tf_msg = self._tf_map_landing_pad_buffer.lookup_transform(
-                "local", "landing_pad_link", Time()
-            )
-            stamp_sec = Time.from_msg(tf_msg.header.stamp).nanoseconds / 1e9
-            stamp_is_new = (
-                tf_msg.header.stamp.sec != self._UKF_last_apriltag_stamp.sec
-                or tf_msg.header.stamp.nanosec != self._UKF_last_apriltag_stamp.nanosec
-            )
+        # Update measurement noise based on drone angular rates
+        cov_adj_x = 1 + 2 * np.sqrt(
+            self.odometry.twist.twist.angular.y**2
+            + self.odometry.twist.twist.angular.z**2
+        )
+        cov_adj_y = 1 + 2 * np.sqrt(
+            self.odometry.twist.twist.angular.x**2
+            + self.odometry.twist.twist.angular.z**2
+        )
+        cov_adj_z = 1 + 2 * np.sqrt(
+            self.odometry.twist.twist.angular.x**2
+            + self.odometry.twist.twist.angular.y**2
+        )
 
-            if stamp_is_new:
-                # Measurement age — how stale is this TF?
-                self._UKF_meas_age = (
-                    now - Time.from_msg(tf_msg.header.stamp)
-                ).nanoseconds / 1e6
+        R_apriltag = np.diag([
+            0.10 * cov_adj_x,
+            0.10 * cov_adj_y,
+            0.10 * cov_adj_z,
+            0.10 * cov_adj_z,
+        ])
 
-                # Extract pose measurement
-                t = np.array([
-                    tf_msg.transform.translation.x,
-                    tf_msg.transform.translation.y,
-                    tf_msg.transform.translation.z,
-                ])
+        # Update YOLO measurement noise, inflate covariance as altitude drops since
+        # bounding box becomes a worse estimate of the landing pad.
+        alt = -self.landing_pad_relative_position_forward_predict[LP_State.PZ]
 
-                q = tf_msg.transform.rotation
-                _, _, yaw = tf_transformations.euler_from_quaternion(
-                    [q.x, q.y, q.z, q.w]
+        d_near, d_far = 0.0, self.LANDING_HEIGHT_ABOVE_GND + 2.5
+        scale_max, gamma = 1.5, 2.0
+        scale_t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
+        yolo_lp_scale = 1.0 + (scale_max - 1.0) * scale_t ** gamma
+
+        d_far = self.LANDING_HEIGHT_ABOVE_GND + 5.0
+        scale_max = 2.0
+        scale_t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
+        yolo_car_scale = 1.0 + (scale_max - 1.0) * scale_t ** gamma
+
+        R_yolo_lp = np.diag([
+            0.100 * yolo_lp_scale,
+            0.100 * yolo_lp_scale,
+            1.000,
+            1e9,
+        ])
+
+        R_yolo_car = np.diag([
+            0.500 * yolo_car_scale,
+            0.500 * yolo_car_scale,
+            1.000,
+            1e9,
+        ])
+
+        # Update each measurement stream through the same UKF path.
+        timing_buffers = (
+            self._pipeline_timing_buffer,
+            self._yolo_pipeline_timing_buffer,
+        ) if self.DIAGNOSTICS_ENABLED else (None, None)
+
+        for measurement_type, frame, R, timing_buffer in (
+            ("apriltag", "landing_pad_link", R_apriltag, timing_buffers[0]),
+            ("yolo_lp", "landing_pad_link_yolo", R_yolo_lp, timing_buffers[1]),
+            ("yolo_car", "car_link_yolo", R_yolo_car, timing_buffers[1]),
+        ):
+            try:
+                tf_msg = self._tf_map_landing_pad_buffer.lookup_transform(
+                    "local", frame, Time()
                 )
-                measurement = np.array([t[0], t[1], t[2], yaw])
 
-                # Store raw measurement
-                self._UKF_raw_measurement = [t[0], t[1], t[2], yaw]
-                self._UKF_raw_measurement_stamp = stamp_sec
-
-                # Update measurement noise based on drone angular rates
-                cov_adj_x = (1 + 2 * np.sqrt(
-                        self.odometry.twist.twist.angular.y**2
-                        + self.odometry.twist.twist.angular.z**2
-                    )
-                )
-                cov_adj_y = (1 + 2 * np.sqrt(
-                        self.odometry.twist.twist.angular.x**2
-                        + self.odometry.twist.twist.angular.z**2
-                    )
-                )
-                cov_adj_z = (1 + 2 * np.sqrt(
-                        self.odometry.twist.twist.angular.x**2
-                        + self.odometry.twist.twist.angular.y**2
-                    )
-                )
-
-                self._UKF_filter.R = np.diag(
-                    [
-                        0.10 * cov_adj_x,
-                        0.10 * cov_adj_y,
-                        0.10 * cov_adj_z,
-                        0.10 * cov_adj_z,
-                    ]
-                )
-
-                # Seed if this is the first measurement since a (re)start
-                if self._UKF_seed_pending:
-                    buf = self._UKF_seed_buffers["apriltag"]  # swap key per block
-                    buf.append((stamp_sec, measurement.copy(), self._UKF_filter.R.copy()))
-                    span = buf[-1][0] - buf[0][0]
-                    if len(buf) >= self._UKF_seed_window_n or span >= self._UKF_seed_window_min_dt:
-                        self._UKF_filter.seed_from_window(list(buf))
-                        self._UKF_seed_pending = False
-                        for b in self._UKF_seed_buffers.values():
-                            b.clear()
-
-                        self.get_logger().info(f"UKF seed diag (apriltag): {self._UKF_filter._last_seed_diag}")  #TODO: REMOVE
-                            
-                    accepted = True
-                else:
-                    accepted = self._UKF_filter.update(measurement, stamp_sec)
-                    if not accepted:
-                        self.get_logger().warn("UKF last update failed!")
-
-                # Log diagnostics if enabled
-                if self.diagnostics_enabled:
+                pipeline_timing = None
+                if timing_buffer is not None:
                     key = (tf_msg.header.stamp.sec, tf_msg.header.stamp.nanosec)
-                    pt = self._pipeline_timing_buffer.pop(key, None)
-                    if pt is not None:
-                        t0 = stamp_sec
-                        t1 = pt.vector.x
-                        t2 = pt.vector.y
-                        now_sec = now.nanoseconds / 1e9
-                        self._cam_to_image_lag = (t1 - t0) * 1000.0
-                        self._image_to_transform_lag = (t2 - t1) * 1000.0
-                        self._transform_to_UKF_lag = (now_sec - t2) * 1000.0
-                    else:
-                        self.get_logger().warn(
-                            "No matching pipeline_timing message for this TF — lag breakdown skipped",
-                            throttle_duration_sec=2.0,
-                        )
+                    pipeline_timing = timing_buffer.pop(key, None)
 
-            self._UKF_last_apriltag_stamp = tf_msg.header.stamp
-
-        except Exception:
-            pass  # Predict-only cycle, no correction this tick
-
-        # Update YOLO Landing Pad UKF step
-        try:
-            tf_msg = self._tf_map_landing_pad_buffer.lookup_transform(
-                "local", "landing_pad_link_yolo", Time()
-            )
-            stamp_sec = Time.from_msg(tf_msg.header.stamp).nanoseconds / 1e9
-            stamp_is_new = (
-                tf_msg.header.stamp.sec != self._UKF_last_yolo_LP_stamp.sec
-                or tf_msg.header.stamp.nanosec != self._UKF_last_yolo_LP_stamp.nanosec
-            )
-
-            if stamp_is_new:
-                # Measurement age — how stale is this TF?
-                self._UKF_meas_age = (
-                    now - Time.from_msg(tf_msg.header.stamp)
-                ).nanoseconds / 1e6
-
-                # Extract pose measurement
-                t = np.array([
-                    tf_msg.transform.translation.x,
-                    tf_msg.transform.translation.y,
-                    tf_msg.transform.translation.z,
-                ])
-
-                q = tf_msg.transform.rotation
-                _, _, yaw = tf_transformations.euler_from_quaternion(
-                    [q.x, q.y, q.z, q.w]
+                accepted = self._UKF_filter.update(
+                    tf_msg,
+                    measurement_type,
+                    now_sec,
+                    R,
+                    pipeline_timing,
                 )
-                measurement = np.array([t[0], t[1], t[2], yaw])
-
-                # Store raw measurement
-                self._UKF_yolo_LP_raw_measurement = [t[0], t[1], t[2], yaw]
-                self._UKF_yolo_LP_raw_measurement_stamp = stamp_sec
-
-                # Update measurement noise, infalte yolo covar as altitude drops since 
-                # bounding box becomes a worse estimate of the landing pad (and also 
-                # moves around a lot more)
-                alt = -self.landing_pad_relative_position_forward_predict[LP_State.PZ]
-
-                d_near, d_far = 0.0, self.LANDING_HEIGHT_ABOVE_GND + 2.5
-                scale_max, gamma = 25.0, 2.0  # tune against NIS, see below
-                t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
-                yolo_scale = 1.0 + (scale_max - 1.0) * t ** gamma
-
-                self._UKF_filter.R = np.diag(
-                    [
-                        0.200 * yolo_scale,
-                        0.200 * yolo_scale,
-                        1.000,  # Pass through the drones AGL + known GV height, as a rough estimate
-                        1e9,    # We get no yaw information
-                    ]
+                if not accepted:
+                    self.get_logger().warn(
+                        f"UKF {measurement_type} update failed!",
+                        throttle_duration_sec=2.0,
+                    )
+            except Exception as e:
+                self.get_logger().warn(
+                    f"UKF {measurement_type} measurement skipped: {e}",
+                    throttle_duration_sec=2.0,
                 )
-
-                # Seed if this is the first measurement since a (re)start
-                if self._UKF_seed_pending:
-                    buf = self._UKF_seed_buffers["yolo_lp"]  # swap key per block
-                    buf.append((stamp_sec, measurement.copy(), self._UKF_filter.R.copy()))
-                    span = buf[-1][0] - buf[0][0]
-                    if len(buf) >= self._UKF_seed_window_n or span >= self._UKF_seed_window_min_dt:
-                        self._UKF_filter.seed_from_window(list(buf))
-                        self._UKF_seed_pending = False
-                        for b in self._UKF_seed_buffers.values():
-                            b.clear()
-
-                        self.get_logger().info(f"UKF seed diag (yolo_lp): {self._UKF_filter._last_seed_diag}")  #TODO: REMOVE
-
-                    accepted = True
-                else:
-                    accepted = self._UKF_filter.update(measurement, stamp_sec)
-                    if not accepted:
-                        self.get_logger().warn("UKF last update failed!")
-
-                # Log diagnostics if enabled
-                if self.diagnostics_enabled:
-                    key = (tf_msg.header.stamp.sec, tf_msg.header.stamp.nanosec)
-                    pt = self._yolo_pipeline_timing_buffer.pop(key, None)
-                    if pt is not None:
-                        t0 = stamp_sec
-                        t1 = pt.vector.x
-                        t2 = pt.vector.y
-                        now_sec = now.nanoseconds / 1e9
-                        self._yolo_cam_to_image_lag = (t1 - t0) * 1000.0
-                        self._yolo_image_to_transform_lag = (t2 - t1) * 1000.0
-                        self._yolo_transform_to_UKF_lag = (now_sec - t2) * 1000.0
-
-            self._UKF_last_yolo_LP_stamp = tf_msg.header.stamp
-
-        except Exception:
-            pass  # Predict-only cycle, no correction this tick
-
-        # Update YOLO Car UKF step
-        try:
-            tf_msg = self._tf_map_landing_pad_buffer.lookup_transform(
-                "local", "car_link_yolo", Time(),
-            )
-
-            stamp_sec = Time.from_msg(tf_msg.header.stamp).nanoseconds / 1e9
-            stamp_is_new = (
-                tf_msg.header.stamp.sec != self._UKF_last_yolo_car_stamp.sec
-                or tf_msg.header.stamp.nanosec != self._UKF_last_yolo_car_stamp.nanosec
-            )
-
-            if stamp_is_new:
-                # Measurement age — how stale is this TF?
-                self._UKF_meas_age = (
-                    now - Time.from_msg(tf_msg.header.stamp)
-                ).nanoseconds / 1e6
-
-                # Extract pose measurement
-                t = np.array([
-                    tf_msg.transform.translation.x,
-                    tf_msg.transform.translation.y,
-                    tf_msg.transform.translation.z,
-                ])
-
-                q = tf_msg.transform.rotation
-                _, _, yaw = tf_transformations.euler_from_quaternion(
-                    [q.x, q.y, q.z, q.w]
-                )
-                measurement = np.array([t[0], t[1], t[2], yaw])
-
-                # Store raw measurement
-                self._UKF_yolo_car_raw_measurement = [t[0], t[1], t[2], yaw]
-                self._UKF_yolo_car_raw_measurement_stamp = stamp_sec
-
-                # Update measurement noise, infalte yolo covar as altitude drops since 
-                # bounding box becomes a worse estimate of the landing pad (and also 
-                # moves around a lot more)
-                alt = -self.landing_pad_relative_position_forward_predict[LP_State.PZ]
-
-                d_near, d_far = 0.0, self.LANDING_HEIGHT_ABOVE_GND + 5.0
-                scale_max, gamma = 25.0, 2.0  # tune against NIS, see below
-                t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
-                yolo_scale = 1.0 + (scale_max - 1.0) * t ** gamma
-
-                self._UKF_filter.R = np.diag(
-                    [
-                        0.750 * yolo_scale,
-                        0.750 * yolo_scale,
-                        1.000,  # Pass through the drones AGL + known GV height, as a rough estimate
-                        1e9,    # We get no yaw information
-                    ]
-                )
-
-                # Seed if this is the first measurement since a (re)start
-                if self._UKF_seed_pending:
-                    buf = self._UKF_seed_buffers["yolo_car"]  # swap key per block
-                    buf.append((stamp_sec, measurement.copy(), self._UKF_filter.R.copy()))
-                    span = buf[-1][0] - buf[0][0]
-                    if len(buf) >= self._UKF_seed_window_n or span >= self._UKF_seed_window_min_dt:
-                        self._UKF_filter.seed_from_window(list(buf))
-                        self._UKF_seed_pending = False
-                        for b in self._UKF_seed_buffers.values():
-                            b.clear()
-
-                        self.get_logger().info(f"UKF seed diag (yolo_car): {self._UKF_filter._last_seed_diag}")  #TODO: REMOVE
-
-                    accepted = True
-                else:
-                    accepted = self._UKF_filter.update(measurement, stamp_sec)
-                    if not accepted:
-                        self.get_logger().warn("UKF last update failed!")
-
-            self._UKF_last_yolo_car_stamp = tf_msg.header.stamp
-
-        except Exception:
-            pass
 
         # ---- Grab per-state covariance diagnostics every tick ----
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
@@ -855,20 +801,20 @@ class Orchestrator(Node):
         # Always publish current UKF state
         x = self._UKF_filter.x
 
-        # Forward predict by the time it would take for the drone to drop from its 
+        # Forward predict by the time it would take for the drone to drop from its
         # altitude to the landing pad. This is the value used by the controller
         # Added a fudge factor (approx the delay in the img feed (20ms))
         t = 0.02 + np.sqrt(2 * 9.81 * self.LANDING_HEIGHT_THRESHOLD) / 9.81
-        self._UKF_est_time = now.nanoseconds * 1e-9   # instant the estimate is valid at
+        self._UKF_est_time = now_sec   # instant the estimate is valid at
         self._UKF_fwd_horizon = t
         self._UKF_forward_predict_x = self._UKF_filter.forward_predict(
-                self.quad_vel, 
-                t, 
-            )
-        
+            self.quad_vel,
+            t,
+        )
+
         self.landing_pad_relative_position_forward_predict = np.array(
-            [self._UKF_forward_predict_x[LP_State.PX], 
-             self._UKF_forward_predict_x[LP_State.PY], 
+            [self._UKF_forward_predict_x[LP_State.PX],
+             self._UKF_forward_predict_x[LP_State.PY],
              self._UKF_forward_predict_x[LP_State.PZ]]
         )
 
@@ -882,7 +828,7 @@ class Orchestrator(Node):
         rel_vy = pad_vy - self.quad_vel[1]
         rel_vz = -self.quad_vel[2]
         self.landing_pad_relative_velocity_forward_predict = np.array([rel_vx, rel_vy, rel_vz])
-        
+
         # Publish the actual landing pad pose estimate for all other uses
         # (diagnostics etc.)
         self.landing_pad_relative_position = np.array(
@@ -894,7 +840,7 @@ class Orchestrator(Node):
         pad_vy = x[LP_State.V] * np.sin(yaw)
         pad_vz = 0.0
         self.landing_pad_velocity = np.array([pad_vx, pad_vy, pad_vz])
-        
+
         rel_vx = pad_vx - self.quad_vel[0]
         rel_vy = pad_vy - self.quad_vel[1]
         rel_vz = -self.quad_vel[2]
@@ -923,17 +869,20 @@ class Orchestrator(Node):
         # Check for timer overruns
         end = self.get_clock().now()
         elapsed = (end - now).nanoseconds / 1e6
-        if elapsed > self._UKF_timer_rate * 1000:
+        if elapsed > 1.0/(self.UKF_FREQ) * 1000:
             self.get_logger().warn(f"UKF loop took {elapsed:.2f} ms!")
 
 
+    # region ---- CTRL LOOP ----
     def _control_loop(self) -> None:
         """ Run main control and orchestration loop. Handles state machine logic.
         """
 
         # Get timestamp
         start = self.get_clock().now()
-        self._pid_controller.reset_outputs() # Reset logging
+
+        # Reset logging
+        self._pid_controller.reset_outputs() 
 
         # Calculate errors
         err_x = abs(self.landing_pad_relative_position_forward_predict[0])
@@ -961,7 +910,7 @@ class Orchestrator(Node):
         # If RTL initiated, exit early
         if self._rtl_initiated:
             self.controller_state = 7100
-            if self.diagnostics_enabled:
+            if self.DIAGNOSTICS_ENABLED:
                 self.log_diagnostics()
             return
 
@@ -996,10 +945,10 @@ class Orchestrator(Node):
         # ---- State 1200 (Go to predesignated waiting point)
         if self.controller_state == 1200:
             if self._global_position is not None:
-                d_north = (self.go_target["lat"] - self._global_position.latitude) * 111132.0
-                d_east = (self.go_target["lon"] - self._global_position.longitude) * 111320.0 * np.cos(np.radians(self.go_target["lat"]))
+                d_north = (self.gps_target["lat"] - self._global_position.latitude) * 111132.0
+                d_east = (self.gps_target["lon"] - self._global_position.longitude) * 111320.0 * np.cos(np.radians(self.gps_target["lat"]))
 
-                if np.hypot(d_north, d_east) <= 2.0:
+                if np.hypot(d_north, d_east) <= self.GPS_LOC_BUFFER:
                     self.get_logger().info(f"At designated wait position...")
                     self.controller_state = 2000
 
@@ -1010,7 +959,7 @@ class Orchestrator(Node):
                     self.get_clock().now().nanoseconds / 1e9
                 )
                 self.get_logger().info(
-                    f"Landing Pad found, starting {self._landing_pad_visual_time_SP} sec timer..."
+                    f"Landing Pad found, starting {self.LANDING_TIME_VISUAL_TIME_SP} sec timer..."
                 )
                 self.controller_state = 2100
 
@@ -1020,7 +969,7 @@ class Orchestrator(Node):
 
             if self._landing_pad_found:
                 self._landing_pad_lost_time = None
-                if (now - self._landing_pad_first_seen_time) > self._landing_pad_visual_time_SP:
+                if (now - self._landing_pad_first_seen_time) > self.LANDING_TIME_VISUAL_TIME_SP:
                     self.get_logger().info(
                         f"Landing Pad visual hold ok, starting {self._landing_pad_locked_time_SP} sec timer..."
                     )
@@ -1029,7 +978,7 @@ class Orchestrator(Node):
                 if self._landing_pad_lost_time is None:
                     self._landing_pad_lost_time = now
                 else:
-                    if (now - self._landing_pad_lost_time) > self._landing_pad_lost_time_SP:
+                    if (now - self._landing_pad_lost_time) > self.LANDING_PAD_LOST_TIME_SP:
                         self._landing_pad_first_seen_time = None
                         self._landing_pad_lost_time = None
                         self.get_logger().info("Landing Pad Lost!")
@@ -1052,7 +1001,7 @@ class Orchestrator(Node):
                 else:
                     if (
                         now - self._landing_pad_lost_time
-                    ) > self._landing_pad_lost_time_SP:
+                    ) > self.LANDING_PAD_LOST_TIME_SP:
                         self._landing_pad_first_seen_time = None
                         self._landing_pad_lost_time = None
                         self.get_logger().info("Landing Pad Lost!")
@@ -1061,7 +1010,7 @@ class Orchestrator(Node):
         # ---- State 4000 (Begin Landing Descent)
         if self.controller_state == 4000:
             now = self.get_clock().now().nanoseconds / 1e9
-            self.target_z = self.LANDING_HEIGHT_THRESHOLD  # land
+            self.target_alt = self.LANDING_HEIGHT_THRESHOLD  # land
 
             # Check we still have the target in view, reset timer if so
             if self._landing_pad_found:
@@ -1072,7 +1021,7 @@ class Orchestrator(Node):
                 else:
                     if (
                         now - self._landing_pad_lost_time
-                    ) > self._landing_pad_lost_time_SP:
+                    ) > self.LANDING_PAD_LOST_TIME_SP:
                         self._landing_pad_first_seen_time = None
                         self._landing_pad_lost_time = None
                         self.get_logger().info("Landing Pad Lost!")
@@ -1112,15 +1061,15 @@ class Orchestrator(Node):
                     else:
                         if (
                             now - self._landing_pad_lost_time
-                        ) > self._landing_pad_lost_time_SP:
+                        ) > self.LANDING_PAD_LOST_TIME_SP:
                             self._landing_pad_first_seen_time = None
                             self._landing_pad_lost_time = None
                             self.get_logger().info("Landing Pad Lost!")
                             self.controller_state = 2000
                 
                 # Regain altitude, then try again
-                self.target_z = self.LANDING_RECOVERY_HEIGHT
-                if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] > self.target_z - 0.5:
+                self.target_alt = self.LANDING_RECOVERY_HEIGHT
+                if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] > self.target_alt - 0.5:
                     self.controller_state = 3000
 
         # ---- State 6000 (Landing Success - Idle Until RTL)
@@ -1137,38 +1086,104 @@ class Orchestrator(Node):
         if self.controller_state == 7000:
             self._initiate_rtl("Returning Home")
 
+        # Get dt
+        now = self.get_clock().now()
+        if self._pid_last_control_time is None:
+            control_dt = 1.0 / self.CTRL_FREQ
+        else:
+            control_dt = (now - self._pid_last_control_time).nanoseconds * 1e-9
+        self._pid_last_control_time = now
+
         # ---- Run Controller ----
+        control_stamp = self.get_clock().now().to_msg()
+
+        # Only pass through marker yaw if uncertainty on yaw is low enough
+        if self._UKF_diag["sigma_yaw"] <= self.PID_MARKER_YAW_SIGMA_THRESHOLD:
+            marker_yaw = self.landing_pad_yaw_forward_predict
+        else:
+            marker_yaw = None
+
         if self.controller_state == 1200:
             self.alt_pos_control = True
-            self._pid_controller.goPosition(self, **self.go_target, yaw=self.quad_yaw) # Go to GPS point
+            msg = self._pid_controller.goPosition(control_stamp, **self.gps_target, yaw=self.quad_yaw)
+            self.global_pos_pub.publish(msg)
         elif self.controller_state >= 2000 and self.controller_state < 3000:
             self.alt_pos_control = True
-            self._pid_controller.stop(self) # Sit still and observe
+            msg = self._pid_controller.stop(control_stamp)
+            self.vel_pub.publish(msg)
         elif self.controller_state >= 3000 and self.controller_state < 4000:
             self.alt_pos_control = True
-            self._pid_controller.update(self) # Chase and hover above
+            msg = self._pid_controller.update(
+                dt=control_dt,
+                target_altitude=self.target_alt,
+                target_desc_rate=self.target_alt_rate,
+                marker_yaw=marker_yaw,
+                cutoff=self.cutoff,
+                alt_pos_control=self.alt_pos_control,
+                quad_yaw=self.quad_yaw,
+                quad_vel=self.quad_vel,
+                landing_pad_relative_position=self.landing_pad_relative_position_forward_predict,
+                landing_pad_relative_velocity=self.landing_pad_relative_velocity_forward_predict,
+            )
+            self.att_pub.publish(msg)
         elif self.controller_state == 4000:
             self.alt_pos_control = False
+            self.target_alt_rate = self.DESCENT_RATE_FAR_SP
             if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= 1.0:
-                self.target_z_rate = -0.5 # Cut descent rate right before landing
-            self._pid_controller.update(self) # Chase and descend with target rate
+                self.target_alt_rate = self.DESCENT_RATE_CLOSE_SP
+            msg = self._pid_controller.update(
+                dt=control_dt,
+                target_altitude=self.target_alt,
+                target_desc_rate=self.target_alt_rate,
+                marker_yaw=marker_yaw,
+                cutoff=self.cutoff,
+                alt_pos_control=self.alt_pos_control,
+                quad_yaw=self.quad_yaw,
+                quad_vel=self.quad_vel,
+                landing_pad_relative_position=self.landing_pad_relative_position_forward_predict,
+                landing_pad_relative_velocity=self.landing_pad_relative_velocity_forward_predict,
+            )
+            self.att_pub.publish(msg)
         elif self.controller_state == 5000:
             self.alt_pos_control = False
-            if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= 1.0:
-                self.target_z_rate = 0.5 # Cut descent rate right before landing
-            self._pid_controller.update(self) # Chase and descend with target rate
+            self.target_alt_rate = -self.DESCENT_RATE_CLOSE_SP
+            msg = self._pid_controller.update(
+                dt=control_dt,
+                target_altitude=self.target_alt,
+                target_desc_rate=self.target_alt_rate,
+                marker_yaw=marker_yaw,
+                cutoff=self.cutoff,
+                alt_pos_control=self.alt_pos_control,
+                quad_yaw=self.quad_yaw,
+                quad_vel=self.quad_vel,
+                landing_pad_relative_position=self.landing_pad_relative_position_forward_predict,
+                landing_pad_relative_velocity=self.landing_pad_relative_velocity_forward_predict,
+            )
+            self.att_pub.publish(msg)
         elif self.controller_state > 5000 and self.controller_state <= 6000:
             self.alt_pos_control = True
-            self._pid_controller.update(self) # Chase and hover above
+            msg = self._pid_controller.update(
+                dt=control_dt,
+                target_altitude=self.target_alt,
+                target_desc_rate=self.target_alt_rate,
+                marker_yaw=marker_yaw,
+                cutoff=self.cutoff,
+                alt_pos_control=self.alt_pos_control,
+                quad_yaw=self.quad_yaw,
+                quad_vel=self.quad_vel,
+                landing_pad_relative_position=self.landing_pad_relative_position_forward_predict,
+                landing_pad_relative_velocity=self.landing_pad_relative_velocity_forward_predict,
+            )
+            self.att_pub.publish(msg)
 
         # Log diagnostics
-        if self.diagnostics_enabled:
+        if self.DIAGNOSTICS_ENABLED:
             self.log_diagnostics()
 
         # Check for timer overruns
         end = self.get_clock().now()
         elapsed = (end - start).nanoseconds / 1e6  # ms
-        if elapsed > self._control_timer_rate * 1000:
+        if elapsed > 1.0/self.CTRL_FREQ * 1000:
             self.get_logger().warn(f"Control loop took {elapsed:.2f} ms!")
 
 
@@ -1201,7 +1216,7 @@ class Orchestrator(Node):
             return
         
         # Check UKF health (when not landed)
-        if (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] > 1000.0):
+        if (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] > self.UKF_UNHEALTHY_COVAR):
             # Counter for 3 loops
             self._UKF_unhealthy_counter += 1
             if self._UKF_unhealthy_counter >= 3:
@@ -1210,11 +1225,11 @@ class Orchestrator(Node):
                     throttle_duration_sec=1.0
                 )
                 self._initiate_rtl("Landing Estimate too Bad")
-        elif (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] <= 1000.0):
+        elif (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] <= self.UKF_UNHEALTHY_COVAR):
             self._UKF_unhealthy_counter = 0
 
     
-    # ---- DIAGNOSTICS FUNCTION CALLBACKS ----
+    # region ---- DIAGNOSTICS FUNCTION CALLBACKS ----
     def _landing_pad_true_odometry_callback(self, msg: Odometry):
         """ SITL ONLY: Pass true odometry of landing pad for data.
         """
@@ -1262,7 +1277,7 @@ class Orchestrator(Node):
         )
 
         # Only start if ground truth is available
-        if self.ground_truth_available:
+        if self.GROUND_TRUTH_AVAILABLE:
             self._true_odometry_sub = self.create_subscription(
                 Odometry, "/quadcopter/true_odom", self._true_odometry_callback, _odom_qos
             )
@@ -1297,7 +1312,7 @@ class Orchestrator(Node):
         )
 
         # Create .csv file for logging
-        timestamp = self.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._csv_filename = f"controller_{timestamp}.csv"
         self._csv_file = open(self._csv_filename, "w", newline="")
         self._csv_writer = csv.writer(self._csv_file)
@@ -1414,7 +1429,7 @@ class Orchestrator(Node):
                 # Orchestrator state / outcome
                 "controller_state", "pad_found", "pad_lost_for", "cutoff",
                 "landing_attempts", "rtl", "rtl_reason",
-                "target_z", "target_z_rate", "alt_pos_control",
+                "target_alt", "target_alt_rate", "alt_pos_control",
 
                 # What the controller actually consumed
                 "est_time", "fwd_horizon",
@@ -1442,6 +1457,12 @@ class Orchestrator(Node):
 
         # UKF Diagnostics
         d = self._UKF_diag  # shorthand
+        m = self._UKF_filter.get_measurement_diagnostics()
+        apr = m["apriltag"]
+        yolo_lp = m["yolo_lp"]
+        yolo_car = m["yolo_car"]
+        yolo = m["latest_yolo"]
+        latest = m["latest"]
 
         # PID Diagnostics
         p = self._pid_controller.get_control_outputs()
@@ -1452,9 +1473,9 @@ class Orchestrator(Node):
         UKF_raw_msg = Vector3Stamped()
         UKF_raw_msg.header.stamp = self.landing_pad_relative_odometry.header.stamp # Compare at same timestamp
         UKF_raw_msg.header.frame_id = "local"
-        UKF_raw_msg.vector.x = self._UKF_raw_measurement[LP_Meas.PX]
-        UKF_raw_msg.vector.y = self._UKF_raw_measurement[LP_Meas.PY]
-        UKF_raw_msg.vector.z = self._UKF_raw_measurement[LP_Meas.PZ]
+        UKF_raw_msg.vector.x = apr["raw"][LP_Meas.PX]
+        UKF_raw_msg.vector.y = apr["raw"][LP_Meas.PY]
+        UKF_raw_msg.vector.z = apr["raw"][LP_Meas.PZ]
         self.landing_pad_relative_raw_pub.publish(UKF_raw_msg)
 
         current_time = self.get_clock().now().nanoseconds / 1e9
@@ -1464,7 +1485,7 @@ class Orchestrator(Node):
         fv = self.landing_pad_relative_velocity_forward_predict
         Pc = self._UKF_filter.P
 
-        if self.ground_truth_available:
+        if self.GROUND_TRUTH_AVAILABLE:
             qs = self.quad_true_odometry.header.stamp
             ps = self.landing_pad_true_odometry.header.stamp
             true_cols = [
@@ -1482,7 +1503,7 @@ class Orchestrator(Node):
             if self._landing_pad_lost_time is not None else 0.0,
             int(self.cutoff), self._landing_attempts,
             int(self._rtl_initiated), self._rtl_reason,
-            self.target_z, self.target_z_rate, int(self.alt_pos_control),
+            self.target_alt, self.target_alt_rate, int(self.alt_pos_control),
 
             self._UKF_est_time, self._UKF_fwd_horizon,
             fp[0], fp[1], fp[2],
@@ -1500,7 +1521,7 @@ class Orchestrator(Node):
 
         # Only if ground-truth is available do we calculate the NEES, otherwise just 
         # log 0
-        if self.ground_truth_available:
+        if self.GROUND_TRUTH_AVAILABLE:
             # Convert ground truth quaternions to RPY
             _, _, lp_pad_true_yaw = tf_transformations.euler_from_quaternion(
                 [
@@ -1569,19 +1590,19 @@ class Orchestrator(Node):
                     true_yaw,
 
                     # Landing pad relative data
-                    self._UKF_raw_measurement_stamp,
-                    self._UKF_raw_measurement[LP_Meas.PX],
-                    self._UKF_raw_measurement[LP_Meas.PY],
-                    self._UKF_raw_measurement[LP_Meas.PZ],
-                    self._UKF_raw_measurement[LP_Meas.YAW] - true_yaw,
-                    self._UKF_yolo_LP_raw_measurement_stamp,
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PX],
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PY],
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PZ],
-                    self._UKF_yolo_car_raw_measurement_stamp,
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PX],
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PY],
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PZ],
+                    apr["raw_stamp"],
+                    apr["raw"][LP_Meas.PX],
+                    apr["raw"][LP_Meas.PY],
+                    apr["raw"][LP_Meas.PZ],
+                    apr["raw"][LP_Meas.YAW] - true_yaw,
+                    yolo_lp["raw_stamp"],
+                    yolo_lp["raw"][LP_Meas.PX],
+                    yolo_lp["raw"][LP_Meas.PY],
+                    yolo_lp["raw"][LP_Meas.PZ],
+                    yolo_car["raw_stamp"],
+                    yolo_car["raw"][LP_Meas.PX],
+                    yolo_car["raw"][LP_Meas.PY],
+                    yolo_car["raw"][LP_Meas.PZ],
                     self.landing_pad_relative_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y,
                     self.landing_pad_relative_odometry.pose.pose.position.z,
@@ -1599,16 +1620,16 @@ class Orchestrator(Node):
                     lp_pad_true_yaw - true_yaw,
 
                     # Landing pad global data
-                    self._UKF_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
-                    self._UKF_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
-                    self._UKF_raw_measurement[LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
-                    self._UKF_raw_measurement[LP_Meas.YAW],
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
+                    apr["raw"][LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
+                    apr["raw"][LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
+                    apr["raw"][LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
+                    apr["raw"][LP_Meas.YAW],
+                    yolo_lp["raw"][LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
+                    yolo_lp["raw"][LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
+                    yolo_lp["raw"][LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
+                    yolo_car["raw"][LP_Meas.PX] + self.quad_true_odometry.pose.pose.position.x,
+                    yolo_car["raw"][LP_Meas.PY] + self.quad_true_odometry.pose.pose.position.y,
+                    yolo_car["raw"][LP_Meas.PZ] + self.quad_pose[QUAD_State.Z],
                     self.landing_pad_relative_odometry.pose.pose.position.x + self.quad_true_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y + self.quad_true_odometry.pose.pose.position.y,
                     self.landing_pad_relative_odometry.pose.pose.position.z + self.quad_pose[QUAD_State.Z],
@@ -1652,13 +1673,13 @@ class Orchestrator(Node):
                     p["marker_yaw_valid"], p["cutoff_active"],
 
                     # Latency through pipeline
-                    self._cam_to_image_lag,
-                    self._image_to_transform_lag,
-                    self._transform_to_UKF_lag,
-                    self._yolo_cam_to_image_lag,
-                    self._yolo_image_to_transform_lag,
-                    self._yolo_transform_to_UKF_lag,
-                    self._UKF_meas_age,
+                    apr["cam_to_image_lag"],
+                    apr["image_to_transform_lag"],
+                    apr["transform_to_UKF_lag"],
+                    yolo["cam_to_image_lag"],
+                    yolo["image_to_transform_lag"],
+                    yolo["transform_to_UKF_lag"],
+                    latest["total_lag"],
                 ] + extra
             )
         else:
@@ -1682,19 +1703,19 @@ class Orchestrator(Node):
                     0,
 
                     # Landing pad relative data
-                    self._UKF_raw_measurement_stamp,
-                    self._UKF_raw_measurement[LP_Meas.PX],
-                    self._UKF_raw_measurement[LP_Meas.PY],
-                    self._UKF_raw_measurement[LP_Meas.PZ],
+                    apr["raw_stamp"],
+                    apr["raw"][LP_Meas.PX],
+                    apr["raw"][LP_Meas.PY],
+                    apr["raw"][LP_Meas.PZ],
                     0,
-                    self._UKF_yolo_LP_raw_measurement_stamp,
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PX],
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PY],
-                    self._UKF_yolo_LP_raw_measurement[LP_Meas.PZ],
-                    self._UKF_yolo_car_raw_measurement_stamp,
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PX],
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PY],
-                    self._UKF_yolo_car_raw_measurement[LP_Meas.PZ],
+                    yolo_lp["raw_stamp"],
+                    yolo_lp["raw"][LP_Meas.PX],
+                    yolo_lp["raw"][LP_Meas.PY],
+                    yolo_lp["raw"][LP_Meas.PZ],
+                    yolo_car["raw_stamp"],
+                    yolo_car["raw"][LP_Meas.PX],
+                    yolo_car["raw"][LP_Meas.PY],
+                    yolo_car["raw"][LP_Meas.PZ],
                     self.landing_pad_relative_odometry.pose.pose.position.x,
                     self.landing_pad_relative_odometry.pose.pose.position.y,
                     self.landing_pad_relative_odometry.pose.pose.position.z,
@@ -1714,7 +1735,7 @@ class Orchestrator(Node):
                     0,
                     0,
                     0,
-                    self._UKF_raw_measurement[LP_Meas.YAW],
+                    apr["raw"][LP_Meas.YAW],
                     0,
                     0,
                     0,
@@ -1762,13 +1783,13 @@ class Orchestrator(Node):
                     p["marker_yaw_valid"], p["cutoff_active"],
 
                     # Latency through pipeline
-                    self._cam_to_image_lag,
-                    self._image_to_transform_lag,
-                    self._transform_to_UKF_lag,
-                    self._yolo_cam_to_image_lag,
-                    self._yolo_image_to_transform_lag,
-                    self._yolo_transform_to_UKF_lag,
-                    self._UKF_meas_age,
+                    apr["cam_to_image_lag"],
+                    apr["image_to_transform_lag"],
+                    apr["transform_to_UKF_lag"],
+                    yolo["cam_to_image_lag"],
+                    yolo["image_to_transform_lag"],
+                    yolo["transform_to_UKF_lag"],
+                    latest["total_lag"],
                 ] + extra
             )
 

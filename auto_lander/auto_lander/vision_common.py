@@ -5,6 +5,8 @@ import numpy as np
 import numpy.typing as npt
 import tf_transformations
 
+from geometry_msgs.msg import Vector3Stamped
+
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,12 +26,17 @@ from typing import cast
     both nodes. Now that they are separate processes, they can no longer drift apart
     on camera mount/gimbal offsets simply because they import the same function.
 
-    pixel_row_to_angle_error and LatestValueBuffer exist specifically so apriltag.py's
-    gimbal controller (which owns the only actuator, the servo) can be driven by
-    EITHER pipeline's detection: AprilTag's own image_points when available, or
-    yolo.py's bounding-box centre - published on /landing_pad/yolo_gimbal_error - as a
-    fallback when AprilTag misses on a given tick. See apriltag.py's
-    _apriltag_timer_callback / _drive_gimbal for the priority logic.
+    pixel_row_to_angle_error and LatestValueBuffer provide the shared image geometry
+    and timestamped-value behaviour used by the independent gimbal controller. The
+    perception nodes publish image targets, while gimbal_controller.py owns the only
+    actuator and decides which target source has priority.
+
+    Camera pose: gimbal_controller.py does NOT broadcast a camera TF. Each perception
+    node instead buffers FCU odometry (OdometryBuffer) and the measured gimbal angle
+    (GimbalAngleBuffer, fed from /landing_pad/gimbal_angle), interpolates both to the
+    image's header.stamp, and calls camera_pose_in_level_frame with the mount from
+    load_camera_mount. This is time-aligned to the image and cannot fail with a TF
+    extrapolation error - the buffers clamp to the newest sample instead.
 """
 
 
@@ -58,19 +65,70 @@ def pixel_row_to_angle_error(centre_y: float, image_height: int, fy: float) -> f
         apriltag.py's gimbal controller has always used on its own AprilTag corner
         points; it's pulled out here so yolo.py can produce a directly comparable
         error from its own bounding-box centre using its own (different-resolution)
-        camera intrinsics, and apriltag.py can treat the two as interchangeable
-        inputs to the same PD control law. Purely a function of that frame's own
-        image geometry - independent of the drone's attitude or the current servo
-        angle.
+        camera intrinsics, and apriltag.py can treat the two as interchangeable inputs
+        to the same PD control law. Purely a function of that frame's own image
+        geometry - independent of the drone's attitude or the current servo angle.
 
-    :param centre_y:     Detection centre row, in pixels of the frame it came from
+    :param centre_y: Detection centre row, in pixels of the frame it came from
     :param image_height: Height (pixels) of that same frame
-    :param fy:           Vertical focal length (pixels) of that same frame's camera
-                          intrinsics (CameraIntrinsics.matrix[1, 1])
+    :param fy: Vertical focal length (pixels) of that same frame's camera intrinsics
     :return: Signed angle error in degrees; positive = detection below image centre
     """
     pixel_error = centre_y - image_height / 2
     return float(np.degrees(np.arctan2(pixel_error, fy)))
+
+
+def image_target_message(stamp, centre_x: float, centre_y: float, intrinsics, frame_id: str):
+    """ Pack a normalised image target and the frame's vertical FOV into a ROS message.
+
+        vector.x = normalised image x coordinate (0..1)
+        vector.y = normalised image y coordinate (0..1)
+        vector.z = image vertical FOV (radians)
+    """
+    msg = Vector3Stamped()
+    msg.header.stamp = stamp
+    msg.header.frame_id = frame_id
+    msg.vector.x = float(centre_x / intrinsics.width)
+    msg.vector.y = float(centre_y / intrinsics.height)
+    msg.vector.z = float(intrinsics.fov_vertical)
+    return msg
+
+
+def image_target_to_angle_error(normalised_centre_y: float, fov_vertical: float) -> float:
+    """ Convert a normalised image-row target into a signed vertical angle error.
+
+        Positive = target below the image centre. The image target carries the
+        vertical FOV so this remains valid for the different processing resolutions
+        used by AprilTag and YOLO.
+    """
+    return float(
+        np.degrees(
+            np.arctan2(
+                2.0 * (normalised_centre_y - 0.5) * np.tan(fov_vertical / 2.0),
+                1.0,
+            )
+        )
+    )
+
+
+def transform_stamped_to_matrix(transform: object) -> np.ndarray:
+    """ Convert a geometry_msgs TransformStamped into a 4x4 homogeneous matrix. """
+    tf_msg = transform.transform  # type: ignore
+    q = [
+        tf_msg.rotation.x,
+        tf_msg.rotation.y,
+        tf_msg.rotation.z,
+        tf_msg.rotation.w,
+    ]
+    T = tf_transformations.quaternion_matrix(q)
+    T[:3, 3] = np.array(
+        [
+            tf_msg.translation.x,
+            tf_msg.translation.y,
+            tf_msg.translation.z,
+        ]
+    )
+    return T
 
 
 @dataclass
@@ -83,7 +141,6 @@ class TagDefinition:
 
     def __post_init__(self):
         half = self.size / 2.0
-
         self.object_points = np.array(
             [
                 [-half, half, 0.0],
@@ -98,13 +155,19 @@ class TagDefinition:
 @dataclass
 class CameraIntrinsics:
     """ Pinhole camera model derived from image size + horizontal FOV. Both nodes
-        build one of these from the same imgsz_width/imgsz_height parameters so their
+        build one of these from the same img_width/img_height parameters so their
         pixel<->ray math stays consistent.
+
+        Distortion coefficients are passed in from the node parameters so the camera
+        calibration can be changed without touching this shared module. The vertical
+        FOV is also carried with image-target messages so the independent gimbal
+        controller can recover the target angle without knowing which node produced it.
     """
 
     width: int
     height: int
-    fov_horizontal: float = 2.7925268  # radians (~160 deg) - tuned for SIYI A2 Mini
+    fov_horizontal: float
+    dist_coeffs: tuple[float, float, float, float, float]
 
     def __post_init__(self):
         self.fov_vertical = 2 * np.arctan(
@@ -122,10 +185,54 @@ class CameraIntrinsics:
             dtype=np.float64,
         )
         self.matrix_inv = np.linalg.inv(self.matrix)
-        self.dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
+        self.dist_coeffs_array = np.array(self.dist_coeffs, dtype=np.float64)
 
 
-def camera_pose_in_level_frame(quad_rotation, servo_angle) -> np.ndarray:
+@dataclass
+class CameraMount:
+    """ Camera mount translation and fixed Euler-angle offsets in the body frame. """
+
+    offset_x: float
+    offset_y: float
+    offset_z: float
+    roll_offset: float
+    pitch_offset: float
+    yaw_offset: float
+
+
+def load_camera_mount(node) -> CameraMount:
+    """ Declare and read the camera mount parameters on a node and return them as a
+        CameraMount. Both perception nodes call this so the mount defaults live in
+        exactly one place and can't drift apart between processes.
+
+    :param node: The rclpy Node declaring the parameters
+    :return: CameraMount built from the node's camera_offset_* / camera_mount_* params
+    """
+    defaults = {
+        "camera_offset_x": 0.02,
+        "camera_offset_y": -0.01,
+        "camera_offset_z": -0.124923,
+        "camera_mount_roll": -1.5707963,
+        "camera_mount_pitch": 0.0,
+        "camera_mount_yaw": -1.5707963,
+    }
+    v = {
+        name: node.declare_parameter(name, default).get_parameter_value().double_value
+        for name, default in defaults.items()
+    }
+    return CameraMount(
+        offset_x=v["camera_offset_x"],
+        offset_y=v["camera_offset_y"],
+        offset_z=v["camera_offset_z"],
+        roll_offset=v["camera_mount_roll"],
+        pitch_offset=v["camera_mount_pitch"],
+        yaw_offset=v["camera_mount_yaw"],
+    )
+
+
+def camera_pose_in_level_frame(
+    quad_rotation, servo_angle, camera_mount: CameraMount
+) -> np.ndarray:
     """ Camera pose (position + rotation) expressed in the drone-relative,
         local-level frame - the drone's own translation is excluded, only its
         attitude and the gimbal angle are applied. This is the same frame
@@ -135,7 +242,8 @@ def camera_pose_in_level_frame(quad_rotation, servo_angle) -> np.ndarray:
         run as separate processes.
 
     :param quad_rotation: Quadcopter rotation quaternion [x, y, z, w]
-    :param servo_angle:   Current gimbal servo angle (degrees)
+    :param servo_angle:   Gimbal servo angle (degrees)
+    :param camera_mount:  Camera body offset and fixed mounting rotation
     :return: 4x4 homogeneous transform: level-frame <- camera-frame
     """
 
@@ -143,9 +251,17 @@ def camera_pose_in_level_frame(quad_rotation, servo_angle) -> np.ndarray:
     T_quad_local = tf_transformations.quaternion_matrix(quad_rotation)
 
     # Quad_body -> Cam
-    t_quad_cam = np.array([0.02, -0.01, -0.124923])
+    t_quad_cam = np.array(
+        [
+            camera_mount.offset_x,
+            camera_mount.offset_y,
+            camera_mount.offset_z,
+        ]
+    )
     q_quad_cam = tf_transformations.quaternion_from_euler(
-        -1.5707963 + np.deg2rad(servo_angle), 0.0, -1.5707963
+        camera_mount.roll_offset + np.deg2rad(servo_angle),
+        camera_mount.pitch_offset,
+        camera_mount.yaw_offset,
     )
     T_quad_cam = tf_transformations.quaternion_matrix(q_quad_cam)
     T_quad_cam[:3, 3] = t_quad_cam
@@ -156,9 +272,7 @@ def camera_pose_in_level_frame(quad_rotation, servo_angle) -> np.ndarray:
 class TimeInterpolatedBuffer:
     """ Generic (timestamp -> value) ring buffer with pluggable interpolation, used to
         time-align data arriving on one topic (odometry, gimbal angle) with an image
-        captured at some other timestamp. Both nodes need this same alignment
-        behaviour against their own image stamps, so it lives here once rather than
-        being duplicated (and potentially drifting) in each node.
+        captured at some other timestamp.
     """
 
     def __init__(self, window_s: float = 1.0, maxlen: int = 400):
@@ -204,10 +318,9 @@ class LatestValueBuffer:
     """ Holds only the most recent (value, timestamp) sample and reports whether it
         is still fresh relative to some query time. Unlike TimeInterpolatedBuffer,
         this is NOT for aligning data to a specific past image timestamp - it's for
-        live control-loop fallback signals where the question is simply "is this
-        still current enough to act on right now?" (e.g. apriltag.py deciding
-        whether yolo.py's last published gimbal-centering error is recent enough to
-        drive the servo with, on a tick where its own AprilTag detection missed).
+        live control-loop target selection where the question is simply "is this
+        still current enough to act on right now?" (e.g. gimbal_controller.py deciding
+        whether to use the latest YOLO target when an AprilTag target has gone stale).
     """
 
     def __init__(self):
@@ -222,7 +335,7 @@ class LatestValueBuffer:
         """
         :param t_now:     Current time (seconds) to judge freshness against
         :param max_age_s: Maximum allowed age (seconds) before the sample is
-                           considered stale
+                          considered stale
         :return: The buffered value if it exists and is within max_age_s of t_now,
                  otherwise None
         """
@@ -285,11 +398,12 @@ class OdometryBuffer:
 
 
 class GimbalAngleBuffer:
-    """ Buffers the AprilTag node's published gimbal servo angle so the YOLO node -
-        which does not itself drive the gimbal now that the two pipelines are separate
-        processes - can recover the angle that was actually in effect when its own
-        frame was captured, for the back-projection in _estimate_yolo_ground_position.
-        Simple linear interpolation: the servo range (-135..45 deg) never wraps.
+    """ Buffers the gimbal angle published on /landing_pad/gimbal_angle so it can be
+        interpolated to an image's header.stamp. Together with OdometryBuffer this
+        replaces the old gimbal camera TF: each perception node feeds both into
+        camera_pose_in_level_frame. get_at clamps to the newest/oldest sample rather
+        than raising, so a gimbal sample arriving slightly after an image is harmless.
+        Simple linear interpolation: the servo range (-90..25 deg) never wraps.
     """
 
     def __init__(self, window_s: float = 1.0):
@@ -304,7 +418,7 @@ class GimbalAngleBuffer:
         def interp(v0, v1, fraction):
             return v0 + fraction * (v1 - v0)
 
-        return self._buffer.get_at(t_query, interp) #type: ignore
+        return self._buffer.get_at(t_query, interp)  #type: ignore
 
     def __len__(self) -> int:
         return len(self._buffer)
@@ -397,13 +511,15 @@ class FrameRecorder:
 
             first_frame = cv2.imread(self._saved_frames[0])
             if first_frame is None:
-                self._logger.error(f"[{self._tag}] Could not read first frame for video creation")
+                self._logger.error(
+                    f"[{self._tag}] Could not read first frame for video creation"
+                )
                 return
 
             height, width, _ = first_frame.shape
             fourcc = cv2.VideoWriter.fourcc(*"mp4v")
             video_writer = cv2.VideoWriter(
-                self.video_filename, fourcc, self._video_fps, (width, height) #type: ignore
+                self.video_filename, fourcc, self._video_fps, (width, height)  #type: ignore
             )
 
             if not video_writer.isOpened():
@@ -424,7 +540,9 @@ class FrameRecorder:
                     self._logger.warning(f"[{self._tag}] Could not read frame: {frame_path}")
 
             video_writer.release()
-            self._logger.info(f"[{self._tag}] Video created successfully: {self.video_filename}")
+            self._logger.info(
+                f"[{self._tag}] Video created successfully: {self.video_filename}"
+            )
             self._logger.info(
                 f"[{self._tag}] Final video stats: {frames_written} frames written, "
                 f"duration: {frames_written / self._video_fps:.1f}s"
@@ -436,9 +554,11 @@ class FrameRecorder:
                     try:
                         os.remove(frame_path)
                     except OSError as e:
-                        self._logger.warning(f"[{self._tag}] Could not remove frame {frame_path}: {e}")
+                        self._logger.warning(
+                            f"[{self._tag}] Could not remove frame {frame_path}: {e}"
+                        )
                 try:
-                    os.rmdir(self.frames_dir) #type: ignore
+                    os.rmdir(self.frames_dir)  #type: ignore
                 except OSError:
                     pass
 
