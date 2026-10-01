@@ -17,9 +17,9 @@ Before running in real-world, be sure to check the follow parameters are set up 
 8. Ensure that mavlink is outputting mavros messages at greater than 20Hz - if less, the quad will be very unstable!!
 9. Run main_launch.py
 
-Everything below is currently tuned for the simulator. Treat the SITL values as placeholders, not starting points.
+Nearly all relevant params are located/exposed in the main_launch.py file. This will run all the relevant nodes needed automatically.
  
-*Sim-only / launch setup*
+*Preparing for IRL testing:*
  
 1. `use_sim_time` is `True` on **all four** nodes (apriltag, yolo, gimbal_controller, controller) and `--use-sim-time` is on the bag recorder. Set all to `False` (and remove `-p use_sim_time:=true` from the MAVROS command). If any node is missed, it will wait on a `/clock` that doesn't exist.
 2. `ground_truth_available` → `False`.
@@ -63,27 +63,28 @@ Everything below is currently tuned for the simulator. Treat the SITL values as 
  
 1. **SITL param file:** `gazebo-iris-gimbal_1d.parm` is loaded into SITL via `--add-param-file`. None of those params exist on the real flight controller unless you set them (gimbal/servo/mount, guided options, etc.). Set as follows:
 
-    # Iris is X frame
+```text
+    **Iris is X frame**
     FRAME_CLASS      1
     FRAME_TYPE       1
 
-    # Match servo output for motors
+    **Match servo output for motors**
     MOT_PWM_MIN      1100
     MOT_PWM_MAX      1900
 
-    # Gimbal/Mount
+    **Gimbal/Mount**
     MNT1_TYPE        1
-
     MNT1_PITCH_MAX   25
     MNT1_PITCH_MIN   -90
 
     RC7_MAX          1900
     RC7_MIN          1100
     RC7_OPTION       213
-
+   
     SERVO10_FUNCTION 7
     SERVO10_MIN      1100
     SERVO10_MAX      1900
+```
 
 2. **Stream rates:** `set streamrate 40` and the Link stream rate are SITL-only. On the real FCU set the `SRx_*` params for the telemetry port and use a high baud rate (e.g. 921600) for the MAVROS `fcu_url`. Verify with `ros2 topic hz` (see item 8) -> this is important because anything less than 20Hz results in a crash!
 3. **Safety setup:** Would be good to have a manual override somewhere in the FCU configured.
