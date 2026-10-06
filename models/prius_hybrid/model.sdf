@@ -144,7 +144,7 @@
       <visual name="platform_visual">
         <geometry>
           <mesh>
-            <uri>model://prius_hybrid/meshes/PriusTopPlatform.dae</uri>
+            <uri>model://prius_hybrid/meshes/PriusTopPlatform1.dae</uri>
           </mesh>
         </geometry>
       </visual>
@@ -152,7 +152,7 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <box>
-            <size>0.88 0.70 0.01</size>
+            <size>1.48 1.00 0.01</size>
           </box>
         </geometry>
       </collision>

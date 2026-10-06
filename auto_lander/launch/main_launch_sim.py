@@ -146,12 +146,12 @@ def generate_launch_description():
             {"yolo_enabled": True},
             {"yolo_model_path": "ugv_sim_yolo11n_openvino_model"},
             {"yolo_conf_threshold": 0.60},
-            {"yolo_landing_pad_class_id": 1},
+            {"yolo_landing_pad_class_id": 11},
             {"yolo_car_class_id": 0},
 
             # ----- Ground-plane projection -----
             {"yolo_ground_z": 1.5},
-            {"yolo_ground_ray_z_epsilon": 1e-3},
+            {"yolo_ground_ray_z_epsilon": 0.05},
 
             # ----- Camera -----
             {"camera_fov_horizontal": 2.7925268},
@@ -193,7 +193,6 @@ def generate_launch_description():
     )
 
     # Run main controller node
-    # Run main controller node
     controller = Node(
         package="auto_lander",
         executable="controller",
@@ -208,17 +207,17 @@ def generate_launch_description():
             {"boundary_limit": 600.0},
 
             # ----- Landing state / altitude parameters -----
-            {"landing_recovery_height": 2.0},
+            {"landing_recovery_height": 4.0},
             {"landing_height_above_gnd": 1.5},
-            {"landing_height_threshold": 0.4},
+            {"landing_height_threshold": 0.2},
             {"landing_error_threshold": 0.10},
-            {"landing_centered_error_threshold": 2.0},
+            {"landing_centered_error_threshold": 3.0},
 
             {"landing_chase_altitude": 6.0},
-            {"landing_descent_rate_far": -1.00},
-            {"landing_descent_rate_close": -0.50},
+            {"landing_descent_rate_far": -0.50},
+            {"landing_descent_rate_close": -0.35},
             {"landing_time_visual_min_time (s)": 0.6},
-            {"landing_pad_locked_time (s)": 10.0},
+            {"landing_pad_locked_time (s)": 20.0},
             {"landing_pad_lost_time (s)": 4.0},
 
             # ----- GPS loiter / waiting point -----
@@ -251,14 +250,14 @@ def generate_launch_description():
             {"UKF_initial_Q_diag": [
                 0.005,
                 0.005,
-                0.100,
+                0.075,
                 0.050,
                 0.100,
                 0.005,
-                0.050,
+                0.025,
             ]},
 
-            {"UKF_unhealthy_covar": 1000.0},
+            {"UKF_unhealthy_covar": 500.0},
             {"UKF_freq": 20.0},
 
             # ----- Controller loop -----
@@ -269,29 +268,26 @@ def generate_launch_description():
             {"PID_Kp_0": 7.0},
             {"PID_Kd_0": 3.25},
 
-            {"PID_Kp_pos_z": 0.2},
-            {"PID_Kp_vel_z": 2.0},
-            {"PID_Ki_vel_z": 0.2},
-            {"PID_vel_z_i_clamp": 2.0},
-            {"PID_pos_vel_err_limit": 1.5},
+            # Altitude: outer height loop only, FCU runs vel/accel/throttle
+            {"PID_Kp_pos_z": 2.0},
+            {"PID_vz_up_max": 2.0},           # = WPNAV_SPEED_UP 
+            {"PID_vz_dn_max": 2.0},           # = WPNAV_SPEED_DN
+            {"PID_max_tilt": 0.5},            # rad, <= ANGLE_MAX
 
             {"PID_mass": 1.98},
-            {"PID_max_thrust": 40.0},
             {"PID_gravity": 9.81},
             {"PID_drag_coefficient": 0.002},
 
-            {"PID_max_throttle_rate": 1.0},
             {"PID_max_angle_rate": 1.0},
 
             {"PID_d_blend_start": 4.0},
             {"PID_d_blend_end": 1.0},
             {"PID_d_hold_radius": 4.0},
-            {"PID_marker_yaw_sigma_threshold": 0.15},
+            {"PID_marker_yaw_sigma_threshold": 0.6},
 
             {"PID_drop_off_strength": 0.5},
             {"PID_terminal_gain": 1.0},
             {"PID_drop_off": 7.0},
-            {"PID_accel_z_limit_g": 1.0},
         ],
     )
 

@@ -80,123 +80,68 @@ class YoloNode(Node):
 
         # ---- NODE PARAMETERS ----
         self.declare_parameter("diagnostics_enabled", True)
-        self.diagnostics_enabled = (
-            self.get_parameter("diagnostics_enabled").get_parameter_value().bool_value
-        )
-
+        self.diagnostics_enabled = (self.get_parameter("diagnostics_enabled").get_parameter_value().bool_value)
         self.declare_parameter("show_debug_window", False)
-        self.show_debug_window = (
-            self.get_parameter("show_debug_window").get_parameter_value().bool_value
-        )
+        self.show_debug_window = (self.get_parameter("show_debug_window").get_parameter_value().bool_value)
 
         # ---- RECORDING PARAMETERS ----
         self.declare_parameter("save_frames", False)
-        self.save_frames = (
-            self.get_parameter("save_frames").get_parameter_value().bool_value
-        )
-
+        self.save_frames = (self.get_parameter("save_frames").get_parameter_value().bool_value)
         self.declare_parameter("create_video", True)
-        self.create_video = (
-            self.get_parameter("create_video").get_parameter_value().bool_value
-        )
-
+        self.create_video = (self.get_parameter("create_video").get_parameter_value().bool_value)
         self.declare_parameter("video_fps", 10.0)
-        self.video_fps = (
-            self.get_parameter("video_fps").get_parameter_value().double_value
-        )
-
+        self.video_fps = (self.get_parameter("video_fps").get_parameter_value().double_value)
         self.declare_parameter("output_dir", "")
-        self.output_dir = (
-            self.get_parameter("output_dir").get_parameter_value().string_value
-        )
+        self.output_dir = (self.get_parameter("output_dir").get_parameter_value().string_value)
 
         # ---- PROCESSING PARAMETERS ----
         self.declare_parameter("yolo_processing_rate", 10.0)
-        self._yolo_processing_rate = (
-            self.get_parameter("yolo_processing_rate").get_parameter_value().double_value
-        )
-
+        self._yolo_processing_rate = (self.get_parameter("yolo_processing_rate").get_parameter_value().double_value)
         self.declare_parameter("img_width", 640)
-        self._image_width = (
-            self.get_parameter("img_width").get_parameter_value().integer_value
-        )
-
+        self._image_width = (self.get_parameter("img_width").get_parameter_value().integer_value)
         self.declare_parameter("img_height", 384)
-        self._image_height = (
-            self.get_parameter("img_height").get_parameter_value().integer_value
-        )
+        self._image_height = (self.get_parameter("img_height").get_parameter_value().integer_value)
 
         # ---- YOLO PARAMETERS ----
         workspace_root = get_workspace_root()
-        default_yolo_model = (
-            os.path.join(workspace_root, "ugv_sim_yolo11n_openvino_model")
-            if workspace_root
-            else "ugv_sim_yolo11n_openvino_model"
-        )
-
+        default_yolo_model = (os.path.join(workspace_root, "ugv_sim_yolo11n_openvino_model") if workspace_root else "ugv_sim_yolo11n_openvino_model")
         self.declare_parameter("yolo_enabled", True)
-        self.yolo_enabled = (
-            self.get_parameter("yolo_enabled").get_parameter_value().bool_value
-        )
-
+        self.yolo_enabled = (self.get_parameter("yolo_enabled").get_parameter_value().bool_value)
         self.declare_parameter("yolo_model_path", default_yolo_model)
-        self.yolo_model_path = (
-            self.get_parameter("yolo_model_path").get_parameter_value().string_value
-        )
+        self.yolo_model_path = (self.get_parameter("yolo_model_path").get_parameter_value().string_value)
 
         self.declare_parameter("yolo_conf_threshold", 0.60)
-        self.yolo_conf_threshold = (
-            self.get_parameter("yolo_conf_threshold").get_parameter_value().double_value
-        )
-
+        self.yolo_conf_threshold = (self.get_parameter("yolo_conf_threshold").get_parameter_value().double_value)
         self.declare_parameter("yolo_landing_pad_class_id", 1)
-        self._landing_pad_class_id = (
-            self.get_parameter("yolo_landing_pad_class_id")
-            .get_parameter_value()
-            .integer_value
-        )
-
+        self._landing_pad_class_id = (self.get_parameter("yolo_landing_pad_class_id").get_parameter_value().integer_value)
         self.declare_parameter("yolo_car_class_id", 0)
-        self._car_class_id = (
-            self.get_parameter("yolo_car_class_id").get_parameter_value().integer_value
-        )
+        self._car_class_id = (self.get_parameter("yolo_car_class_id").get_parameter_value().integer_value)
 
+        self.declare_parameter("yolo_edge_margin_px", 5)
+        self._yolo_edge_margin_px = (self.get_parameter("yolo_edge_margin_px").get_parameter_value().integer_value)
+
+        # ---- YOLO OBJECT PARAMETERS ----
         self.declare_parameter("yolo_ground_z", 1.5)
-        self._ground_z = (
-            self.get_parameter("yolo_ground_z").get_parameter_value().double_value
-        )
-
+        self._ground_z = (self.get_parameter("yolo_ground_z").get_parameter_value().double_value)
         self.declare_parameter("yolo_ground_ray_z_epsilon", 1e-3)
-        self._ground_ray_z_epsilon = (
-            self.get_parameter("yolo_ground_ray_z_epsilon")
-            .get_parameter_value()
-            .double_value
-        )
+        self._ground_ray_z_epsilon = (self.get_parameter("yolo_ground_ray_z_epsilon").get_parameter_value().double_value)
+        self.declare_parameter("yolo_car_size", [1.8, 4.5])  # car extent (m) width, length
+        self._car_size = np.array(self.get_parameter("yolo_car_size").get_parameter_value().double_array_value)
+        self.declare_parameter("yolo_car_aspect_tol", 0.50)  # loose
+        self._car_aspect_tol = self.get_parameter("yolo_car_aspect_tol").get_parameter_value().double_value
 
         # ---- CAMERA PARAMETERS ----
         self.declare_parameter("camera_fov_horizontal", 2.7925268)
-        self._camera_fov_horizontal = (
-            self.get_parameter("camera_fov_horizontal")
-            .get_parameter_value()
-            .double_value
-        )
-
+        self._camera_fov_horizontal = (self.get_parameter("camera_fov_horizontal").get_parameter_value().double_value)
         self.declare_parameter("camera_distortion_coeffs", [0.0, 0.0, 0.0, 0.0, 0.0])
-        camera_distortion_coeffs = (
-            self.get_parameter("camera_distortion_coeffs")
-            .get_parameter_value()
-            .double_array_value
-        )
+        camera_distortion_coeffs = (self.get_parameter("camera_distortion_coeffs").get_parameter_value().double_array_value)
         if len(camera_distortion_coeffs) != 5:
             raise ValueError("camera_distortion_coeffs must contain exactly five values")
 
         # ---- BUFFER PARAMETERS ----
         self.declare_parameter("odometry_buffer_window_s", 1.0)
-        self._odometry_buffer_window_s = (
-            self.get_parameter("odometry_buffer_window_s")
-            .get_parameter_value()
-            .double_value
-        )
+        self._odometry_buffer_window_s = (self.get_parameter("odometry_buffer_window_s").get_parameter_value().double_value)
+
 
         self.get_logger().info(f"YOLO processing rate: {self._yolo_processing_rate} Hz")
         self.get_logger().info(
@@ -218,6 +163,7 @@ class YoloNode(Node):
             tuple(camera_distortion_coeffs), # type:ignore
         )
         self._camera_matrix_inv = self._intrinsics.matrix_inv
+        self._camera_matrix = np.linalg.inv(self._camera_matrix_inv)
 
         # ---- YOLO MODEL ----
         self.yolo_model = None
@@ -225,13 +171,9 @@ class YoloNode(Node):
             try:
                 self.get_logger().info(f"Loading YOLO model: {self.yolo_model_path}")
                 self.yolo_model = YOLO(self.yolo_model_path)
-                self.get_logger().info(
-                    f"YOLO model loaded successfully. Classes: {self.yolo_model.names}"
-                )
+                self.get_logger().info(f"YOLO model loaded successfully. Classes: {self.yolo_model.names}")
             except Exception as e:
-                self.get_logger().error(
-                    f"Failed to load YOLO model '{self.yolo_model_path}': {e}"
-                )
+                self.get_logger().error(f"Failed to load YOLO model '{self.yolo_model_path}': {e}")
                 raise
 
         # ---- SUBSCRIPTIONS ----
@@ -282,12 +224,8 @@ class YoloNode(Node):
 
         # ---- PUBLISHERS ----
         self._bridge = CvBridge()
-        self._landing_pad_found_publisher = self.create_publisher(
-            Bool, "/landing_pad/found", 10
-        )
-        self._yolo_target_publisher = self.create_publisher(
-            Vector3Stamped, "/landing_pad/yolo_target", 10
-        )
+        self._landing_pad_found_publisher = self.create_publisher(Bool, "/landing_pad/found", 10)
+        self._yolo_target_publisher = self.create_publisher(Vector3Stamped, "/landing_pad/yolo_target", 10)
 
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
@@ -457,7 +395,7 @@ class YoloNode(Node):
             cx, cy, bw, bh, confidence = car_detection #type: ignore
 
             car_translation = self._estimate_yolo_ground_position(
-                cx, cy, T_local_cam, altitude,
+                cx, cy, T_local_cam, altitude, kind="car", bw=bw, bh=bh
             )
 
             if car_translation is not None:
@@ -533,6 +471,16 @@ class YoloNode(Node):
                     continue
 
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                margin = self._yolo_edge_margin_px
+
+                if (
+                    x1 < margin
+                    or y1 < margin
+                    or x2 > self._image_width - margin
+                    or y2 > self._image_height - margin
+                ):
+                    continue
+
                 width = x2 - x1
                 height = y2 - y1
                 cx = (x1 + x2) * 0.5
@@ -630,40 +578,26 @@ class YoloNode(Node):
         )
 
     def _estimate_yolo_ground_position(
-        self, cx, cy, T_local_cam, altitude
+        self, cx, cy, T_local_cam, altitude, kind="landing_pad", bw=None, bh=None
     ) -> np.ndarray | None:
-        """ Back-project a YOLO bounding-box centre into a 3D position using a
-            flat-ground assumption: cast the ray through (cx, cy) and intersect it
-            with the ground plane at local z=0, using altitude to fix the scale (a
-            single 2D box alone has no depth information). This gives (x, y, z)
-            translation ONLY - it cannot recover any rotation, including yaw.
+        """ Back-project a YOLO bounding-box centre into a drone-relative 3D position
+            (translation only).
 
-            ASSUMPTION: the landing pad sits at the same height as local z=0 (i.e.
-            the MAVROS local-frame origin / takeoff point). If the pad is
-            meaningfully higher or lower than that, this estimate will be off by
-            that difference.
+            kind="landing_pad": flat-ground intersection (z = ground_z - altitude).
+            kind="car": same flat-ground point, but if bw/bh are given and the box aspect
+                ratio is plausible (quad assumed yaw-aligned with the car), depth is taken
+                from the box size instead. Falls back to the flat-ground point otherwise.
 
-        :param cx, cy:        YOLO bounding-box centre, in pixels of the processing
-                               frame (self._image_width x self._image_height)
-        :param T_local_cam:   4x4 camera pose in the local-level frame at the image's
-                               timestamp (camera_pose_in_level_frame)
-        :param altitude:      Drone altitude (local-frame position.z) at the image's
-                               timestamp
-        :return: np.ndarray [x, y, z], drone-relative in the local-level frame (same
-                 convention as the AprilTag transform), or None if the camera isn't
-                 looking toward the ground (no valid intersection - e.g. gimbal pointed
-                 level/up)
+        :return: np.ndarray [x, y, z] in the local-level frame, or None if the camera isn't
+                looking toward the ground
         """
 
-        pixel_h = np.array([cx, cy, 1.0])
-        ray_cam = self._camera_matrix_inv @ pixel_h
-        ray_cam = ray_cam / np.linalg.norm(ray_cam)
+        ray_cam = self._camera_matrix_inv @ np.array([cx, cy, 1.0])  # ray_cam[2] == 1
 
         R_local_cam = T_local_cam[:3, :3]
         camera_offset_level = T_local_cam[:3, 3]
 
-        ray_level = R_local_cam @ ray_cam
-
+        ray_level = R_local_cam @ (ray_cam / np.linalg.norm(ray_cam))
         camera_z = altitude + camera_offset_level[2]
 
         if ray_level[2] >= -self._ground_ray_z_epsilon:
@@ -673,7 +607,35 @@ class YoloNode(Node):
         if t <= 0:
             return None
 
-        return camera_offset_level + t * ray_level
+        flat = camera_offset_level + t * ray_level
+
+        if kind != "car" or bw is None or bh is None:
+            return flat
+
+        # Aspect ratio check: off-angle -> box is wrong shape -> don't trust bbox depth
+        expected = self._car_size[0] / self._car_size[1]
+        if abs(np.log((bw / bh) / expected)) > np.log1p(self._car_aspect_tol):
+            return flat
+
+        # Depth from box size (optical depth, since ray_cam[2] == 1)
+        fx = 1.0 / self._camera_matrix_inv[0, 0]
+        fy = 1.0 / self._camera_matrix_inv[1, 1]
+        Z_width = fx * self._car_size[0] / bw
+        Z_length = fy * self._car_size[1] / bh
+        Z = 0.4 * Z_width + 0.6 * Z_length - 0.5 # Add fixed offset (empirical)
+
+        current_height = 1.5 - altitude
+        self.get_logger().info(
+            f"Z={Z:.2f} | Z_width={Z_width:.2f} | "
+            f"Z_length={Z_length:.2f} | height={current_height:.2f}"
+        )
+
+        pos = camera_offset_level + R_local_cam @ (Z * ray_cam)
+        if pos[2] >= 0:  # car "above" the drone, so the bbox depth is nonsense
+            return flat
+
+        self._ground_z = altitude + pos[2]
+        return pos
 
     @staticmethod
     def _compose_base_to_landing_pad_yolo(stamp, translation) -> TransformStamped:

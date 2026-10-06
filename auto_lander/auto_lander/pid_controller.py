@@ -12,17 +12,16 @@ from .state_definitions import QUAD_State
 """
 
 CONTROL_OUTPUT_KEYS = (
-    # Commanded forces (N, ENU, after limiting) and resulting thrust magnitude
+    # Horizontal force terms (N, ENU), vertical reference force (m*g) and resulting magnitude
     "F_x", "F_y", "F_z", "F_thrust",
-    # Commanded throttle / attitude (after clamps and slew limiting)
-    "throttle_cmd", "roll_cmd", "pitch_cmd", "yaw_cmd",
-    # Guidance terms (z is omitted for perp/par: the altitude loop overwrites it)
-    "accel_perp_x", "accel_perp_y", "accel_par_x", "accel_par_y", "accel_z_cmd",
-    "z_err", "vel_z_err", "vel_z_integral", "gain_factor", "lam",
+    # Commanded climb rate / thrust field / attitude (after clamps and slew limiting)
+    "climb_rate_cmd", "thrust_field", "roll_cmd", "pitch_cmd", "yaw_cmd",
+    # Guidance terms (z is omitted: the altitude loop handles it)
+    "accel_perp_x", "accel_perp_y", "accel_par_x", "accel_par_y",
+    "z_err", "gain_factor", "lam",
     # Limiter flags (1 = active this tick)
-    "sat_accel_z", "sat_vel_z_int", "sat_F_z", "sat_F_horiz",
-    "sat_roll_clamp", "sat_pitch_clamp",
-    "slew_throttle", "slew_roll", "slew_pitch", "slew_yaw",
+    "sat_climb_cmd", "sat_roll_clamp", "sat_pitch_clamp",
+    "slew_roll", "slew_pitch", "slew_yaw",
     # Mode flags
     "marker_yaw_valid", "cutoff_active",
 )
@@ -36,14 +35,9 @@ class PIDController:
         Kp_0,
         Kd_0,
         Kp_pos_z,
-        Kp_vel_z,
-        Ki_vel_z,
-        vel_z_i_clamp,
         m,
-        max_thrust,
         g,
         cD,
-        max_throttle_rate,
         max_angle_rate,
         d_blend_start,
         d_blend_end,
@@ -51,35 +45,40 @@ class PIDController:
         drop_off_strength,
         terminal_gain,
         drop_off,
-        accel_z_limit_g,
-        pos_vel_err_limit,
+        vz_up_max,
+        vz_dn_max,
+        max_tilt=0.5,
+        platform_vz_ff=False,
     ):
-        """Initialise the PD/PN controller."""
+        """Initialise the PD/PN controller.
 
+        :param max_climb_rate:  m/s, fallback for vz_up_max / vz_dn_max if those are not given
+        :param vz_up_max:       m/s, MUST equal WPNAV_SPEED_UP / 100 on the FCU
+        :param vz_dn_max:       m/s, MUST equal WPNAV_SPEED_DN / 100 on the FCU
+        :param max_tilt:        rad, roll/pitch clamp, keep <= ANGLE_MAX on the FCU
+        :param platform_vz_ff:  add the pad's vertical velocity as feedforward (moving platform)
+        """
         # ---- PID PARAMETERS ----
         # PN/PD Gains
         self.lam_0 = lam_0
         self.Kp_0 = Kp_0
         self.Kd_0 = Kd_0
 
-        # P/PI Altitude Gains
+        # Altitude gain (outer height loop only; FCU does the rest)
         self.Kp_pos_z = Kp_pos_z
-        self.Kp_vel_z = Kp_vel_z
-        self.Ki_vel_z = Ki_vel_z
-
-        self.vel_z_err = 0.0
-        self.vel_z_integral = 0.0
-        self.vel_z_i_clamp = vel_z_i_clamp  # m/s² — prevents windup
 
         # Constant Parameters
         self.m = m
-        self.max_thrust = max_thrust
         self.g = g
         self.cD = cD
 
-        self.max_throttle_rate = max_throttle_rate   # unit/s
-        self.max_angle_rate = max_angle_rate         # rad/s
-        self.prev_throttle = self.m * self.g / self.max_thrust
+        # Climb-rate limits (must match the FCU's WPNAV_SPEED_UP / WPNAV_SPEED_DN)
+        self.vz_up_max = vz_up_max # m/s
+        self.vz_dn_max = vz_dn_max # m/s
+        self.max_tilt = max_tilt   # rad
+        self.platform_vz_ff = platform_vz_ff
+
+        self.max_angle_rate = max_angle_rate   # rad/s
         self.prev_phi = 0.0
         self.prev_theta = 0.0
         self.prev_yaw = None
@@ -92,8 +91,6 @@ class PIDController:
         self.drop_off_strength = drop_off_strength
         self.terminal_gain = terminal_gain
         self.drop_off = drop_off
-        self.accel_z_limit = accel_z_limit_g * self.g
-        self.pos_vel_err_limit = pos_vel_err_limit
 
         # ---- STATE VARIABLES ----
         self.lam = self.lam_0
@@ -118,20 +115,22 @@ class PIDController:
     ):
         """PD/PN Controller Logic
 
-        :param target_altitude:  desired hover/approach altitude (m, ENU z)
-        :param target_desc_rate: desired descent rate (m/s, ENU z)
+        :param target_altitude:  desired hover/approach altitude above the pad (m, ENU z)
+        :param target_desc_rate: desired climb rate (m/s, ENU z, negative = descend), used
+                                 when alt_pos_control is False
         :param marker_yaw:       AprilTag-measured pad yaw (rad, ENU), or None/NaN
                                  if no tag is currently detected
-        :param cutoff:           bool — if True, zero thrust and hold yaw (kill switch)
-        :param alt_pos_control:  bool — if True, control altitude through position SP,
-                                 false, control altitude rate
+        :param cutoff:           bool — if True, command max descent and hold yaw (kill switch)
+        :param alt_pos_control:  bool — if True, control altitude through a height P loop,
+                                 false, command target_desc_rate directly
         :param quad_yaw:         drone yaw ψ (rad)
         :param quad_vel:         drone velocity v_a (m/s) — 3-vector [vx, vy, vz]
         :param u:                target-drone relative position p_m (ENU globally aligned)
                                  (m) — 3-vector [x, y, z]
         :param du:               target-drone velocity v_m (m/s) (ENU globally aligned)
                                 — 3-vector [vx, vy, vz]
-        :return: AttitudeTarget msg (attitude quaternion + normalised throttle)
+        :return: AttitudeTarget msg (attitude quaternion + thrust field interpreted by the
+                 FCU as a normalised climb rate, 0.5 = hold)
         """
         tag_detected = (marker_yaw is not None) and not np.isnan(marker_yaw)
 
@@ -168,8 +167,8 @@ class PIDController:
         slew_yaw = abs((target_yaw - yaw_pre_slew + np.pi) % (2 * np.pi) - np.pi) > 1e-9
         self.prev_yaw = target_yaw
 
-        # Cuttoff condition
-        if cutoff is True:
+        # Cutoff condition
+        if cutoff:
             # ---- Build MAVROS message (ENU)
             q = quaternion_from_euler(0, 0, target_yaw)
 
@@ -184,13 +183,19 @@ class PIDController:
             msg.orientation.y = q[1]
             msg.orientation.z = q[2]
             msg.orientation.w = q[3]
+            # Thrust field 0.0 = fastest descent the FCU allows (-WPNAV_SPEED_DN)
             msg.thrust = 0.0
+
+            # Attitude was commanded level, so restart tilt slewing from zero on resume
+            self.prev_phi = 0.0
+            self.prev_theta = 0.0
 
             # Logging
             out = self._nan_outputs()
             out.update(
                 F_x=0.0, F_y=0.0, F_z=0.0, F_thrust=0.0,
-                throttle_cmd=0.0, roll_cmd=0.0, pitch_cmd=0.0, yaw_cmd=float(target_yaw),
+                climb_rate_cmd=-float(self.vz_dn_max), thrust_field=0.0,
+                roll_cmd=0.0, pitch_cmd=0.0, yaw_cmd=float(target_yaw),
                 slew_yaw=int(slew_yaw), marker_yaw_valid=int(tag_detected), cutoff_active=1,
             )
             self._last_outputs = out
@@ -217,82 +222,68 @@ class PIDController:
         accel_parallel = self.Kp * u + self.Kd * du
         accel = accel_perp + accel_parallel
 
-        # ---- Altitude Controller ----
-        z_err = target_altitude - (-u[QUAD_State.Z])
+        # ---- Altitude: outer loop only; FCU runs vel/accel/throttle ----
+        z_err = target_altitude - (-u[QUAD_State.Z])    # height-above-pad error, +up
 
         if alt_pos_control:
-            vel_z_err = np.clip(self.Kp_pos_z * z_err, -self.pos_vel_err_limit, self.pos_vel_err_limit) + du[QUAD_State.Z]
+            # Use descent and rate limits on position control (note target_descent rate is negative)
+            lim = abs(target_desc_rate)
+            vz_cmd = np.clip(self.Kp_pos_z * z_err, -lim, lim)
         else:
-            vel_z_err = target_desc_rate + du[QUAD_State.Z]
+            vz_cmd = target_desc_rate # ENU: negative = descend
 
-        integral_raw = self.vel_z_integral + vel_z_err * dt
-        self.vel_z_integral = np.clip(integral_raw, -self.vel_z_i_clamp, self.vel_z_i_clamp)
-        sat_vel_z_int = abs(integral_raw) > self.vel_z_i_clamp
+        if self.platform_vz_ff:
+            # FCU climb rate is in the world frame, so add the pad's own vertical velocity
+            # (du_z = pad_vz - drone_vz  ->  pad_vz = du_z + drone_vz)
+            vz_cmd = vz_cmd + du[QUAD_State.Z] + quad_vel[QUAD_State.Z]
 
-        accel_z_raw = self.Kp_vel_z * vel_z_err + self.Ki_vel_z * self.vel_z_integral
-        accel[QUAD_State.Z] = np.clip(accel_z_raw, -self.accel_z_limit, self.accel_z_limit)
-        sat_accel_z = abs(accel_z_raw) > self.accel_z_limit
+        vz_cmd_pre = vz_cmd
+        vz_cmd = float(np.clip(vz_cmd, -self.vz_dn_max, self.vz_up_max))   # matches WPNAV_SPEED_DN/UP
+        sat_climb_cmd = abs(vz_cmd - vz_cmd_pre) > 1e-9
 
-        # --- Final Output ---
+        # Climb rate -> thrust field (0.5 = hold, 1.0 = full climb, 0.0 = full descent)
+        if vz_cmd >= 0.0:
+            thrust_field = 0.5 + 0.5 * vz_cmd / self.vz_up_max
+        else:
+            thrust_field = 0.5 + 0.5 * vz_cmd / self.vz_dn_max
+        thrust_field = float(np.clip(thrust_field, 0.0, 1.0))
+
+        # ---- Horizontal accel -> tilt ----
         drag_x = self.cD * quad_vel[QUAD_State.X] * abs(quad_vel[QUAD_State.X])
         drag_y = self.cD * quad_vel[QUAD_State.Y] * abs(quad_vel[QUAD_State.Y])
-        drag_z = self.cD * quad_vel[QUAD_State.Z] * abs(quad_vel[QUAD_State.Z])
 
         F_x = self.m * accel[QUAD_State.X] + drag_x
         F_y = self.m * accel[QUAD_State.Y] + drag_y
-        F_z_raw = self.m * (accel[QUAD_State.Z] + self.g) + drag_z
-        F_z = np.clip(F_z_raw, 0.0, self.max_thrust)
-        sat_F_z = F_z_raw < 0.0 or F_z_raw > self.max_thrust
+        F_z = self.m * self.g  # FCU holds vertical force (it tilt-compensates throttle)
 
-        horiz_budget = np.sqrt(max(self.max_thrust**2 - F_z**2, 0.0))
-        F_horiz = np.hypot(F_x, F_y)
-        sat_F_horiz = F_horiz > horiz_budget
-        if sat_F_horiz:
-            scale = horiz_budget / F_horiz
-            F_x *= scale
-            F_y *= scale
+        thrust = np.sqrt(F_x**2 + F_y**2 + F_z**2)   # always >= m*g, so never ~0
 
-        thrust = np.sqrt(F_x**2 + F_y**2 + F_z**2)
+        phi = np.arcsin(np.clip((F_x * np.sin(quad_yaw) - F_y * np.cos(quad_yaw)) / thrust, -1.0, 1.0))
+        sat_roll = abs(phi) > self.max_tilt
+        phi = float(np.clip(phi, -self.max_tilt, self.max_tilt))
 
-        sat_roll = sat_pitch = False
-        if thrust < 1e-6:
-            phi = self.prev_phi
-            theta = self.prev_theta
-            throttle = 0.0
-        else:
-            phi = np.arcsin((F_x * np.sin(quad_yaw) - F_y * np.cos(quad_yaw)) / thrust)
-            sat_roll = abs(phi) > 1.0
-            phi = max(-1, min(phi, 1))
-
-            theta = np.arctan2((F_x * np.cos(quad_yaw) + F_y * np.sin(quad_yaw)), F_z)
-            sat_pitch = abs(theta) > 1.0
-            theta = max(-1, min(theta, 1))
-
-            throttle = np.clip(thrust / self.max_thrust, 0.0, 1.0)
+        theta = np.arctan2(F_x * np.cos(quad_yaw) + F_y * np.sin(quad_yaw), F_z)
+        sat_pitch = abs(theta) > self.max_tilt
+        theta = float(np.clip(theta, -self.max_tilt, self.max_tilt))
 
         # Restrict/ramp outputs
-        throttle_pre, phi_pre, theta_pre = throttle, phi, theta
-        throttle = self._slew(throttle, self.prev_throttle, self.max_throttle_rate, dt)
+        phi_pre, theta_pre = phi, theta
         phi = self._slew(phi, self.prev_phi, self.max_angle_rate, dt)
         theta = self._slew(theta, self.prev_theta, self.max_angle_rate, dt)
-        self.prev_throttle, self.prev_phi, self.prev_theta = throttle, phi, theta
+        self.prev_phi, self.prev_theta = phi, theta
 
         # ---- Stash outputs for logging ----
         out = self._nan_outputs()
         out.update(
             F_x=float(F_x), F_y=float(F_y), F_z=float(F_z), F_thrust=float(thrust),
-            throttle_cmd=float(throttle), roll_cmd=float(phi), pitch_cmd=float(theta),
-            yaw_cmd=float(target_yaw),
+            climb_rate_cmd=float(vz_cmd), thrust_field=float(thrust_field),
+            roll_cmd=float(phi), pitch_cmd=float(theta), yaw_cmd=float(target_yaw),
             accel_perp_x=float(accel_perp[0]), accel_perp_y=float(accel_perp[1]),
             accel_par_x=float(accel_parallel[0]), accel_par_y=float(accel_parallel[1]),
-            accel_z_cmd=float(accel[QUAD_State.Z]),
-            z_err=float(z_err), vel_z_err=float(vel_z_err),
-            vel_z_integral=float(self.vel_z_integral),
+            z_err=float(z_err),
             gain_factor=float(gain_factor), lam=float(self.lam),
-            sat_accel_z=int(sat_accel_z), sat_vel_z_int=int(sat_vel_z_int),
-            sat_F_z=int(sat_F_z), sat_F_horiz=int(sat_F_horiz),
+            sat_climb_cmd=int(sat_climb_cmd),
             sat_roll_clamp=int(sat_roll), sat_pitch_clamp=int(sat_pitch),
-            slew_throttle=int(abs(throttle - throttle_pre) > 1e-9),
             slew_roll=int(abs(phi - phi_pre) > 1e-9),
             slew_pitch=int(abs(theta - theta_pre) > 1e-9),
             slew_yaw=int(slew_yaw),
@@ -314,7 +305,7 @@ class PIDController:
         msg.orientation.y = q[1]
         msg.orientation.z = q[2]
         msg.orientation.w = q[3]
-        msg.thrust = throttle
+        msg.thrust = thrust_field
 
         return msg
 

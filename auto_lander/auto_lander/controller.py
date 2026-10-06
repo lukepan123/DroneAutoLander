@@ -65,10 +65,8 @@ class Orchestrator(Node):
         self.LANDING_RECOVERY_HEIGHT = self.get_parameter("landing_recovery_height").get_parameter_value().double_value
         self.declare_parameter("landing_height_above_gnd", 1.5)
         self.LANDING_HEIGHT_ABOVE_GND = self.get_parameter("landing_height_above_gnd").get_parameter_value().double_value
-        self.declare_parameter("landing_height_threshold", 0.4)
+        self.declare_parameter("landing_height_threshold", 0.20)
         self.LANDING_HEIGHT_THRESHOLD = self.get_parameter("landing_height_threshold").get_parameter_value().double_value
-        self.declare_parameter("landing_error_threshold", 0.10)
-        self.LANDING_ERROR_THRESHOLD = self.get_parameter("landing_error_threshold").get_parameter_value().double_value
         self.declare_parameter("landing_centered_error_threshold", 2.0)
         self.LANDING_CENTERED_ERROR_THRESHOLD = self.get_parameter("landing_centered_error_threshold").get_parameter_value().double_value
 
@@ -111,6 +109,22 @@ class Orchestrator(Node):
         self.landing_pad_yaw = self.INIT_LP_YAW
         self.landing_pad_yaw_forward_predict = self.INIT_LP_YAW
 
+        # Dynamic throttle cut parameters
+        self.declare_parameter("landing_lead_time_max", 0.5)
+        self.LANDING_LEAD_TIME_MAX = self.get_parameter("landing_lead_time_max").get_parameter_value().double_value
+        self.declare_parameter("landing_cut_height_max", 1.0)
+        self.LANDING_CUT_HEIGHT_MAX = self.get_parameter("landing_cut_height_max").get_parameter_value().double_value
+        self.declare_parameter("landing_cut_margin", 0.05)
+        self.LANDING_CUT_MARGIN = self.get_parameter("landing_cut_margin").get_parameter_value().double_value
+        self.declare_parameter("landing_pad_size", [1.85, 1.5])
+        self.LANDING_PAD_SIZE = self.get_parameter("landing_pad_size").get_parameter_value().double_array_value
+        self.declare_parameter("landing_gear_size", [0.3, 0.3])
+        self.LANDING_GEAR_SIZE = self.get_parameter("landing_gear_size").get_parameter_value().double_array_value
+        self.declare_parameter("landing_car_a_max", 4.905)
+        self.LANDING_CAR_A_MAX = self.get_parameter("landing_car_a_max").get_parameter_value().double_value
+        self.declare_parameter("landing_car_a_lat_max", 5.0)
+        self.LANDING_CAR_A_LAT_MAX = self.get_parameter("landing_car_a_lat_max").get_parameter_value().double_value
+
         # ---- Global State Variables ----
         self.controller_state = 0
         self.fcu_state = State()
@@ -147,6 +161,7 @@ class Orchestrator(Node):
         self._landing_pad_lost_time = None
 
         # ---- State 4xxx (Beginning Landing Descent) Variables ----
+        self._lead_time = 0.3
         self._landed_time = None
         self.cutoff = False
 
@@ -155,6 +170,8 @@ class Orchestrator(Node):
 
         # ---- State 6xxx (Landing Confirmed) Variables ----
         self._idle_before_RTL_SP = 5.0
+        self._disarm_requested = False
+        self._disarmed = False
 
         # ---- State 7xxx (RTL) Variables ----
         self._rtl_initiated = False
@@ -209,28 +226,22 @@ class Orchestrator(Node):
         self.declare_parameter('PID_Kd_0', 3.25)
         self.PID_KD_0 = self.get_parameter("PID_Kd_0").get_parameter_value().double_value
 
-        self.declare_parameter('PID_Kp_pos_z', 0.2)
+        self.declare_parameter('PID_Kp_pos_z', 1.0)
         self.PID_KP_POS_Z = self.get_parameter("PID_Kp_pos_z").get_parameter_value().double_value
-        self.declare_parameter('PID_Kp_vel_z', 2.0)
-        self.PID_KP_VEL_Z = self.get_parameter("PID_Kp_vel_z").get_parameter_value().double_value
-        self.declare_parameter('PID_Ki_vel_z', 0.2)
-        self.PID_KI_VEL_Z = self.get_parameter("PID_Ki_vel_z").get_parameter_value().double_value
-        self.declare_parameter('PID_vel_z_i_clamp', 2.0)
-        self.PID_VEL_Z_I_CLAMP = self.get_parameter("PID_vel_z_i_clamp").get_parameter_value().double_value
-        self.declare_parameter('PID_pos_vel_err_limit', 1.5)
-        self.PID_POS_VEL_ERR_LIMIT = self.get_parameter("PID_pos_vel_err_limit").get_parameter_value().double_value
 
         self.declare_parameter('PID_mass', 1.98)
         self.PID_MASS = self.get_parameter("PID_mass").get_parameter_value().double_value
-        self.declare_parameter('PID_max_thrust', 40.0)
-        self.PID_MAX_THRUST = self.get_parameter("PID_max_thrust").get_parameter_value().double_value
         self.declare_parameter('PID_gravity', 9.81)
         self.PID_GRAVITY = self.get_parameter("PID_gravity").get_parameter_value().double_value
         self.declare_parameter('PID_drag_coefficient', 0.002)
         self.PID_DRAG_COEFFICIENT = self.get_parameter("PID_drag_coefficient").get_parameter_value().double_value
 
-        self.declare_parameter('PID_max_throttle_rate', 1.0)
-        self.PID_MAX_THROTTLE_RATE = self.get_parameter("PID_max_throttle_rate").get_parameter_value().double_value
+        self.declare_parameter('PID_vz_up_max', 2.0)
+        self.PID_VZ_UP_MAX = self.get_parameter("PID_vz_up_max").get_parameter_value().double_value
+        self.declare_parameter('PID_vz_dn_max', 2.0)
+        self.PID_VZ_DN_MAX = self.get_parameter("PID_vz_dn_max").get_parameter_value().double_value
+        self.declare_parameter('PID_max_tilt', 1.0)
+        self.PID_MAX_TILT = self.get_parameter("PID_max_tilt").get_parameter_value().double_value
         self.declare_parameter('PID_max_angle_rate', 1.0)
         self.PID_MAX_ANGLE_RATE = self.get_parameter("PID_max_angle_rate").get_parameter_value().double_value
 
@@ -242,6 +253,8 @@ class Orchestrator(Node):
         self.PID_D_HOLD_RADIUS = self.get_parameter("PID_d_hold_radius").get_parameter_value().double_value
         self.declare_parameter('PID_marker_yaw_sigma_threshold', 0.15)
         self.PID_MARKER_YAW_SIGMA_THRESHOLD = self.get_parameter("PID_marker_yaw_sigma_threshold").get_parameter_value().double_value
+        self.declare_parameter('PID_marker_yaw_error_threshold', 0.2)
+        self.PID_MARKER_YAW_ERROR_THRESHOLD = self.get_parameter("PID_marker_yaw_error_threshold").get_parameter_value().double_value
 
         self.declare_parameter('PID_drop_off_strength', 0.5)
         self.PID_DROP_OFF_STRENGTH = self.get_parameter("PID_drop_off_strength").get_parameter_value().double_value
@@ -249,8 +262,6 @@ class Orchestrator(Node):
         self.PID_TERMINAL_GAIN = self.get_parameter("PID_terminal_gain").get_parameter_value().double_value
         self.declare_parameter('PID_drop_off', 7.0)
         self.PID_DROP_OFF = self.get_parameter("PID_drop_off").get_parameter_value().double_value
-        self.declare_parameter('PID_accel_z_limit_g', 1.0)
-        self.PID_ACCEL_Z_LIMIT_G = self.get_parameter("PID_accel_z_limit_g").get_parameter_value().double_value
 
         # region ---- INITIALISATIONS ----
         self._UKF_start = False
@@ -276,14 +287,9 @@ class Orchestrator(Node):
             Kp_0=self.PID_KP_0,
             Kd_0=self.PID_KD_0,
             Kp_pos_z=self.PID_KP_POS_Z,
-            Kp_vel_z=self.PID_KP_VEL_Z,
-            Ki_vel_z=self.PID_KI_VEL_Z,
-            vel_z_i_clamp=self.PID_VEL_Z_I_CLAMP,
             m=self.PID_MASS,
-            max_thrust=self.PID_MAX_THRUST,
             g=self.PID_GRAVITY,
             cD=self.PID_DRAG_COEFFICIENT,
-            max_throttle_rate=self.PID_MAX_THROTTLE_RATE,
             max_angle_rate=self.PID_MAX_ANGLE_RATE,
             d_blend_start=self.PID_D_BLEND_START,
             d_blend_end=self.PID_D_BLEND_END,
@@ -291,8 +297,10 @@ class Orchestrator(Node):
             drop_off_strength=self.PID_DROP_OFF_STRENGTH,
             terminal_gain=self.PID_TERMINAL_GAIN,
             drop_off=self.PID_DROP_OFF,
-            accel_z_limit_g=self.PID_ACCEL_Z_LIMIT_G,
-            pos_vel_err_limit=self.PID_POS_VEL_ERR_LIMIT,
+            vz_up_max=self.PID_VZ_UP_MAX,          # m/s, = WPNAV_SPEED_UP
+            vz_dn_max=self.PID_VZ_DN_MAX,          # m/s, = WPNAV_SPEED_DN
+            max_tilt=self.PID_MAX_TILT,            # rad, <= ANGLE_MAX
+            platform_vz_ff=True # False unless the pad moves vertically
         )
 
         # region ---- SUBSCRIPTIONS ----
@@ -462,6 +470,9 @@ class Orchestrator(Node):
         if self.fcu_state.armed and not self._armed_confirmed:
             self._armed_confirmed = True
             self._armed_time = self.get_clock().now().nanoseconds / 1e9
+
+        if self._armed_confirmed and not self.fcu_state.armed:
+            self._disarmed = True
 
 
     def _odometry_callback(self, msg: Odometry) -> None:
@@ -679,6 +690,31 @@ class Orchestrator(Node):
             self.get_logger().error(f"RTL command rejected by FCU (reason: {reason})")
 
 
+    def _request_disarm(self) -> None:
+        """Ask the FCU to disarm once. If it refuses, we leave it."""
+        if not self._arming_client.service_is_ready():
+            self.get_logger().warn("Arming service not ready for disarm.", throttle_duration_sec=2.0)
+            return
+        self._disarm_requested = True
+        req = CommandBool.Request()
+        req.value = False
+        fut = self._arming_client.call_async(req)
+        fut.add_done_callback(self._on_disarm_done)
+        self.get_logger().info("Requesting DISARM...")
+
+
+    def _on_disarm_done(self, fut) -> None:
+        try:
+            res = fut.result()
+        except Exception as e:
+            self.get_logger().error(f"Disarm exception: {e}")
+            return
+        if getattr(res, "success", False):
+            self.get_logger().info("Disarm accepted.")
+        else:
+            self.get_logger().warn(f'Disarm rejected by FCU (result={getattr(res, "result", None)}).')
+
+
     # region ---- UKF LOOP ----
     def _UKF_loop(self):
         """ Run UKF predict and update loops. Manages state estimation of the landing
@@ -689,6 +725,8 @@ class Orchestrator(Node):
         # node, if its been too long since we've seen the landing pad, reset the UKF
         if self._landing_pad_found and not self._UKF_start and self.controller_state >= 2000:
             self._UKF_filter.reset()
+            # Initalise to something reasonable
+            self._UKF_filter.x[LP_State.PZ] = self.LANDING_HEIGHT_ABOVE_GND - self.quad_pose[QUAD_State.Z]
             self._UKF_start = True
 
         # Get timestamp from last cycle
@@ -745,14 +783,26 @@ class Orchestrator(Node):
         R_yolo_lp = np.diag([
             0.100 * yolo_lp_scale,
             0.100 * yolo_lp_scale,
-            1.000,
+            1e9,
             1e9,
         ])
+
+        # Trust the bbox-derived z only when the error between the quad yaw and LP yaw 
+        # is within a certain threshold, and we are not too uncertain about the current LP yaw, 
+        # and we're not too close to the pad (to avoid eratic movements close to the pad)
+        yaw_error = abs(self._UKF_filter._wrap(self.quad_yaw - self.landing_pad_yaw)) #type: ignore
+        if (
+            self._UKF_diag["sigma_yaw"] < self.PID_MARKER_YAW_SIGMA_THRESHOLD
+            and yaw_error < self.PID_MARKER_YAW_ERROR_THRESHOLD
+        ):
+            car_z_var = 0.25
+        else:
+            car_z_var = 1e9
 
         R_yolo_car = np.diag([
             0.500 * yolo_car_scale,
             0.500 * yolo_car_scale,
-            1.000,
+            car_z_var,
             1e9,
         ])
 
@@ -790,10 +840,11 @@ class Orchestrator(Node):
                         throttle_duration_sec=2.0,
                     )
             except Exception as e:
-                self.get_logger().warn(
-                    f"UKF {measurement_type} measurement skipped: {e}",
-                    throttle_duration_sec=2.0,
-                )
+                # self.get_logger().warn(
+                #     f"UKF {measurement_type} measurement skipped: {e}",
+                #     throttle_duration_sec=2.0,
+                # )
+                pass
 
         # ---- Grab per-state covariance diagnostics every tick ----
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
@@ -802,9 +853,23 @@ class Orchestrator(Node):
         x = self._UKF_filter.x
 
         # Forward predict by the time it would take for the drone to drop from its
-        # altitude to the landing pad. This is the value used by the controller
-        # Added a fudge factor (approx the delay in the img feed (20ms))
-        t = 0.02 + np.sqrt(2 * 9.81 * self.LANDING_HEIGHT_THRESHOLD) / 9.81
+        # altitude to the landing pad. This time is derived from the termination state
+        # Time to landing assuming 1g acceleration to max descent rate, then constant max rate.
+        h = max(-x[LP_State.PZ], 0.0)
+        v = max(-self.quad_vel[QUAD_State.Z], 0.0)
+        v_max = abs(self.PID_VZ_DN_MAX)
+        a = 9.81
+
+        t_acc = max(v_max - v, 0.0) / a
+        d_acc = v * t_acc + 0.5 * a * t_acc**2
+
+        if d_acc >= h:
+            fall_t = (-v + np.sqrt(v**2 + 2*a*h)) / a
+        else:
+            fall_t = t_acc + (h - d_acc) / v_max
+
+        self._lead_time = min(fall_t, self.LANDING_LEAD_TIME_MAX)
+        t = self._lead_time
         self._UKF_est_time = now_sec   # instant the estimate is valid at
         self._UKF_fwd_horizon = t
         self._UKF_forward_predict_x = self._UKF_filter.forward_predict(
@@ -954,6 +1019,7 @@ class Orchestrator(Node):
 
         # ---- State 2000 (Searching for Landing Pad)
         if self.controller_state == 2000:
+            self.target_alt = self.LANDING_CHASE_HEIGHT_SP
             if self._landing_pad_found and self._landing_pad_first_seen_time is None:
                 self._landing_pad_first_seen_time = (
                     self.get_clock().now().nanoseconds / 1e9
@@ -1027,22 +1093,17 @@ class Orchestrator(Node):
                         self.get_logger().info("Landing Pad Lost!")
                         self.controller_state = 2000
 
-            if (
-                -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= self.LANDING_HEIGHT_THRESHOLD
-                and err < self.LANDING_ERROR_THRESHOLD
-            ):
-                self.cutoff = True
-                self._landed_time = now
-                self.get_logger().info(f"Throttle Cut Engaged - Err_x = {err_x}, Err_y = {err_y}")
-                self.controller_state = 6000
-            elif -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= self.LANDING_HEIGHT_THRESHOLD and (
-                err >= self.LANDING_ERROR_THRESHOLD
-            ):
-                self.get_logger().info(
-                    f"Landing Aborted - Trying Again Err_x = {err_x}, Err_y = {err_y}"
-                )
-                self._landing_attempts += 1
-                self.controller_state = 5000
+            if self.controller_state == 4000:  # lost-pad branch above may have changed state
+                h = -self.landing_pad_relative_position[LP_State.PZ]
+                if h <= self.LANDING_CUT_HEIGHT_MAX and self._in_termination_state():
+                    self.cutoff = True
+                    self._landed_time = now
+                    self.get_logger().info(f"Throttle Cut Engaged - h = {h:.2f}, T = {self._lead_time:.2f}")
+                    self.controller_state = 6000
+                elif h <= self.LANDING_HEIGHT_THRESHOLD:
+                    self.get_logger().info(f"Landing Aborted - Trying Again, h = {h:.2f}")
+                    self._landing_attempts += 1
+                    self.controller_state = 5000
 
         # ---- State 5000 (Landing Aborted - Regain altitude)
         if self.controller_state == 5000:
@@ -1080,6 +1141,8 @@ class Orchestrator(Node):
                 self._landing_pad_lost_time = None
                 self.get_logger().info("Landing Complete - Idling Done", 
                                        throttle_duration_sec=10.0)
+                if not self._disarm_requested:
+                    self._request_disarm()
                 # self.controller_state = 7000 (Done!)
 
         # ---- State 7000 (Initiate RTL)
@@ -1113,6 +1176,7 @@ class Orchestrator(Node):
             self.vel_pub.publish(msg)
         elif self.controller_state >= 3000 and self.controller_state < 4000:
             self.alt_pos_control = True
+            self.target_alt_rate = self.DESCENT_RATE_FAR_SP
             msg = self._pid_controller.update(
                 dt=control_dt,
                 target_altitude=self.target_alt,
@@ -1127,9 +1191,9 @@ class Orchestrator(Node):
             )
             self.att_pub.publish(msg)
         elif self.controller_state == 4000:
-            self.alt_pos_control = False
+            self.alt_pos_control = True
             self.target_alt_rate = self.DESCENT_RATE_FAR_SP
-            if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] <= 1.0:
+            if -self.landing_pad_relative_position[LP_State.PZ] <= 2.0:
                 self.target_alt_rate = self.DESCENT_RATE_CLOSE_SP
             msg = self._pid_controller.update(
                 dt=control_dt,
@@ -1145,8 +1209,8 @@ class Orchestrator(Node):
             )
             self.att_pub.publish(msg)
         elif self.controller_state == 5000:
-            self.alt_pos_control = False
-            self.target_alt_rate = -self.DESCENT_RATE_CLOSE_SP
+            self.alt_pos_control = True
+            self.target_alt_rate = self.DESCENT_RATE_FAR_SP
             msg = self._pid_controller.update(
                 dt=control_dt,
                 target_altitude=self.target_alt,
@@ -1187,9 +1251,10 @@ class Orchestrator(Node):
             self.get_logger().warn(f"Control loop took {elapsed:.2f} ms!")
 
 
+    # region --- SAFETY LOOP ----
     def _safety_loop(self):
         """Check safety conditions and initiate RTL if necessary"""
-        if self._rtl_initiated or not self._tko_reached:
+        if self._rtl_initiated or not self._tko_reached or self._disarmed:
             return
 
         current_time = self.get_clock().now().nanoseconds / 1e9
@@ -1228,6 +1293,40 @@ class Orchestrator(Node):
         elif (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] <= self.UKF_UNHEALTHY_COVAR):
             self._UKF_unhealthy_counter = 0
 
+    # region ---- TERMINATION STATE ----
+    def _in_termination_state(self) -> bool:
+        """ True if cutting the throttle now still lands the gear on the pad, even if the
+            car does a worst-case brake/accelerate/turn during the fall (lead time).
+        """
+        T = self._lead_time
+        yaw = self.landing_pad_yaw_forward_predict
+        ex, ey = self.landing_pad_relative_position_forward_predict[:2]
+
+        # Forward-predicted offset in the pad frame (x along pad heading, y lateral)
+        e_long = abs(np.cos(yaw) * ex + np.sin(yaw) * ey)
+        e_lat = abs(-np.sin(yaw) * ex + np.cos(yaw) * ey)
+
+        # Worst-case extra pad drift during the fall
+        drift_long = 0.5 * self.LANDING_CAR_A_MAX * T**2
+        drift_lat = 0.5 * self.LANDING_CAR_A_LAT_MAX * T**2
+
+        # Largest offset we can tolerate on each axis (<= 0 means impossible at this T)
+        max_long = 0.5 * self.LANDING_PAD_SIZE[0] - drift_long - 0.5 * self.LANDING_GEAR_SIZE[0] - self.LANDING_CUT_MARGIN
+        max_lat = 0.5 * self.LANDING_PAD_SIZE[1] - drift_lat - 0.5 * self.LANDING_GEAR_SIZE[1] - self.LANDING_CUT_MARGIN
+
+        in_termination = e_long <= max_long and e_lat <= max_lat
+
+        # Current (non-predicted) offset, for comparison with the forward-predicted one
+        cx, cy = self.landing_pad_relative_position[:2]
+        self.get_logger().info(
+            f"Termination {'PASS' if in_termination else 'FAIL'} | T={T:.2f}s | "
+            f"long: err={e_long:.2f} max={max_long:.2f} (drift {drift_long:.2f}) | "
+            f"lat: err={e_lat:.2f} max={max_lat:.2f} (drift {drift_lat:.2f}) | "
+            f"fwd=({ex:.2f}, {ey:.2f}) now=({cx:.2f}, {cy:.2f})",
+            throttle_duration_sec=0.5,
+        )
+        return in_termination
+        
     
     # region ---- DIAGNOSTICS FUNCTION CALLBACKS ----
     def _landing_pad_true_odometry_callback(self, msg: Odometry):
@@ -1409,12 +1508,11 @@ class Orchestrator(Node):
 
                 # PID diagnostics
                 "F_x", "F_y", "F_z", "F_thrust",
-                "throttle_cmd", "roll_cmd", "pitch_cmd", "yaw_cmd",
-                "accel_perp_x", "accel_perp_y", "accel_par_x", "accel_par_y", "accel_z_cmd",
-                "z_err", "vel_z_err", "vel_z_integral", "gain_factor", "lam",
-                "sat_accel_z", "sat_vel_z_int", "sat_F_z", "sat_F_horiz",
-                "sat_roll_clamp", "sat_pitch_clamp",
-                "slew_throttle", "slew_roll", "slew_pitch", "slew_yaw",
+                "climb_rate_cmd", "thrust_field", "roll_cmd", "pitch_cmd", "yaw_cmd",
+                "accel_perp_x", "accel_perp_y", "accel_par_x", "accel_par_y",
+                "z_err", "gain_factor", "lam",
+                "sat_climb_cmd", "sat_roll_clamp", "sat_pitch_clamp",
+                "slew_roll", "slew_pitch", "slew_yaw",
                 "marker_yaw_valid", "cutoff_active",
 
                 # Latency through pipeline
@@ -1664,12 +1762,11 @@ class Orchestrator(Node):
 
                     # PID diagnostics
                     p["F_x"], p["F_y"], p["F_z"], p["F_thrust"],
-                    p["throttle_cmd"], p["roll_cmd"], p["pitch_cmd"], p["yaw_cmd"],
-                    p["accel_perp_x"], p["accel_perp_y"], p["accel_par_x"], p["accel_par_y"], p["accel_z_cmd"],
-                    p["z_err"], p["vel_z_err"], p["vel_z_integral"], p["gain_factor"], p["lam"],
-                    p["sat_accel_z"], p["sat_vel_z_int"], p["sat_F_z"], p["sat_F_horiz"],
-                    p["sat_roll_clamp"], p["sat_pitch_clamp"],
-                    p["slew_throttle"], p["slew_roll"], p["slew_pitch"], p["slew_yaw"],
+                    p["climb_rate_cmd"], p["thrust_field"], p["roll_cmd"], p["pitch_cmd"], p["yaw_cmd"],
+                    p["accel_perp_x"], p["accel_perp_y"], p["accel_par_x"], p["accel_par_y"],
+                    p["z_err"], p["gain_factor"], p["lam"],
+                    p["sat_climb_cmd"], p["sat_roll_clamp"], p["sat_pitch_clamp"],
+                    p["slew_roll"], p["slew_pitch"], p["slew_yaw"],
                     p["marker_yaw_valid"], p["cutoff_active"],
 
                     # Latency through pipeline
@@ -1774,12 +1871,11 @@ class Orchestrator(Node):
 
                     # PID diagnostics
                     p["F_x"], p["F_y"], p["F_z"], p["F_thrust"],
-                    p["throttle_cmd"], p["roll_cmd"], p["pitch_cmd"], p["yaw_cmd"],
-                    p["accel_perp_x"], p["accel_perp_y"], p["accel_par_x"], p["accel_par_y"], p["accel_z_cmd"],
-                    p["z_err"], p["vel_z_err"], p["vel_z_integral"], p["gain_factor"], p["lam"],
-                    p["sat_accel_z"], p["sat_vel_z_int"], p["sat_F_z"], p["sat_F_horiz"],
-                    p["sat_roll_clamp"], p["sat_pitch_clamp"],
-                    p["slew_throttle"], p["slew_roll"], p["slew_pitch"], p["slew_yaw"],
+                    p["climb_rate_cmd"], p["thrust_field"], p["roll_cmd"], p["pitch_cmd"], p["yaw_cmd"],
+                    p["accel_perp_x"], p["accel_perp_y"], p["accel_par_x"], p["accel_par_y"],
+                    p["z_err"], p["gain_factor"], p["lam"],
+                    p["sat_climb_cmd"], p["sat_roll_clamp"], p["sat_pitch_clamp"],
+                    p["slew_roll"], p["slew_pitch"], p["slew_yaw"],
                     p["marker_yaw_valid"], p["cutoff_active"],
 
                     # Latency through pipeline

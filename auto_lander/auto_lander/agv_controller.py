@@ -85,12 +85,26 @@ def straight_trajectory() -> Trajectory:
         TrajectorySegment(t_start=0.0,  t_end=5.0,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=0.0),
     ])
 
+def sin_trajectory() -> Trajectory:
+    """ Rough sinusoidal trajectory with ~20 m amplitude.
+    """
+    return Trajectory([
+        TrajectorySegment(t_start=0.0,  t_end=7.5,  v_start=15.0, v_end=15.0, w_start=0.000, w_end=-0.125),
+        TrajectorySegment(t_start=7.5,  t_end=15.0, v_start=15.0, v_end=15.0, w_start=-0.125, w_end=-0.200),
+        TrajectorySegment(t_start=15.0, t_end=22.5, v_start=15.0, v_end=15.0, w_start=-0.200, w_end=0.000),
+        TrajectorySegment(t_start=22.5, t_end=30.0, v_start=15.0, v_end=15.0, w_start=0.000, w_end=0.200),
+        TrajectorySegment(t_start=30.0, t_end=37.5, v_start=15.0, v_end=15.0, w_start=0.200, w_end=0.125),
+        TrajectorySegment(t_start=37.5, t_end=45.0, v_start=15.0, v_end=15.0, w_start=0.125, w_end=0.000),
+        TrajectorySegment(t_start=45.0, t_end=52.5, v_start=15.0, v_end=15.0, w_start=0.000, w_end=-0.125),
+        TrajectorySegment(t_start=52.5, t_end=60.0, v_start=15.0, v_end=15.0, w_start=-0.125, w_end=-0.200),
+    ])
+
 def turn_trajectory() -> Trajectory:
     """ Turning trajectory.
     """
     return Trajectory([
-        TrajectorySegment(t_start=0.0,  t_end=4.0,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=0.0),
-        TrajectorySegment(t_start=4.0,  t_end=4.5,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=-0.2),
+        TrajectorySegment(t_start=0.0,  t_end=4.0,  v_start=0.0,  v_end=10.0, w_start=0.0, w_end=0.0),
+        TrajectorySegment(t_start=4.0,  t_end=4.5,  v_start=0.0,  v_end=10.0, w_start=0.0, w_end=-0.1),
     ])
 
 def mix_trajectory1() -> Trajectory:
@@ -192,7 +206,7 @@ def main():
 
     # Swap in your own list of TrajectorySegment(...) here to script a
     # different test run.
-    trajectory = turn_trajectory()
+    trajectory = straight_trajectory()
 
     node = AGV_Controller(
         trajectory=trajectory,
