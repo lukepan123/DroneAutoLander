@@ -83,6 +83,8 @@ def straight_trajectory() -> Trajectory:
     """
     return Trajectory([
         TrajectorySegment(t_start=0.0,  t_end=5.0,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=0.0),
+        # TrajectorySegment(t_start=5.0,  t_end=20.0,  v_start=15.0,  v_end=15.0, w_start=0.0, w_end=0.0),
+        # TrajectorySegment(t_start=20.0,  t_end=30.0,  v_start=15.0,  v_end=20.0, w_start=0.0, w_end=0.0),
     ])
 
 def sin_trajectory() -> Trajectory:
@@ -103,8 +105,8 @@ def turn_trajectory() -> Trajectory:
     """ Turning trajectory.
     """
     return Trajectory([
-        TrajectorySegment(t_start=0.0,  t_end=4.0,  v_start=0.0,  v_end=10.0, w_start=0.0, w_end=0.0),
-        TrajectorySegment(t_start=4.0,  t_end=4.5,  v_start=0.0,  v_end=10.0, w_start=0.0, w_end=-0.1),
+        TrajectorySegment(t_start=0.0,  t_end=4.0,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=0.0),
+        TrajectorySegment(t_start=4.0,  t_end=4.5,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=-0.2),
     ])
 
 def mix_trajectory1() -> Trajectory:
@@ -116,11 +118,11 @@ def mix_trajectory1() -> Trajectory:
         TrajectorySegment(t_start=10.0, t_end=20.0, v_start=10.0, v_end=4.0,  w_start=0.5, w_end=-0.5),
         TrajectorySegment(t_start=20.0, t_end=30.0, v_start=4.0,  v_end=10.0,  w_start=-0.5, w_end=0.0),
         TrajectorySegment(t_start=30.0, t_end=40.0, v_start=10.0,  v_end=20.0,  w_start=0.0, w_end=-0.2),
-        TrajectorySegment(t_start=40.0, t_end=55.0, v_start=20.0,  v_end=5.0,  w_start=-0.2, w_end=0.0),
-        TrajectorySegment(t_start=55.0, t_end=58.0, v_start=5.0,  v_end=5.0,  w_start=0.0, w_end=-0.5),
-        TrajectorySegment(t_start=58.0, t_end=60.0, v_start=5.0,  v_end=5.0,  w_start=-0.5, w_end=-0.5),
-        TrajectorySegment(t_start=60.0, t_end=65.0, v_start=5.0,  v_end=5.0,  w_start=-0.5, w_end=0.0),
-        TrajectorySegment(t_start=65.0, t_end=75.0, v_start=5.0,  v_end=0.0,  w_start=0.0, w_end=0.0),
+        TrajectorySegment(t_start=40.0, t_end=60.0, v_start=20.0,  v_end=5.0,  w_start=-0.2, w_end=0.0),
+        TrajectorySegment(t_start=60.0, t_end=63.0, v_start=5.0,  v_end=5.0,  w_start=0.0, w_end=-0.5),
+        TrajectorySegment(t_start=63.0, t_end=65.0, v_start=5.0,  v_end=5.0,  w_start=-0.5, w_end=-0.5),
+        TrajectorySegment(t_start=65.0, t_end=70.0, v_start=5.0,  v_end=5.0,  w_start=-0.5, w_end=0.0),
+        TrajectorySegment(t_start=70.0, t_end=80.0, v_start=5.0,  v_end=0.0,  w_start=0.0, w_end=0.0),
     ])
 
 def mix_trajectory2() -> Trajectory:
@@ -206,7 +208,7 @@ def main():
 
     # Swap in your own list of TrajectorySegment(...) here to script a
     # different test run.
-    trajectory = straight_trajectory()
+    trajectory = mix_trajectory2()
 
     node = AGV_Controller(
         trajectory=trajectory,

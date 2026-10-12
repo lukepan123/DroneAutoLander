@@ -14,6 +14,7 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import DurabilityPolicy
+from scipy.optimize import least_squares
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
 from nav_msgs.msg import Odometry
@@ -99,12 +100,16 @@ class YoloNode(Node):
         self._yolo_processing_rate = (self.get_parameter("yolo_processing_rate").get_parameter_value().double_value)
         self.declare_parameter("img_width", 640)
         self._image_width = (self.get_parameter("img_width").get_parameter_value().integer_value)
-        self.declare_parameter("img_height", 384)
+        self.declare_parameter("img_height", 360)
         self._image_height = (self.get_parameter("img_height").get_parameter_value().integer_value)
+        self.declare_parameter("yolo_img_width", 640)
+        self._yolo_image_width = (self.get_parameter("yolo_img_width").get_parameter_value().integer_value)
+        self.declare_parameter("yolo_img_height", 384)
+        self._yolo_image_height = (self.get_parameter("yolo_img_height").get_parameter_value().integer_value)
 
         # ---- YOLO PARAMETERS ----
         workspace_root = get_workspace_root()
-        default_yolo_model = (os.path.join(workspace_root, "ugv_sim_yolo11n_openvino_model") if workspace_root else "ugv_sim_yolo11n_openvino_model")
+        default_yolo_model = (os.path.join(workspace_root, "ugv_yolo11n_openvino_model") if workspace_root else "ugv_yolo11n_openvino_model")
         self.declare_parameter("yolo_enabled", True)
         self.yolo_enabled = (self.get_parameter("yolo_enabled").get_parameter_value().bool_value)
         self.declare_parameter("yolo_model_path", default_yolo_model)
@@ -117,18 +122,23 @@ class YoloNode(Node):
         self.declare_parameter("yolo_car_class_id", 0)
         self._car_class_id = (self.get_parameter("yolo_car_class_id").get_parameter_value().integer_value)
 
-        self.declare_parameter("yolo_edge_margin_px", 5)
+        self.declare_parameter("yolo_edge_margin_px", 0)
         self._yolo_edge_margin_px = (self.get_parameter("yolo_edge_margin_px").get_parameter_value().integer_value)
 
         # ---- YOLO OBJECT PARAMETERS ----
-        self.declare_parameter("yolo_ground_z", 1.5)
-        self._ground_z = (self.get_parameter("yolo_ground_z").get_parameter_value().double_value)
+        self.declare_parameter("yolo_car_roof_AGL", 1.5)
+        self._landing_pad_z = (self.get_parameter("yolo_car_roof_AGL").get_parameter_value().double_value)
         self.declare_parameter("yolo_ground_ray_z_epsilon", 1e-3)
         self._ground_ray_z_epsilon = (self.get_parameter("yolo_ground_ray_z_epsilon").get_parameter_value().double_value)
-        self.declare_parameter("yolo_car_size", [1.8, 4.5])  # car extent (m) width, length
-        self._car_size = np.array(self.get_parameter("yolo_car_size").get_parameter_value().double_array_value)
-        self.declare_parameter("yolo_car_aspect_tol", 0.50)  # loose
-        self._car_aspect_tol = self.get_parameter("yolo_car_aspect_tol").get_parameter_value().double_value
+        self.declare_parameter("yolo_car_size_3d", [1.8, 4.3, 0.85])  # car extent (m): width, length, height (of body NOT car)
+        self._car_size_3d = np.array(self.get_parameter("yolo_car_size_3d").get_parameter_value().double_array_value)
+        self.declare_parameter("yolo_car_fit_max_rel_rms", 0.08)  # max 3D-box fit residual, as a fraction of box size
+        self._car_fit_max_rel_rms = self.get_parameter("yolo_car_fit_max_rel_rms").get_parameter_value().double_value
+        self.declare_parameter("yolo_roof_height_gain", 0.2)  # per car detection; how fast the roof height tracks the fit (0 = fixed)
+        self._roof_height_gain = self.get_parameter("yolo_roof_height_gain").get_parameter_value().double_value
+        self.declare_parameter("yolo_car_roof_above_body", 0.65)  # roof height minus body-top height (m)
+        self._car_roof_above_body = self.get_parameter("yolo_car_roof_above_body").get_parameter_value().double_value
+
 
         # ---- CAMERA PARAMETERS ----
         self.declare_parameter("camera_fov_horizontal", 2.7925268)
@@ -149,7 +159,7 @@ class YoloNode(Node):
             f"input={self._image_width}x{self._image_height}, "
             f"landing_pad_id={self._landing_pad_class_id}, car_id={self._car_class_id}"
         )
-        self.get_logger().info(f"Ground plane Z: {self._ground_z:.3f} m")
+        self.get_logger().info(f"Roof plane Z above home altitude: {self._landing_pad_z:.3f} m")
         self.get_logger().info(
             f"Video recording parameters: save_frames={self.save_frames}, "
             f"create_video={self.create_video}, video_fps={self.video_fps}"
@@ -445,8 +455,8 @@ class YoloNode(Node):
             return detections
 
         results = self.yolo_model(
-            frame,
-            imgsz=(self._image_height, self._image_width),
+            frame,                                   # 640x360
+            imgsz=(self._yolo_image_height, self._yolo_image_width), # (384, 640)
             verbose=False,
             device="cpu",
         )
@@ -577,65 +587,107 @@ class YoloNode(Node):
             (0, 255, 255),
         )
 
+
     def _estimate_yolo_ground_position(
         self, cx, cy, T_local_cam, altitude, kind="landing_pad", bw=None, bh=None
     ) -> np.ndarray | None:
-        """ Back-project a YOLO bounding-box centre into a drone-relative 3D position
+        """ Back-project a YOLO bounding box into a drone-relative 3D position
             (translation only).
 
-            kind="landing_pad": flat-ground intersection (z = ground_z - altitude).
-            kind="car": same flat-ground point, but if bw/bh are given and the box aspect
-                ratio is plausible (quad assumed yaw-aligned with the car), depth is taken
-                from the box size instead. Falls back to the flat-ground point otherwise.
+            kind="landing_pad": intersect the box-centre ray with the roof plane.
+            kind="car": intersect the box-centre ray with the car's mid-height plane, then,
+                if bw/bh are given, refine by fitting a car-sized 3D box so that its
+                projected bounding box matches the YOLO box. This stays valid for oblique
+                views (foreshortening, visible roof + sides), unlike a size-based depth.
+                The car's yaw relative to the camera heading is fitted too, with a weak
+                prior towards "aligned". The box size also reveals if the roof is higher or
+                lower than self._landing_pad_z (car on a slope, altitude drift); that offset
+                is low-passed back into self._landing_pad_z, which the pad estimate uses too.
+                Only car detections correct the roof height; the pad has no known size.
 
         :return: np.ndarray [x, y, z] in the local-level frame, or None if the camera isn't
                 looking toward the ground
         """
 
-        ray_cam = self._camera_matrix_inv @ np.array([cx, cy, 1.0])  # ray_cam[2] == 1
+        R = T_local_cam[:3, :3]
+        cam = T_local_cam[:3, 3]  # camera position relative to the drone
 
-        R_local_cam = T_local_cam[:3, :3]
-        camera_offset_level = T_local_cam[:3, 3]
-
-        ray_level = R_local_cam @ (ray_cam / np.linalg.norm(ray_cam))
-        camera_z = altitude + camera_offset_level[2]
-
-        if ray_level[2] >= -self._ground_ray_z_epsilon:
+        ray = R @ self._camera_matrix_inv @ np.array([cx, cy, 1.0])
+        ray /= np.linalg.norm(ray)
+        if ray[2] >= -self._ground_ray_z_epsilon:
             return None
 
-        t = (self._ground_z - camera_z) / ray_level[2]
+        # Plane to intersect: the roof for the pad, the car's mid-height for the car
+        plane_z = self._landing_pad_z - ((self._car_roof_above_body + 0.5 * self._car_size_3d[2]) if kind == "car" else 0.0)
+        t = (plane_z - (altitude + cam[2])) / ray[2]
         if t <= 0:
             return None
+        pos = cam + t * ray
+        if kind != "car":
+            return pos
 
-        flat = camera_offset_level + t * ray_level
+        roof_offset = 0.5 * self._car_size_3d[2] + self._car_roof_above_body
+        if bw is None or bh is None:
+            return pos + np.array([0.0, 0.0, roof_offset])
 
-        if kind != "car" or bw is None or bh is None:
-            return flat
+        # Car footprint axes, assuming the car is yaw-aligned with the camera heading:
+        # width along the image x-axis, length along the perpendicular horizontal axis.
+        u_w = np.array([R[0, 0], R[1, 0], 0.0])
+        if np.linalg.norm(u_w) < 0.2:  # camera x-axis ~vertical: heading undefined
+            return pos + np.array([0.0, 0.0, roof_offset])
+        u_w /= np.linalg.norm(u_w)
+        u_l = np.array([-u_w[1], u_w[0], 0.0])
 
-        # Aspect ratio check: off-angle -> box is wrong shape -> don't trust bbox depth
-        expected = self._car_size[0] / self._car_size[1]
-        if abs(np.log((bw / bh) / expected)) > np.log1p(self._car_aspect_tol):
-            return flat
+        # 8 box corners in the car frame (width, length, height) and the YOLO box edges
+        corners = np.array([[a, b, c] for a in (-.5, .5) for b in (-.5, .5) for c in (-.5, .5)])
+        corners = corners * self._car_size_3d
+        box = np.array([cx - bw / 2, cx + bw / 2, cy - bh / 2, cy + bh / 2])
 
-        # Depth from box size (optical depth, since ray_cam[2] == 1)
-        fx = 1.0 / self._camera_matrix_inv[0, 0]
-        fy = 1.0 / self._camera_matrix_inv[1, 1]
-        Z_width = fx * self._car_size[0] / bw
-        Z_length = fy * self._car_size[1] / bh
-        Z = 0.4 * Z_width + 0.6 * Z_length - 0.5 # Add fixed offset (empirical)
+        k_dz = 3.0  # height prior (px per metre): weak in pass 1, ~pinned in pass 2
 
-        current_height = 1.5 - altitude
+        def residual(p):  # p = [x, y, yaw offset, height offset] -> projected-box edges minus YOLO box edges
+            c, s = np.cos(p[2]), np.sin(p[2])
+            axes = np.array([c * u_w + s * u_l, c * u_l - s * u_w, [0.0, 0.0, 1.0]])
+            pts = (np.array([p[0], p[1], pos[2] + p[3]]) + corners @ axes - cam) @ R  # camera frame
+            uv = pts @ self._camera_matrix.T
+            uv = uv[:, :2] / np.maximum(uv[:, 2:], 0.1)
+            return np.array([
+                uv[:, 0].min() - box[0], uv[:, 0].max() - box[1],
+                uv[:, 1].min() - box[2], uv[:, 1].max() - box[3],
+                np.degrees(p[2]) / 5.0,  # weak yaw prior: costs 1 px per 5 deg
+                k_dz * p[3],
+            ])
+
+        def fit():
+            # Fit from a few yaw guesses (one start gets stuck at "aligned"). The sign of the
+            # yaw is not observable from a box, so blend the fits by likelihood (~2 px edge
+            # noise) instead of picking one at random: ambiguous -> midpoint, clear -> best.
+            fits = [least_squares(residual, [pos[0], pos[1], yaw0, 0.0], method="lm", max_nfev=25, ftol=1e-3, xtol=1e-3)
+                    for yaw0 in (-0.3, 0.3)]
+            cost = np.array([f.cost for f in fits])
+            w = np.exp(-(cost - cost.min()) / 4.0)
+            rms = np.sqrt(np.mean(fits[cost.argmin()].fun[:4] ** 2))
+            return w @ np.array([f.x for f in fits]) / w.sum(), rms
+
+        # Pass 1: let the height float to learn where the roof really is (slope, altitude
+        # drift) and low-pass that into self._landing_pad_z.
+        (x, y, _, dz), rms = fit()
+        if rms > max(self._car_fit_max_rel_rms * 0.5 * (bw + bh), 3.0):
+            return pos + np.array([0.0, 0.0, roof_offset])  # box doesn't fit the car model (bad yaw / bad detection)
+        self._landing_pad_z += self._roof_height_gain * dz
+        pos = np.array([x, y, pos[2] + self._roof_height_gain * dz])
+
         self.get_logger().info(
-            f"Z={Z:.2f} | Z_width={Z_width:.2f} | "
-            f"Z_length={Z_length:.2f} | height={current_height:.2f}"
-        )
+            f"car fit: rms={rms:.1f}px (limit {self._car_fit_max_rel_rms * 0.5 * (bw + bh):.1f}) "
+            f"bw={bw:.0f} bh={bh:.0f} roof={self._landing_pad_z:.2f} alt={altitude:.2f}",
+            throttle_duration_sec=1.0)
 
-        pos = camera_offset_level + R_local_cam @ (Z * ray_cam)
-        if pos[2] >= 0:  # car "above" the drone, so the bbox depth is nonsense
-            return flat
+        # Pass 2: fit x, y with that height ~fixed (a free height adds noise to x, y in
+        # oblique views, because height and range are coupled).
+        k_dz = 100.0
+        (x, y, _, _), _ = fit()
+        return np.array([x, y, self._landing_pad_z - altitude])
 
-        self._ground_z = altitude + pos[2]
-        return pos
 
     @staticmethod
     def _compose_base_to_landing_pad_yolo(stamp, translation) -> TransformStamped:

@@ -1,7 +1,7 @@
-description: Ultralytics YOLO11n model trained on projects/ugv/dataset/data.yaml
+description: Ultralytics YOLO11n model trained on dataset1_IRL/data.yaml
 author: Ultralytics
-date: '2026-07-29T22:15:15.805989'
-version: 8.4.14
+date: '2026-10-10T16:43:08.880127'
+version: 8.3.240
 license: AGPL-3.0 License (https://ultralytics.com/license)
 docs: https://docs.ultralytics.com
 stride: 32
@@ -11,7 +11,7 @@ imgsz:
 - 384
 - 640
 names:
-  0: ugv
+  0: Car
 args:
   batch: 1
   fraction: 1.0
@@ -20,4 +20,3 @@ args:
   dynamic: false
   nms: false
 channels: 3
-end2end: false

@@ -1,27 +1,28 @@
 from ultralytics import YOLO
 
-model = YOLO('ugv_yolo11n_V0.pt')  # your existing UGV checkpoint
+model = YOLO('yolo11n.pt')
 
 results = model.train(
-    data="dataset2/data.yaml",
-    epochs=200,
+    data="dataset1_IRL/data.yaml",
+    epochs=150,
     imgsz=640,
-    batch=8,
+    batch=16,
+    cache=True,
+    seed=0,
 
+    optimizer='AdamW',
     lr0=0.001,
     lrf=0.01,
+    patience=50,
 
-    patience=100,
+    freeze=None,        # try freeze=10 as a second run and compare
 
-    freeze=None,
-
-    degrees=50,
-    translate=0.1,
-    scale=0.4,
+    degrees=0,          # was 50
+    translate=0.2,
+    scale=0.5,
     fliplr=0.5,
-
     mosaic=0.5,
+    close_mosaic=10,
 
     plots=True,
-    save=True,
 )

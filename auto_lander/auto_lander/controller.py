@@ -114,9 +114,9 @@ class Orchestrator(Node):
         self.LANDING_LEAD_TIME_MAX = self.get_parameter("landing_lead_time_max").get_parameter_value().double_value
         self.declare_parameter("landing_cut_height_max", 1.0)
         self.LANDING_CUT_HEIGHT_MAX = self.get_parameter("landing_cut_height_max").get_parameter_value().double_value
-        self.declare_parameter("landing_cut_margin", 0.05)
+        self.declare_parameter("landing_cut_margin", 0.00)
         self.LANDING_CUT_MARGIN = self.get_parameter("landing_cut_margin").get_parameter_value().double_value
-        self.declare_parameter("landing_pad_size", [1.85, 1.5])
+        self.declare_parameter("landing_pad_size", [1.80, 1.45])
         self.LANDING_PAD_SIZE = self.get_parameter("landing_pad_size").get_parameter_value().double_array_value
         self.declare_parameter("landing_gear_size", [0.3, 0.3])
         self.LANDING_GEAR_SIZE = self.get_parameter("landing_gear_size").get_parameter_value().double_array_value
@@ -253,7 +253,7 @@ class Orchestrator(Node):
         self.PID_D_HOLD_RADIUS = self.get_parameter("PID_d_hold_radius").get_parameter_value().double_value
         self.declare_parameter('PID_marker_yaw_sigma_threshold', 0.15)
         self.PID_MARKER_YAW_SIGMA_THRESHOLD = self.get_parameter("PID_marker_yaw_sigma_threshold").get_parameter_value().double_value
-        self.declare_parameter('PID_marker_yaw_error_threshold', 0.2)
+        self.declare_parameter('PID_marker_yaw_error_threshold', 0.3)
         self.PID_MARKER_YAW_ERROR_THRESHOLD = self.get_parameter("PID_marker_yaw_error_threshold").get_parameter_value().double_value
 
         self.declare_parameter('PID_drop_off_strength', 0.5)
@@ -775,8 +775,8 @@ class Orchestrator(Node):
         scale_t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
         yolo_lp_scale = 1.0 + (scale_max - 1.0) * scale_t ** gamma
 
-        d_far = self.LANDING_HEIGHT_ABOVE_GND + 5.0
-        scale_max = 2.0
+        d_far = self.LANDING_HEIGHT_ABOVE_GND + 2.0
+        scale_max = 10.0
         scale_t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
         yolo_car_scale = 1.0 + (scale_max - 1.0) * scale_t ** gamma
 
@@ -797,7 +797,7 @@ class Orchestrator(Node):
         ):
             car_z_var = 0.25
         else:
-            car_z_var = 1e9
+            car_z_var = 5.0
 
         R_yolo_car = np.diag([
             0.500 * yolo_car_scale,
@@ -870,12 +870,21 @@ class Orchestrator(Node):
 
         self._lead_time = min(fall_t, self.LANDING_LEAD_TIME_MAX)
         t = self._lead_time
+
+        # Also compensate for the drag on the drone
+        quad_vel_eff = np.array(self.quad_vel, dtype=float)
+        k = self.PID_DRAG_COEFFICIENT * np.hypot(quad_vel_eff[QUAD_State.X], quad_vel_eff[QUAD_State.Y]) * t
+        if k < 1e-6:
+            scale = 1.0
+        else:
+            scale =  np.log1p(k) / k
+
+        quad_vel_eff[QUAD_State.X] *= scale
+        quad_vel_eff[QUAD_State.Y] *= scale
+
         self._UKF_est_time = now_sec   # instant the estimate is valid at
         self._UKF_fwd_horizon = t
-        self._UKF_forward_predict_x = self._UKF_filter.forward_predict(
-            self.quad_vel,
-            t,
-        )
+        self._UKF_forward_predict_x = self._UKF_filter.forward_predict(quad_vel_eff, t)
 
         self.landing_pad_relative_position_forward_predict = np.array(
             [self._UKF_forward_predict_x[LP_State.PX],
@@ -1076,7 +1085,7 @@ class Orchestrator(Node):
         # ---- State 4000 (Begin Landing Descent)
         if self.controller_state == 4000:
             now = self.get_clock().now().nanoseconds / 1e9
-            self.target_alt = self.LANDING_HEIGHT_THRESHOLD  # land
+            self.target_alt = 0.0 # self.LANDING_HEIGHT_THRESHOLD  # land
 
             # Check we still have the target in view, reset timer if so
             if self._landing_pad_found:
@@ -1162,7 +1171,7 @@ class Orchestrator(Node):
 
         # Only pass through marker yaw if uncertainty on yaw is low enough
         if self._UKF_diag["sigma_yaw"] <= self.PID_MARKER_YAW_SIGMA_THRESHOLD:
-            marker_yaw = self.landing_pad_yaw_forward_predict
+            marker_yaw = self.landing_pad_yaw
         else:
             marker_yaw = None
 
@@ -1191,7 +1200,7 @@ class Orchestrator(Node):
             )
             self.att_pub.publish(msg)
         elif self.controller_state == 4000:
-            self.alt_pos_control = True
+            self.alt_pos_control = False
             self.target_alt_rate = self.DESCENT_RATE_FAR_SP
             if -self.landing_pad_relative_position[LP_State.PZ] <= 2.0:
                 self.target_alt_rate = self.DESCENT_RATE_CLOSE_SP
@@ -1323,7 +1332,7 @@ class Orchestrator(Node):
             f"long: err={e_long:.2f} max={max_long:.2f} (drift {drift_long:.2f}) | "
             f"lat: err={e_lat:.2f} max={max_lat:.2f} (drift {drift_lat:.2f}) | "
             f"fwd=({ex:.2f}, {ey:.2f}) now=({cx:.2f}, {cy:.2f})",
-            throttle_duration_sec=0.5,
+            throttle_duration_sec=0.1,
         )
         return in_termination
         

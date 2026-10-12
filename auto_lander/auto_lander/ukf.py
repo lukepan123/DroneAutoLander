@@ -96,6 +96,9 @@ class UKF:
 
         # Process noise
         self.Q = np.diag(Q_diag_init)
+        self._q_pos_long  = 1e-4   # along-track noise density (m²/s) - small, v/a handle this
+        self._q_pos_lat   = 1e-7   # cross-track noise density - make this very small
+        self._q_pos_floor = 1e-6   # isotropic floor for quad_vel error (σ_quad² · dt)
 
         # Timestamp of the last predict/update cycle, initialised to None
         self._last_update_time: float | None = None
@@ -158,6 +161,8 @@ class UKF:
         # Cholesky of covariance
         S = self.gamma * S
 
+        yaw0 = self.x[LP_State.YAW]          # at the top, before sigma points
+
         # Generate sigma points
         self.X[0] = self.x
         for i in range(n):
@@ -178,7 +183,8 @@ class UKF:
         dX = self.X_prop - self.x
         dX[:, LP_State.YAW] = self._wrap(dX[:, LP_State.YAW])  # wrap yaw deviations
 
-        self.P = (dX.T * self.Wc) @ dX + self.Q * dt # scale Q by dt (time-invariant)
+        #self.P = (dX.T * self.Wc) @ dX + self.Q * dt # scale Q by dt (time-invariant)
+        self.P = (dX.T * self.Wc) @ dX + self._process_noise(dt, yaw0)
         self.P = 0.5 * (self.P + self.P.T)
 
         # Re-seed X_prop with sigma points from the UPDATED predicted covariance
@@ -725,6 +731,19 @@ class UKF:
             )
 
         return True
+
+
+    def _process_noise(self, dt: float, yaw: float) -> np.ndarray:
+        Q = self.Q * dt
+        idx = [LP_State.PX, LP_State.PY]
+
+        c, s = np.cos(yaw), np.sin(yaw)
+        Rm = np.array([[c, -s], [s, c]])
+        Q_pos = Rm @ np.diag([self._q_pos_long * dt, self._q_pos_lat * dt]) @ Rm.T
+        Q_pos += np.eye(2) * self._q_pos_floor * dt
+
+        Q[np.ix_(idx, idx)] = Q_pos      # overwrite the isotropic block
+        return Q
 
 
     def get_covar_diagnostics(self) -> dict:

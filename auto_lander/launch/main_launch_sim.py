@@ -140,17 +140,17 @@ def generate_launch_description():
             # ----- Processing -----
             {"yolo_processing_rate": 10.0},
             {"img_width": 640},
-            {"img_height": 384},
+            {"img_height": 360},
 
             # ----- YOLO -----
             {"yolo_enabled": True},
-            {"yolo_model_path": "ugv_sim_yolo11n_openvino_model"},
-            {"yolo_conf_threshold": 0.60},
+            {"yolo_model_path": "ugv_yolo11n_openvino_model"},
+            {"yolo_conf_threshold": 0.50},
             {"yolo_landing_pad_class_id": 11},
             {"yolo_car_class_id": 0},
 
             # ----- Ground-plane projection -----
-            {"yolo_ground_z": 1.5},
+            {"yolo_car_roof_AGL": 2.0},
             {"yolo_ground_ray_z_epsilon": 0.05},
 
             # ----- Camera -----
@@ -204,18 +204,17 @@ def generate_launch_description():
             {"ground_truth_available": True},
             {"use_sim_time": True},
             {"max_runtime": 200.0},
-            {"boundary_limit": 600.0},
+            {"boundary_limit": 800.0},
 
             # ----- Landing state / altitude parameters -----
-            {"landing_recovery_height": 4.0},
+            {"landing_recovery_height": 7.0},
             {"landing_height_above_gnd": 1.5},
             {"landing_height_threshold": 0.2},
-            {"landing_error_threshold": 0.10},
             {"landing_centered_error_threshold": 3.0},
 
-            {"landing_chase_altitude": 6.0},
-            {"landing_descent_rate_far": -0.50},
-            {"landing_descent_rate_close": -0.35},
+            {"landing_chase_altitude": 7.0},
+            {"landing_descent_rate_far": -1.0},
+            {"landing_descent_rate_close": -1.0},
             {"landing_time_visual_min_time (s)": 0.6},
             {"landing_pad_locked_time (s)": 20.0},
             {"landing_pad_lost_time (s)": 4.0},
@@ -235,7 +234,7 @@ def generate_launch_description():
             {"UKF_alpha": 1.0},
             {"UKF_beta": 2.0},
             {"UKF_kappa": 0.0},
-            {"UKF_mahalanobis_threshold": 50.0},
+            {"UKF_mahalanobis_threshold": 15.0},
 
             {"UKF_initial_P_diag": [
                 1.00,
@@ -248,13 +247,13 @@ def generate_launch_description():
             ]},
 
             {"UKF_initial_Q_diag": [
-                0.005,
-                0.005,
-                0.075,
+                0.001,
+                0.001,
+                0.100,
                 0.050,
                 0.100,
-                0.005,
-                0.025,
+                0.001,
+                0.010,
             ]},
 
             {"UKF_unhealthy_covar": 500.0},
@@ -264,9 +263,9 @@ def generate_launch_description():
             {"CTRL_freq": 20.0},
 
             # ----- PID controller parameters -----
-            {"PID_lam_0": 2.0},
-            {"PID_Kp_0": 7.0},
-            {"PID_Kd_0": 3.25},
+            {"PID_lam_0": 6.0},
+            {"PID_Kp_0": 8.0},
+            {"PID_Kd_0": 4.0},
 
             # Altitude: outer height loop only, FCU runs vel/accel/throttle
             {"PID_Kp_pos_z": 2.0},
@@ -274,15 +273,15 @@ def generate_launch_description():
             {"PID_vz_dn_max": 2.0},           # = WPNAV_SPEED_DN
             {"PID_max_tilt": 0.5},            # rad, <= ANGLE_MAX
 
-            {"PID_mass": 1.98},
+            {"PID_mass": 1.48},
             {"PID_gravity": 9.81},
-            {"PID_drag_coefficient": 0.002},
+            {"PID_drag_coefficient": 0.035},
 
             {"PID_max_angle_rate": 1.0},
 
-            {"PID_d_blend_start": 4.0},
-            {"PID_d_blend_end": 1.0},
-            {"PID_d_hold_radius": 4.0},
+            {"PID_d_blend_start": 6.0},
+            {"PID_d_blend_end": 3.0},
+            {"PID_d_hold_radius": 6.0},
             {"PID_marker_yaw_sigma_threshold": 0.6},
 
             {"PID_drop_off_strength": 0.5},
