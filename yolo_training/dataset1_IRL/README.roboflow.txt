@@ -2,7 +2,7 @@
 Landing Pad Detection v2 (IRL + Sim) - vdataset landing-pad-detection-v2-irl-sim
 ==============================
 
-This dataset was exported via roboflow.com on October 10, 2026 at 5:31 AM GMT
+This dataset was exported via roboflow.com on October 13, 2026 at 10:44 AM GMT
 
 Roboflow is an end-to-end computer vision platform that helps you
 * collaborate with your team on computer vision projects
@@ -17,7 +17,7 @@ visit https://github.com/roboflow/notebooks
 
 To find over 100k other datasets and pre-trained models, visit https://universe.roboflow.com
 
-The dataset includes 267 images.
+The dataset includes 366 images.
 Landing-Pad-Detection-v2-IR-J8ci are annotated in YOLOv11 format.
 
 No pre-processing or augmentation was applied.

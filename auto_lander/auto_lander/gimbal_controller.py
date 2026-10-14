@@ -1,24 +1,15 @@
 import sys
 import signal
 import numpy as np
-import tf2_ros
 import rclpy
 import tf_transformations
 
 from rclpy.node import Node
-from rclpy.qos import QoSProfile
-from rclpy.qos import ReliabilityPolicy
-from rclpy.qos import HistoryPolicy
-from rclpy.qos import DurabilityPolicy
-from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Vector3Stamped
-from geometry_msgs.msg import TransformStamped
 from mavros_msgs.msg import GimbalManagerSetPitchyaw
 from mavros_msgs.msg import GimbalDeviceAttitudeStatus
 
-from .vision_common import CameraMount
 from .vision_common import LatestValueBuffer
-from .vision_common import camera_pose_in_level_frame
 from .vision_common import image_target_to_angle_error
 from .vision_common import stamp_to_sec
 
@@ -32,12 +23,9 @@ from .vision_common import stamp_to_sec
     as a fallback when AprilTag is unavailable or its target has gone stale. If both
     are stale, the gimbal simply holds its last commanded angle.
 
-    This node also broadcasts the camera pose as a TF transform:
-        local -> gimbal_camera_optical_frame
-
-    The translation is the fixed camera offset relative to the vehicle and the
-    rotation uses the vehicle attitude plus the measured gimbal pitch. AprilTag and
-    YOLO use this TF to construct their own landing-pad measurement transforms.
+    The measured gimbal pitch is republished on /landing_pad/gimbal_angle, stamped at
+    measurement time. The perception nodes interpolate it to each image stamp and build
+    the camera pose themselves (vision_common.camera_pose_in_level_frame).
 """
 
 
@@ -123,47 +111,7 @@ class GimbalControllerNode(Node):
         self._gimbal_prev_error = 0.0
         self._gimbal_last_cmd_time = None
         self._gimbal_last_source = None
-
-        # ---- CAMERA PARAMETERS ----
-        self.declare_parameter("camera_offset_x", 0.02)
-        self.declare_parameter("camera_offset_y", -0.01)
-        self.declare_parameter("camera_offset_z", -0.124923)
-        self.declare_parameter("camera_mount_roll", -1.5707963)
-        self.declare_parameter("camera_mount_pitch", 0.0)
-        self.declare_parameter("camera_mount_yaw", -1.5707963)
-
-        self._camera_mount = CameraMount(
-            offset_x=(
-                self.get_parameter("camera_offset_x")
-                .get_parameter_value()
-                .double_value
-            ),
-            offset_y=(
-                self.get_parameter("camera_offset_y")
-                .get_parameter_value()
-                .double_value
-            ),
-            offset_z=(
-                self.get_parameter("camera_offset_z")
-                .get_parameter_value()
-                .double_value
-            ),
-            roll_offset=(
-                self.get_parameter("camera_mount_roll")
-                .get_parameter_value()
-                .double_value
-            ),
-            pitch_offset=(
-                self.get_parameter("camera_mount_pitch")
-                .get_parameter_value()
-                .double_value
-            ),
-            yaw_offset=(
-                self.get_parameter("camera_mount_yaw")
-                .get_parameter_value()
-                .double_value
-            ),
-        )
+        self._gimbal_status_received = False
 
         self.get_logger().info(
             f"Gimbal controller rate: {self._gimbal_control_rate} Hz"
@@ -174,18 +122,6 @@ class GimbalControllerNode(Node):
         )
 
         # ---- SUBSCRIPTIONS ----
-        _odom_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
-        self._quad_odometry_sub = self.create_subscription(
-            Odometry,
-            "/mavros/global_position/local",
-            self._quad_odometry_callback,
-            _odom_qos,
-        )
         self._gimbal_attitude_sub = self.create_subscription(
             GimbalDeviceAttitudeStatus,
             "/mavros/gimbal_control/device/attitude_status",
@@ -207,7 +143,6 @@ class GimbalControllerNode(Node):
 
         self._apriltag_target_buffer = LatestValueBuffer()
         self._yolo_target_buffer = LatestValueBuffer()
-        self._quad_rotation = None
 
         # ---- PUBLISHERS ----
         self._gimbal_angle_publisher = self.create_publisher(
@@ -219,39 +154,27 @@ class GimbalControllerNode(Node):
             10,
         )
 
-        # ---- TF2 ----
-        self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
-
         # ---- PROCESSING TIMER ----
         self._gimbal_timer = self.create_timer(
             1.0 / self._gimbal_control_rate, self._gimbal_timer_callback
         )
 
     # ---- RECEPTION CALLBACKS ----
-    def _quad_odometry_callback(self, msg: Odometry) -> None:
-        """ Obtain the latest FCU attitude for the camera TF.
-
-        :param msg: Incoming Odometry message
-        """
-        self._quad_rotation = [
-            msg.pose.pose.orientation.x,
-            msg.pose.pose.orientation.y,
-            msg.pose.pose.orientation.z,
-            msg.pose.pose.orientation.w,
-        ]
-
     def _gimbal_attitude_callback(self, msg: GimbalDeviceAttitudeStatus) -> None:
-        """Store the actual measured gimbal pitch from the attitude quaternion."""
-
-        q = [msg.q.x, msg.q.y, msg.q.z, msg.q.w,]
+        """ Store the measured gimbal pitch and publish it stamped at measurement time,
+            so the perception nodes interpolate the angle the camera actually had when
+            each image was taken.
+        """
+        q = [msg.q.x, msg.q.y, msg.q.z, msg.q.w]
         _, pitch, _ = tf_transformations.euler_from_quaternion(q)
-
         self._gimbal_actual_pitch = float(np.degrees(pitch))
+        self._gimbal_status_received = True
 
-        # self.get_logger().info(
-        #     f"Gimbal actual pitch: {self._gimbal_actual_pitch:.2f} deg",
-        #     throttle_duration_sec=1.0,
-        # )
+        # Fall back to receive time if MAVROS left the header unstamped
+        stamp = msg.header.stamp
+        if stamp_to_sec(stamp) <= 0.0:
+            stamp = self.get_clock().now().to_msg()
+        self._publish_gimbal_angle(stamp)
 
     def _apriltag_target_callback(self, msg: Vector3Stamped) -> None:
         """ Buffer an AprilTag image target for the independent gimbal controller.
@@ -288,7 +211,7 @@ class GimbalControllerNode(Node):
         return None, None
 
     def _gimbal_timer_callback(self) -> None:
-        """ Run the independent gimbal controller and broadcast the camera TF. """
+        """ Run the independent gimbal controller. """
 
         target, source = self._get_target()
         if target is not None:
@@ -299,8 +222,11 @@ class GimbalControllerNode(Node):
             self._drive_gimbal(angle_error, source) # type: ignore
 
         self._gimbal_manager_control(self._servo_angle)
-        self._publish_camera_tf()
-        self._publish_gimbal_angle()
+
+        # Startup only: publish the initial angle until the first real status arrives,
+        # so the perception nodes don't sit waiting for a gimbal angle
+        if not self._gimbal_status_received:
+            self._publish_gimbal_angle(self.get_clock().now().to_msg())
 
     def _drive_gimbal(self, angle_error: float, source: str) -> None:
         """ Feed an angle error into the gimbal PD controller (_gimbal_controller),
@@ -359,40 +285,13 @@ class GimbalControllerNode(Node):
         msg.yaw_rate = float("nan")
         self._gimbal_manager_publisher.publish(msg)
 
-    def _publish_gimbal_angle(self) -> None:
-        """ Publish the actual gimbal angle every controller tick. """
+    def _publish_gimbal_angle(self, stamp) -> None:
+        """ Publish the measured gimbal angle with the given stamp. """
         gimbal_msg = Vector3Stamped()
-        gimbal_msg.header.stamp = self.get_clock().now().to_msg()
+        gimbal_msg.header.stamp = stamp
         gimbal_msg.header.frame_id = "gimbal_angle"
         gimbal_msg.vector.x = float(self._gimbal_actual_pitch)
         self._gimbal_angle_publisher.publish(gimbal_msg)
-
-    def _publish_camera_tf(self) -> None:
-        """ Broadcast local -> gimbal_camera_optical_frame using actual gimbal pitch. """
-        if self._quad_rotation is None:
-            return
-
-        T_local_cam = camera_pose_in_level_frame(
-            self._quad_rotation,
-            self._gimbal_actual_pitch,
-            self._camera_mount,
-        )
-        t_out = T_local_cam[:3, 3]
-        q_out = tf_transformations.quaternion_from_matrix(T_local_cam)
-
-        tf_msg = TransformStamped()
-        tf_msg.header.stamp = self.get_clock().now().to_msg()
-        tf_msg.header.frame_id = "local"
-        tf_msg.child_frame_id = "gimbal_camera_optical_frame"
-        tf_msg.transform.translation.x = float(t_out[0])
-        tf_msg.transform.translation.y = float(t_out[1])
-        tf_msg.transform.translation.z = float(t_out[2])
-        tf_msg.transform.rotation.x = float(q_out[0])
-        tf_msg.transform.rotation.y = float(q_out[1])
-        tf_msg.transform.rotation.z = float(q_out[2])
-        tf_msg.transform.rotation.w = float(q_out[3])
-
-        self._tf_broadcaster.sendTransform(tf_msg)
 
 
 # ---- MAIN ----

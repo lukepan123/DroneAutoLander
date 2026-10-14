@@ -3,27 +3,43 @@ plot_errors.py  –  Landing pad position error analysis
 ======================================================
 Place this script in the same folder as your CSV file and run:
 
-    python plot_errors.py
-
-Or point it at a specific CSV:
-
+    python plot_errors.py                      # newest controller_*.csv here
     python plot_errors.py path/to/controller_data.csv
 
-Outputs (saved next to the script):
-    error_vs_time.png   –  X error, Y error, absolute error vs time (with
-                           total_lag on a secondary axis), and per-state
-                           UKF 1-sigma covariance
-    trajectory_2d.png   –  2-D XY path: true / filter / raw measurements
+Outputs (saved to ./plots next to the script):
+    error_vs_time.png        –  longitudinal / lateral error (car frame), height (Z)
+                                error, absolute horizontal error (with pipeline
+                                latency on a secondary axis), yaw error and per-state
+                                UKF 1-sigma. Controller-state transitions are marked
+                                on every panel; spans where the UKF is using the YOLO
+                                pixel-space box update are shaded.
+    trajectory_2d.png        –  2-D XY path: true / filter / raw measurements
+    consistency_analysis.png –  NIS / NEES vs time and distributions
+    pipeline_latency.png     –  latency per pipeline stage
+
+Car frame convention (same as the body-frame offset below):
+    +longitudinal = along the car's heading (estimate ahead of truth)
+    +lateral      = to the car's left       (estimate left of truth)
+All errors are  estimate - truth.
+
+Raw measurements are compared against the truth at their own image timestamp, not
+the (later) controller row they were logged on, so pipeline latency doesn't show up
+as a fake along-track error.
+
+YOLO raw positions only exist while the UKF is in fallback (box-fit) mode; in box
+mode the raw measurement is pixel edges, so no YOLO raw points are plotted there.
 
 Dependencies:
     pip install pandas numpy matplotlib scipy
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from scipy.interpolate import interp1d
 from scipy.stats import chi2
 
@@ -31,18 +47,33 @@ from scipy.stats import chi2
 # ── Config ─────────────────────────────────────────────────────────────────
 
 # Body-frame offset applied to the true XY position
-TRUE_OFFSET_X_BODY = 0.0   # m, +X body direction
+TRUE_OFFSET_X_BODY = 0.0     # m, +X body direction
 TRUE_OFFSET_Y_BODY = -0.40   # m, +Y body direction
+TRUE_OFFSET_Z_BODY = 1.50    # m, +Z body direction
 
-OUTLIER_SPEED_THRESH = 10.0   # m/s
+OUTLIER_SPEED_THRESH = 5.0   # m/s
 
-RAW_C        = "#e03939"   # orange  – AprilTag raw measurement
-YOLO_LP_C    = '#d95f02'   # orange  – YOLO landing-pad raw measurement
-YOLO_CAR_C   = '#7570b3'   # purple  – YOLO car raw measurement
+# Set to None to disable either limit (seconds since start of log)
+T_START = 35
+T_END   = 45
+
+DPI = 500
+
+RAW_C        = '#e03939'   # red     – AprilTag raw measurement
+YOLO_LP_C    = '#d95f02'   # orange  – YOLO landing-pad raw (legacy logs only)
+YOLO_CAR_C   = '#7570b3'   # purple  – YOLO car fitted position
 FILT_C       = '#3a86d4'   # blue    – filter estimate
 TRUE_C       = '#2ca02c'   # green   – true position
-LAG_C        = '#9b59b6'   # purple  – total_lag overlay
+BOX_MODE_C   = '#7570b3'   # shading – UKF using the YOLO pixel-space box update
 ALPHA        = 0.85
+
+# Raw measurement streams: key, legend label, colour, CSV column prefix.
+# Streams whose columns aren't in the CSV are skipped (YOLO LP = old logs only).
+STREAMS = [
+    ('april',    'AprilTag raw', RAW_C,      'landing_pad_april'),
+    ('yolo_lp',  'YOLO LP raw',  YOLO_LP_C,  'landing_pad_yolo_LP'),
+    ('yolo_car', 'YOLO car fit', YOLO_CAR_C, 'landing_pad_yolo_car'),
+]
 
 LAG_COLOURS = {
     # AprilTag pipeline
@@ -81,6 +112,18 @@ SIGMA_LABELS = {
     'sigma_yaw_rate': 'σ ω (rad/s)',
 }
 
+# Controller state groups (state_code // 1000)
+STATE_LABELS = {
+    0: "Pre-arm",
+    1: "Take-off",
+    2: "Searching for landing pad",
+    3: "Maintaining pad lock",
+    4: "Beginning landing descent",
+    5: "Landing aborted",
+    6: "Landing confirmed",
+    7: "RTL",
+}
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 def clean_true_position(x, y, t, thresh=OUTLIER_SPEED_THRESH, passes=3):
     """
@@ -96,12 +139,9 @@ def clean_true_position(x, y, t, thresh=OUTLIER_SPEED_THRESH, passes=3):
     bad_global = np.zeros(len(x), dtype=bool)
 
     for _ in range(passes):
-        dx = np.diff(x);  dy = np.diff(y);  dt = np.diff(t)
-        speed = np.sqrt((dx / dt) ** 2 + (dy / dt) ** 2)
+        speed = np.hypot(np.diff(x), np.diff(y)) / np.diff(t)
         bad = np.zeros(len(x), dtype=bool)
-        for i in range(1, len(x) - 1):
-            if speed[i - 1] > thresh and speed[i] > thresh:
-                bad[i] = True
+        bad[1:-1] = (speed[:-1] > thresh) & (speed[1:] > thresh)
         bad_global |= bad
 
         idx  = np.arange(len(x))
@@ -120,240 +160,205 @@ def clean_true_yaw(yaw, t, thresh=np.deg2rad(30), passes=3):
     the row both exceed the threshold. The angle is then replaced by
     interpolation on the unwrapped yaw trajectory.
     """
-
     yaw = np.unwrap(yaw.copy().astype(float))
     bad_global = np.zeros(len(yaw), dtype=bool)
 
     for _ in range(passes):
-
-        dyaw = np.diff(yaw)
-        dt = np.diff(t)
-
-        yaw_rate = np.abs(dyaw / dt)
-
+        yaw_rate = np.abs(np.diff(yaw) / np.diff(t))
         bad = np.zeros(len(yaw), dtype=bool)
-
-        for i in range(1, len(yaw)-1):
-            if yaw_rate[i-1] > thresh and yaw_rate[i] > thresh:
-                bad[i] = True
-
+        bad[1:-1] = (yaw_rate[:-1] > thresh) & (yaw_rate[1:] > thresh)
         bad_global |= bad
 
         idx = np.arange(len(yaw))
         good = ~bad_global
+        yaw = np.interp(idx, idx[good], yaw[good])
 
-        yaw = np.interp(
-            idx,
-            idx[good],
-            yaw[good]
-        )
+    return wrap_angle(yaw), bad_global
 
-    # Wrap back to [-pi, pi]
-    yaw = (yaw + np.pi) % (2*np.pi) - np.pi
 
-    return yaw, bad_global
+def wrap_angle(angle):
+    return (angle + np.pi) % (2 * np.pi) - np.pi
+
+
+def new_measurement_mask(stamp):
+    """ The CSV is logged at the controller rate, so a raw measurement is repeated
+        across rows until the next one arrives. True only where the stamp changes.
+    """
+    stamp = np.asarray(stamp)
+    is_new = np.ones(len(stamp), dtype=bool)
+    is_new[1:] = stamp[1:] != stamp[:-1]
+    return (stamp > 0) & is_new
+
+
+def add_state_transitions(ax, df, time_col='timestamp', label=True):
+    """
+    Mark controller-state changes with dotted vertical lines.
+
+    If `label` is True the state name/code is also written next to each line
+    (only do this on one panel of a stacked figure to avoid clutter).
+    """
+    state_col = 'controller_state'
+    if state_col not in df.columns:
+        return
+
+    states = pd.to_numeric(df[state_col], errors='coerce')
+    changed = states.notna() & states.ne(states.shift())
+
+    for row_idx in np.flatnonzero(changed.to_numpy()):
+        state_code = int(states.iloc[row_idx])
+        state_name = STATE_LABELS.get(state_code // 1000, 'Controller state')
+        transition_t = float(df[time_col].iloc[row_idx])
+
+        ax.axvline(transition_t, color='#555555', linewidth=0.9,
+                   linestyle=':', alpha=0.65, zorder=0)
+        if label:
+            ax.annotate(
+                f'{state_name} ({state_code})',
+                xy=(transition_t, 0.99),
+                xycoords=('data', 'axes fraction'),
+                xytext=(3, -2),
+                textcoords='offset points',
+                rotation=90, ha='left', va='top',
+                fontsize=7, color='#333333',
+                annotation_clip=False,
+            )
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
     script_dir = Path(__file__).parent
-    csv_path = script_dir / 'controller_20261002_000330.csv'
+    if len(sys.argv) > 1:
+        csv_path = Path(sys.argv[1])
+    else:
+        csv_path = script_dir / 'controller_20261014_192622.csv'
+
     out_dir = script_dir / 'plots'
     out_dir.mkdir(exist_ok=True)
-
-    # Set to None to disable either limit
-    T_START = 20  # seconds
-    T_END   = 150  # seconds
-
     print(f"Reading: {csv_path.name}")
     df = pd.read_csv(csv_path)
 
-    # Make timestamp relative to the start of the log so T_START/T_END (and
-    # every plot axis below) are in "seconds since start", not raw clock
-    # time. Without this, timestamp is an absolute value and the T_START/
-    # T_END window below would filter out all (or none) of the rows.
-    df['timestamp'] = df['timestamp'] - df['timestamp'].iloc[0]
+    # Make time relative to the start of the log. Raw-measurement stamps share the
+    # same clock, so keep t0 to convert them too.
+    t0 = float(df['timestamp'].iloc[0])
+    df['timestamp'] = df['timestamp'] - t0
 
-    # Apply time window
     if T_START is not None:
         df = df[df['timestamp'] >= T_START]
     if T_END is not None:
         df = df[df['timestamp'] <= T_END]
-
     df = df.reset_index(drop=True)
 
     # ── Clean outlier spikes in the ground-truth trajectory ──────────────
-    # The CSV logs the relative (quad-frame) ground truth directly as
-    # landing_pad_rel_true_x/y, so there's no need to manually subtract
-    # quad_true from landing_pad_true — just read it straight.
-    t_arr = df['timestamp'].values
+    # Relative (pad - quad) truth is logged directly. The car's heading must be
+    # the ABSOLUTE yaw: the relative X/Y are in the world-aligned local frame, while
+    # the `*_rel_yaw` columns have the quad's yaw subtracted.
+    t_arr = df['timestamp'].to_numpy()
     true_x, true_y, outlier_mask = clean_true_position(
-        df['landing_pad_rel_true_x'].values,
-        df['landing_pad_rel_true_y'].values,
+        df['landing_pad_rel_true_x'].to_numpy(),
+        df['landing_pad_rel_true_y'].to_numpy(),
         t_arr,
     )
-
-    true_yaw, yaw_outlier_mask = clean_true_yaw(
-        df['landing_pad_rel_true_yaw'].values,
-        t_arr,
-    )
+    true_yaw, _ = clean_true_yaw(df['landing_pad_glob_true_yaw'].to_numpy(), t_arr)
+    true_z = df['landing_pad_rel_true_z'].to_numpy(dtype=float)
+    true_z += TRUE_OFFSET_Z_BODY
 
     # ── Apply configurable body-frame XY offset ────────────────────────
-    cos_yaw = np.cos(true_yaw)
-    sin_yaw = np.sin(true_yaw)
-
-    offset_x = (
-        TRUE_OFFSET_X_BODY * cos_yaw
-        - TRUE_OFFSET_Y_BODY * sin_yaw
-    )
-    offset_y = (
-        TRUE_OFFSET_X_BODY * sin_yaw
-        + TRUE_OFFSET_Y_BODY * cos_yaw
-    )
-
-    true_x += offset_x
-    true_y += offset_y
-
-    df['true_x_clean'] = true_x
-    df['true_y_clean'] = true_y
-    df['true_yaw_clean'] = true_yaw
+    cos_yaw, sin_yaw = np.cos(true_yaw), np.sin(true_yaw)
+    true_x += TRUE_OFFSET_X_BODY * cos_yaw - TRUE_OFFSET_Y_BODY * sin_yaw
+    true_y += TRUE_OFFSET_X_BODY * sin_yaw + TRUE_OFFSET_Y_BODY * cos_yaw
 
     n_outliers = outlier_mask.sum()
     if n_outliers:
         print(f"Removed {n_outliers} outlier row(s) from true position "
               f"(interpolated over glitches at t = "
               f"{np.round(t_arr[outlier_mask], 2).tolist()})")
+    if 'nees' in df.columns:
+        df.loc[outlier_mask, 'nees'] = np.nan
 
-    df['nees'].values[outlier_mask] = np.nan
+    # ── Truth at arbitrary times (controller rows or measurement stamps) ──
+    # cos/sin are interpolated rather than the wrapped angle so there's no glitch
+    # when yaw crosses ±pi.
+    truth = interp1d(
+        t_arr, np.vstack([true_x, true_y, true_z, cos_yaw, sin_yaw]),
+        kind='linear', axis=1, bounds_error=False, fill_value='extrapolate',
+    )
+
+    def errors_at(t, est_x, est_y):
+        """ Car-frame (long, lat) and |XY| errors vs truth at times t, plus truth
+            z and yaw at those times. """
+        tx, ty, tz, c, s = truth(t)
+        ex, ey = est_x - tx, est_y - ty
+        return (c * ex + s * ey, -s * ex + c * ey, np.hypot(ex, ey),
+                tz, np.arctan2(s, c))
 
     # ── Restrict to rows where a measurement exists ───────────────────────
-    measurement_mask = (
-        (df['landing_pad_april_raw_stamp'] > 0) |
-        (df['landing_pad_yolo_LP_raw_stamp'] > 0) |
-        (df['landing_pad_yolo_car_raw_stamp'] > 0)
+    present = [s for s in STREAMS if f'{s[3]}_raw_stamp' in df.columns]
+    measurement_mask = np.logical_or.reduce(
+        [df[f'{p}_raw_stamp'].to_numpy() > 0 for *_, p in present]
     )
-
     df_valid = df[measurement_mask].copy().reset_index(drop=True)
+    ctrl_t = df_valid['timestamp'].to_numpy()
 
-    # ── Raw measurement masks ────────────────────────────────────────────
-    # The CSV is logged at the controller rate, so a raw measurement can be
-    # repeated across several rows while waiting for the next sensor result.
-    # Only plot/count a raw measurement when its measurement stamp changes.
-    def new_measurement_mask(stamp):
-        stamp = np.asarray(stamp)
-        is_new = np.ones(len(stamp), dtype=bool)
-        if len(stamp) > 1:
-            is_new[1:] = stamp[1:] != stamp[:-1]
-        return (stamp > 0) & is_new
-
-    april_stamp = df_valid['landing_pad_april_raw_stamp'].values
-    yolo_lp_stamp = df_valid['landing_pad_yolo_LP_raw_stamp'].values
-    yolo_car_stamp = df_valid['landing_pad_yolo_car_raw_stamp'].values
-
-    april_valid = (
-        new_measurement_mask(april_stamp) &
-        np.isfinite(df_valid['landing_pad_april_rel_x_raw'].values) &
-        np.isfinite(df_valid['landing_pad_april_rel_y_raw'].values)
+    # ── Filter errors (estimate valid at the controller row time) ─────────
+    filt_err_long, filt_err_lat, filt_err_abs, tz, tyaw = errors_at(
+        ctrl_t,
+        df_valid['landing_pad_rel_x'].to_numpy(),
+        df_valid['landing_pad_rel_y'].to_numpy(),
     )
+    filt_err_z = df_valid['landing_pad_rel_z'].to_numpy() - tz
+    filt_yaw_err = wrap_angle(df_valid['landing_pad_glob_yaw'].to_numpy() - tyaw)
 
-    yolo_lp_valid = (
-        new_measurement_mask(yolo_lp_stamp) &
-        np.isfinite(df_valid['landing_pad_yolo_LP_rel_x_raw'].values) &
-        np.isfinite(df_valid['landing_pad_yolo_LP_rel_y_raw'].values)
-    )
+    # ── Raw measurement errors (truth taken at each measurement's own stamp) ──
+    streams = []
+    for key, label, colour, prefix in present:
+        stamp = df_valid[f'{prefix}_raw_stamp'].to_numpy()
+        x = df_valid[f'{prefix}_rel_x_raw'].to_numpy(dtype=float)
+        y = df_valid[f'{prefix}_rel_y_raw'].to_numpy(dtype=float)
+        valid = new_measurement_mask(stamp) & np.isfinite(x) & np.isfinite(y)
+        t_meas = np.where(stamp > 0, stamp - t0, np.nan)
 
-    yolo_car_valid = (
-        new_measurement_mask(yolo_car_stamp) &
-        np.isfinite(df_valid['landing_pad_yolo_car_rel_x_raw'].values) &
-        np.isfinite(df_valid['landing_pad_yolo_car_rel_y_raw'].values)
-    )
+        e_long, e_lat, e_abs, tz, tyaw = errors_at(t_meas, x, y)
+        s = dict(key=key, label=label, colour=colour, valid=valid, t=t_meas,
+                 x=x, y=y, long=e_long, lat=e_lat, abs=e_abs)
+        if f'{prefix}_rel_z_raw' in df_valid.columns:
+            s['z'] = df_valid[f'{prefix}_rel_z_raw'].to_numpy(dtype=float) - tz
+        if f'{prefix}_glob_yaw_raw' in df_valid.columns:
+            s['yaw'] = wrap_angle(df_valid[f'{prefix}_glob_yaw_raw'].to_numpy() - tyaw)
+        streams.append(s)
 
-    # ── True position at each row's controller timestamp ──────────────────
-    interp_x = interp1d(t_arr, true_x, kind='linear', fill_value='extrapolate')
-    interp_y = interp1d(t_arr, true_y, kind='linear', fill_value='extrapolate')
+    def plot_raw(ax, field, scale=1.0, suffix=''):
+        """ Scatter one error field for every raw stream that has it. """
+        for s in streams:
+            if field not in s:
+                continue
+            ok = s['valid'] & np.isfinite(s[field])
+            if ok.any():
+                ax.scatter(s['t'][ok], scale * s[field][ok], color=s['colour'],
+                           marker='x', s=22, linewidths=1.0, alpha=ALPHA,
+                           label=s['label'] + suffix)
 
-    ctrl_t = df_valid['timestamp'].values
-    true_at_ctrl_x = interp_x(ctrl_t)
-    true_at_ctrl_y = interp_y(ctrl_t)
-
-    # ── Compute errors ────────────────────────────────────────────────────
-    april_err_x = (
-        df_valid['landing_pad_april_rel_x_raw'].values - true_at_ctrl_x
-    )
-    april_err_y = (
-        df_valid['landing_pad_april_rel_y_raw'].values - true_at_ctrl_y
-    )
-    april_err_abs = np.sqrt(april_err_x ** 2 + april_err_y ** 2)
-
-    yolo_lp_err_x = (
-        df_valid['landing_pad_yolo_LP_rel_x_raw'].values - true_at_ctrl_x
-    )
-    yolo_lp_err_y = (
-        df_valid['landing_pad_yolo_LP_rel_y_raw'].values - true_at_ctrl_y
-    )
-    yolo_lp_err_abs = np.sqrt(yolo_lp_err_x ** 2 + yolo_lp_err_y ** 2)
-
-    yolo_car_err_x = (
-        df_valid['landing_pad_yolo_car_rel_x_raw'].values - true_at_ctrl_x
-    )
-    yolo_car_err_y = (
-        df_valid['landing_pad_yolo_car_rel_y_raw'].values - true_at_ctrl_y
-    )
-    yolo_car_err_abs = np.sqrt(yolo_car_err_x ** 2 + yolo_car_err_y ** 2)
-
-    filt_err_x   = df_valid['landing_pad_rel_x'].values - df_valid['true_x_clean'].values
-    filt_err_y   = df_valid['landing_pad_rel_y'].values - df_valid['true_y_clean'].values
-    filt_err_abs = np.sqrt(filt_err_x ** 2 + filt_err_y ** 2)
-
-    def wrap_angle(angle):
-        return (angle + np.pi) % (2 * np.pi) - np.pi
-
-    true_yaw_interp = interp1d(
-        t_arr,
-        true_yaw,
-        kind='linear',
-        fill_value='extrapolate'
-    )
-
-    true_yaw_at_ctrl = true_yaw_interp(ctrl_t)
-
-    raw_yaw_err = wrap_angle(
-        df_valid["landing_pad_april_rel_yaw_raw"].values
-        - true_yaw_at_ctrl
-    )
-
-    filt_yaw_err = wrap_angle(
-        df_valid["landing_pad_rel_yaw"].values
-        - true_yaw_at_ctrl
-    )
+    # YOLO pixel-space box mode (new logs only)
+    has_box_mode = 'yolo_box_mode' in df_valid.columns
+    box_mode = (df_valid['yolo_box_mode'].to_numpy() == 1) if has_box_mode else None
 
     # ── Detect which covariance / latency columns are present ─────────────
-    apriltag_lag_cols = [
-        'cam_to_image_lag',
-        'image_to_transform_lag',
-        'transform_to_UKF_lag',
-    ]
-    yolo_lag_cols = [
-        'yolo_cam_to_image_lag',
-        'yolo_image_to_transform_lag',
-        'yolo_transform_to_UKF_lag',
-    ]
+    apriltag_lag_cols = ['cam_to_image_lag', 'image_to_transform_lag', 'transform_to_UKF_lag']
+    yolo_lag_cols = ['yolo_cam_to_image_lag', 'yolo_image_to_transform_lag', 'yolo_transform_to_UKF_lag']
 
-    has_apriltag_lag = all(c in df_valid.columns for c in apriltag_lag_cols)
-    has_yolo_lag = all(c in df_valid.columns for c in yolo_lag_cols)
-    has_meas_age = 'total_lag' in df_valid.columns
+    # A stream that was switched off (e.g. AprilTag toggled off) logs all-NaN latency
+    def has_cols(cols):
+        return all(c in df_valid.columns for c in cols) and df_valid[cols].notna().any().any()
 
-    # The CSV's `total_lag` field is actually measurement age
-    # (_UKF_meas_age), not the sum of the processing stages.
+    has_apriltag_lag = has_cols(apriltag_lag_cols)
+    has_yolo_lag = has_cols(yolo_lag_cols)
+    has_meas_age = has_cols(['total_lag'])
+
+    # The CSV's `total_lag` field is measurement age, not the sum of the stages.
     if has_apriltag_lag:
-        df_valid['apriltag_total_lag'] = (
-            df_valid[apriltag_lag_cols].sum(axis=1, min_count=1)
-        )
+        df_valid['apriltag_total_lag'] = df_valid[apriltag_lag_cols].sum(axis=1, min_count=1)
     if has_yolo_lag:
-        df_valid['yolo_total_lag'] = (
-            df_valid[yolo_lag_cols].sum(axis=1, min_count=1)
-        )
+        df_valid['yolo_total_lag'] = df_valid[yolo_lag_cols].sum(axis=1, min_count=1)
 
     sigma_cols     = [c for c in SIGMA_COLOURS if c in df_valid.columns]
     has_per_state  = len(sigma_cols) > 0
@@ -368,248 +373,93 @@ def main():
         print("WARNING: 'total_lag' column not found – measurement-age diagnostics skipped.")
     if not has_per_state and not has_trace_only:
         print("WARNING: no covariance columns found – covar subplot skipped.")
+    if 'controller_state' not in df.columns:
+        print("WARNING: 'controller_state' column not found – state transitions skipped.")
 
-    # ── Figure 1 – Error vs Time (4 subplots) ────────────────────────────
+    # ── Figure 1 – Error vs Time ─────────────────────────────────────────
+    # Panels: longitudinal, lateral, height, absolute horizontal, yaw, [covariance]
     has_covar_plot = has_per_state or has_trace_only
-    n_rows = 4
+    n_rows = 6 if has_covar_plot else 5
 
-    if has_covar_plot:
-        n_rows += 1
-
-    fig1, axes = plt.subplots(
-        n_rows, 1,
-        figsize=(12, 3.2 * n_rows),
-        sharex=True,
-    )
+    fig1, axes = plt.subplots(n_rows, 1, figsize=(12, 3.2 * n_rows), sharex=True)
+    axes = list(axes)
     fig1.suptitle(
         'Landing Pad Position Error vs Time\n(true position outliers removed)',
         fontsize=14, fontweight='bold', y=0.99,
     )
+    ax_lon, ax_lat, ax_z, ax_abs, ax_yaw = axes[:5]
+    ax_cov = axes[5] if has_covar_plot else None
 
-    # ── Panels 0-1: X and Y error ─────────────────────────────────────────
-    for ax, (re, fe, ylabel, title) in zip(
-        axes[:2],
-        [
-            (filt_err_x, filt_err_x, 'X error (m)',  'X-axis error'),
-            (filt_err_y, filt_err_y, 'Y error (m)',  'Y-axis error'),
-        ],
-    ):
+    # ── Panels: longitudinal, lateral and height error ────────────────────
+    for ax, fe, field, ylabel, title in [
+        (ax_lon, filt_err_long, 'long', 'Longitudinal error (m)',
+         'Longitudinal error  (along car heading, + = estimate ahead of truth)'),
+        (ax_lat, filt_err_lat, 'lat', 'Lateral error (m)',
+         'Lateral error  (across car heading, + = estimate left of truth)'),
+        (ax_z, filt_err_z, 'z', 'Z error (m)',
+         'Height (Z) error  (+ = estimate above truth)'),
+    ]:
         ax.plot(ctrl_t, fe, color=FILT_C, lw=1.0, alpha=ALPHA, label='Filter estimate')
-
-        if april_valid.any():
-            ax.scatter(
-                ctrl_t[april_valid],
-                (april_err_x if ax is axes[0] else april_err_y)[april_valid],
-                color=RAW_C,
-                marker='x',
-                s=22,
-                linewidths=1.0,
-                alpha=ALPHA,
-                label='AprilTag raw'
-            )
-
-        if yolo_lp_valid.any():
-            ax.scatter(
-                ctrl_t[yolo_lp_valid],
-                (yolo_lp_err_x if ax is axes[0] else yolo_lp_err_y)[yolo_lp_valid],
-                color=YOLO_LP_C,
-                marker='x',
-                s=22,
-                linewidths=1.0,
-                alpha=ALPHA,
-                label='YOLO LP raw'
-            )
-
-        if yolo_car_valid.any():
-            ax.scatter(
-                ctrl_t[yolo_car_valid],
-                (yolo_car_err_x if ax is axes[0] else yolo_car_err_y)[yolo_car_valid],
-                color=YOLO_CAR_C,
-                marker='x',
-                s=22,
-                linewidths=1.0,
-                alpha=ALPHA,
-                label='YOLO car raw'
-            )
-
+        plot_raw(ax, field)
         ax.axhline(0, color='0.5', lw=0.6, ls='--')
         ax.set_ylabel(ylabel, fontsize=10)
         ax.set_title(title, fontsize=10)
-        ax.legend(fontsize=8, loc='upper right')
         ax.grid(True, alpha=0.3)
 
-    # ── Panel 2: Absolute error + latency secondary axis ───────────────
-    ax_abs = axes[2]
-    ax_abs.plot(
-        ctrl_t,
-        filt_err_abs,
-        color=FILT_C,
-        lw=1.0,
-        alpha=ALPHA,
-        label='Filter |error|'
-    )
-
-    if april_valid.any():
-        ax_abs.scatter(
-            ctrl_t[april_valid],
-            april_err_abs[april_valid],
-            color=RAW_C,
-            marker='x',
-            s=22,
-            linewidths=1.0,
-            alpha=ALPHA,
-            label='AprilTag raw |error|'
-        )
-
-    if yolo_lp_valid.any():
-        ax_abs.scatter(
-            ctrl_t[yolo_lp_valid],
-            yolo_lp_err_abs[yolo_lp_valid],
-            color=YOLO_LP_C,
-            marker='x',
-            s=22,
-            linewidths=1.0,
-            alpha=ALPHA,
-            label='YOLO LP raw |error|'
-        )
-
-    if yolo_car_valid.any():
-        ax_abs.scatter(
-            ctrl_t[yolo_car_valid],
-            yolo_car_err_abs[yolo_car_valid],
-            color=YOLO_CAR_C,
-            marker='x',
-            s=22,
-            linewidths=1.0,
-            alpha=ALPHA,
-            label='YOLO car raw |error|'
-        )
-
-    ax_abs.axhline(0, color='0.5', lw=0.6, ls='--')
+    # ── Panel: Absolute horizontal error + latency secondary axis ───────
+    ax_abs.plot(ctrl_t, filt_err_abs, color=FILT_C, lw=1.0, alpha=ALPHA, label='Filter |error|')
+    plot_raw(ax_abs, 'abs', suffix=' |error|')
     ax_abs.set_ylim(bottom=0)
     ax_abs.set_ylabel('|error| (m)', fontsize=10)
-    ax_abs.set_title('Absolute error (Euclidean norm)', fontsize=10)
+    ax_abs.set_title('Absolute horizontal error (Euclidean norm, XY)', fontsize=10)
     ax_abs.grid(True, alpha=0.3)
 
-    if has_apriltag_lag or has_yolo_lag or has_meas_age:
+    lag_series = [
+        (has_apriltag_lag, 'apriltag_total_lag', 'AprilTag total pipeline', '--', 1.1, 0.75),
+        (has_yolo_lag,     'yolo_total_lag',     'YOLO total pipeline',     '-.', 1.1, 0.75),
+        (has_meas_age,     'total_lag',          'Measurement age',         ':',  0.9, 0.55),
+    ]
+    if any(on for on, *_ in lag_series):
         ax_lag = ax_abs.twinx()
-
-        if has_apriltag_lag:
-            ax_lag.plot(
-                ctrl_t,
-                df_valid['apriltag_total_lag'].values,
-                color=LAG_COLOURS['apriltag_total_lag'],
-                lw=1.1,
-                alpha=0.75,
-                ls='--',
-                label='AprilTag total pipeline'
-            )
-
-        if has_yolo_lag:
-            ax_lag.plot(
-                ctrl_t,
-                df_valid['yolo_total_lag'].values,
-                color=LAG_COLOURS['yolo_total_lag'],
-                lw=1.1,
-                alpha=0.75,
-                ls='-.',
-                label='YOLO total pipeline'
-            )
-
-        if has_meas_age:
-            ax_lag.plot(
-                ctrl_t,
-                df_valid['total_lag'].values,
-                color=LAG_COLOURS['total_lag'],
-                lw=0.9,
-                alpha=0.55,
-                ls=':',
-                label='Measurement age'
-            )
-
+        for on, col, label, ls, lw, a in lag_series:
+            if on:
+                ax_lag.plot(ctrl_t, df_valid[col].to_numpy(), color=LAG_COLOURS[col],
+                            lw=lw, alpha=a, ls=ls, label=label)
         ax_lag.set_ylabel('Latency / age (ms)', fontsize=10)
         ax_lag.tick_params(axis='y', labelcolor=LAG_COLOURS['total_lag'])
         ax_lag.set_ylim(bottom=0)
-
         lines_l, labels_l = ax_abs.get_legend_handles_labels()
         lines_r, labels_r = ax_lag.get_legend_handles_labels()
-        ax_abs.legend(
-            lines_l + lines_r,
-            labels_l + labels_r,
-            fontsize=8,
-            loc='upper right'
-        )
-    else:
-        ax_abs.legend(fontsize=8, loc='upper right')
+        ax_abs.legend(lines_l + lines_r, labels_l + labels_r, fontsize=8, loc='upper right')
 
-    # ── Panel 3: Yaw error ─────────────────────────────────────────────
-    ax_yaw = axes[3]
-    ax_yaw.plot(
-        ctrl_t,
-        np.degrees(filt_yaw_err),
-        color=FILT_C,
-        lw=1.0,
-        alpha=ALPHA,
-        label='Filter estimate'
-    )
-
-    if april_valid.any():
-        ax_yaw.scatter(
-            ctrl_t[april_valid],
-            np.degrees(raw_yaw_err[april_valid]),
-            color=RAW_C,
-            marker='x',
-            s=22,
-            linewidths=1.0,
-            alpha=ALPHA,
-            label='AprilTag raw'
-        )
-
-    ax_yaw.axhline(
-        0,
-        color='0.5',
-        ls='--',
-        lw=0.8
-    )
-
+    # ── Panel: Yaw error ───────────────────────────────────────────────
+    ax_yaw.plot(ctrl_t, np.degrees(filt_yaw_err), color=FILT_C, lw=1.0, alpha=ALPHA,
+                label='Filter estimate')
+    plot_raw(ax_yaw, 'yaw', scale=np.degrees(1.0))
+    ax_yaw.axhline(0, color='0.5', ls='--', lw=0.8)
     ax_yaw.set_ylabel('Yaw error (deg)', fontsize=10)
     ax_yaw.set_title('Yaw error', fontsize=10)
     ax_yaw.grid(True, alpha=0.3)
-    ax_yaw.legend(fontsize=9, loc='upper right')
 
-    # ── Panel 4: per-state 1-sigma covariance ────────────────────────────
+    # ── Panel: per-state 1-sigma covariance ──────────────────────────────
     if has_covar_plot:
-        ax_cov = axes[4]
-
         if has_per_state:
-            # Plot each state's 1-sigma on the same axes, with a secondary
-            # axis for angular states (rad vs metres on very different scales)
-            pos_cols = ['sigma_px', 'sigma_py', 'sigma_pz',
-                        'sigma_v',  'sigma_a']
-            ang_cols = ['sigma_yaw', 'sigma_yaw_rate']
-
-            pos_plotted = [c for c in pos_cols if c in sigma_cols]
-            ang_plotted = [c for c in ang_cols if c in sigma_cols]
+            # Secondary axis for angular states (rad vs metres on very different scales)
+            pos_plotted = [c for c in ['sigma_px', 'sigma_py', 'sigma_pz', 'sigma_v', 'sigma_a']
+                           if c in sigma_cols]
+            ang_plotted = [c for c in ['sigma_yaw', 'sigma_yaw_rate'] if c in sigma_cols]
 
             for col in pos_plotted:
-                ax_cov.plot(
-                    ctrl_t, df_valid[col].values,
-                    color=SIGMA_COLOURS[col], lw=1.1, alpha=ALPHA,
-                    label=SIGMA_LABELS[col],
-                )
+                ax_cov.plot(ctrl_t, df_valid[col].to_numpy(), color=SIGMA_COLOURS[col],
+                            lw=1.1, alpha=ALPHA, label=SIGMA_LABELS[col])
 
             if ang_plotted:
                 ax_ang = ax_cov.twinx()
                 for col in ang_plotted:
-                    ax_ang.plot(
-                        ctrl_t, df_valid[col].values,
-                        color=SIGMA_COLOURS[col], lw=1.1, alpha=ALPHA,
-                        ls='--', label=SIGMA_LABELS[col],
-                    )
+                    ax_ang.plot(ctrl_t, df_valid[col].to_numpy(), color=SIGMA_COLOURS[col],
+                                lw=1.1, alpha=ALPHA, ls='--', label=SIGMA_LABELS[col])
                 ax_ang.set_ylabel('1σ angular (rad / rad·s⁻¹)', fontsize=9)
                 ax_ang.set_ylim(bottom=0)
-
-                # Merge legends from both axes
                 lines_l, labels_l = ax_cov.get_legend_handles_labels()
                 lines_r, labels_r = ax_ang.get_legend_handles_labels()
                 ax_cov.legend(lines_l + lines_r, labels_l + labels_r,
@@ -619,67 +469,54 @@ def main():
 
             ax_cov.set_ylabel('1σ position / velocity (m, m/s)', fontsize=9)
             ax_cov.set_title('UKF per-state 1σ covariance  (— linear,  - - angular)', fontsize=10)
-
         else:
             # Fallback: single trace scalar from old CSVs
-            covar_vals = df_valid[trace_col].values
-            ax_cov.plot(ctrl_t, covar_vals, color='#c0392b', lw=1.0, alpha=ALPHA,
-                        label='trace(P)')
+            ax_cov.plot(ctrl_t, df_valid[trace_col].to_numpy(), color='#c0392b',
+                        lw=1.0, alpha=ALPHA, label='trace(P)')
             ax_cov.set_ylabel('trace(P)', fontsize=10)
             ax_cov.set_title('Filter covariance — trace(P)', fontsize=10)
             ax_cov.legend(fontsize=9, loc='upper right')
 
         ax_cov.set_ylim(bottom=0)
         ax_cov.grid(True, alpha=0.3)
-        ax_cov.set_xlabel('Time (s)', fontsize=10)
-    else:
-        axes[-1].set_xlabel('Time (s)', fontsize=10)
+    axes[-1].set_xlabel('Time (s)', fontsize=10)
+
+    # ── State transitions and YOLO box-mode shading on every panel ───────
+    # Lines on all panels; text labels only on the top one to avoid clutter.
+    for k, ax in enumerate(axes):
+        add_state_transitions(ax, df, time_col='timestamp', label=(k == 0))
+        if has_box_mode and box_mode.any():
+            ax.fill_between(ctrl_t, 0, 1, where=box_mode, step='post',
+                            transform=ax.get_xaxis_transform(),
+                            color=BOX_MODE_C, alpha=0.08, lw=0, zorder=0)
+
+    box_patch = [Patch(color=BOX_MODE_C, alpha=0.2, label='YOLO box update')] \
+        if has_box_mode and box_mode.any() else []
+    for ax in (ax_lon, ax_lat, ax_z, ax_yaw):
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles + box_patch, labels + [p.get_label() for p in box_patch],
+                  fontsize=8, loc='upper right')
 
     fig1.tight_layout(rect=[0, 0, 1, 0.97])
-
     out1 = out_dir / 'error_vs_time.png'
-    fig1.savefig(out1, dpi=500, bbox_inches='tight')
+    fig1.savefig(out1, dpi=DPI, bbox_inches='tight')
     print(f"Saved: {out1}")
 
     # ── Figure 2 – 2-D Trajectory ─────────────────────────────────────────
     fig2, ax2 = plt.subplots(figsize=(9, 8))
-    fig2.suptitle(
-        'Landing Pad 2D Trajectory\n(true position outliers removed)',
-        fontsize=14, fontweight='bold',
-    )
+    fig2.suptitle('Landing Pad 2D Trajectory\n(true position outliers removed)',
+                  fontsize=14, fontweight='bold')
 
-    ax2.plot(true_x, true_y,
-             color=TRUE_C, lw=1.8, label='True position', zorder=3)
+    ax2.plot(true_x, true_y, color=TRUE_C, lw=1.8, label='True position', zorder=3)
     ax2.plot(df_valid['landing_pad_rel_x'], df_valid['landing_pad_rel_y'],
              color=FILT_C, lw=1.2, alpha=0.85, label='Filter estimate', zorder=4)
-
-    if april_valid.any():
-        ax2.scatter(
-            df_valid.loc[april_valid, 'landing_pad_april_rel_x_raw'],
-            df_valid.loc[april_valid, 'landing_pad_april_rel_y_raw'],
-            c=RAW_C, marker='x', s=22, alpha=0.65,
-            label='AprilTag raw', zorder=2
-        )
-
-    if yolo_lp_valid.any():
-        ax2.scatter(
-            df_valid.loc[yolo_lp_valid, 'landing_pad_yolo_LP_rel_x_raw'],
-            df_valid.loc[yolo_lp_valid, 'landing_pad_yolo_LP_rel_y_raw'],
-            c=YOLO_LP_C, marker='x', s=22, alpha=0.65,
-            label='YOLO LP raw', zorder=2
-        )
-
-    if yolo_car_valid.any():
-        ax2.scatter(
-            df_valid.loc[yolo_car_valid, 'landing_pad_yolo_car_rel_x_raw'],
-            df_valid.loc[yolo_car_valid, 'landing_pad_yolo_car_rel_y_raw'],
-            c=YOLO_CAR_C, marker='x', s=22, alpha=0.65,
-            label='YOLO car raw', zorder=2
-        )
+    for s in streams:
+        if s['valid'].any():
+            ax2.scatter(s['x'][s['valid']], s['y'][s['valid']], c=s['colour'],
+                        marker='x', s=22, alpha=0.65, label=s['label'], zorder=2)
 
     ax2.plot(true_x[0],  true_y[0],  'go', ms=8, label='Start', zorder=5)
     ax2.plot(true_x[-1], true_y[-1], 'rs', ms=8, label='End',   zorder=5)
-
     ax2.set_xlabel('X position (m)', fontsize=11)
     ax2.set_ylabel('Y position (m)', fontsize=11)
     ax2.legend(fontsize=9)
@@ -688,254 +525,86 @@ def main():
     fig2.tight_layout(rect=[0, 0, 1, 0.96])
 
     out2 = out_dir / 'trajectory_2d.png'
-    fig2.savefig(out2, dpi=500, bbox_inches='tight')
+    fig2.savefig(out2, dpi=DPI, bbox_inches='tight')
     print(f"Saved: {out2}")
 
-        # ── Figure 3 – NIS / NEES consistency analysis ──────────────────────────
+    # ── Figure 3 – NIS / NEES consistency analysis ──────────────────────────
+    # NIS is the last value held on every row; only count it when it changes, so
+    # each measurement is counted once. Both measurement models are 4-dimensional.
+    # NEES is evaluated every row over (px, py, yaw) -> 3 DOF.
+    nis_bound, nees_bound = chi2.ppf(0.95, df=4), chi2.ppf(0.95, df=3)
+    if has_nis:
+        nis_all = df_valid['nis'].to_numpy(dtype=float)
+        nis_new = np.isfinite(nis_all) & np.r_[True, nis_all[1:] != nis_all[:-1]]
+        nis_t, nis = ctrl_t[nis_new], nis_all[nis_new]
+    if has_nees:
+        nees = df_valid['nees'].to_numpy(dtype=float)
+        nees_finite = nees[np.isfinite(nees)]
+
     if has_nis or has_nees:
+        fig3, axes3 = plt.subplots(2, 2, figsize=(12, 8))
+        fig3.suptitle('UKF Consistency Analysis', fontsize=14, fontweight='bold')
+        ax_nis_time, ax_nees_time = axes3[0]
+        ax_nis_hist, ax_nees_hist = axes3[1]
 
-        fig3, axes3 = plt.subplots(
-            2, 2,
-            figsize=(12, 8)
-        )
+        for on, ax_t, ax_h, name, t_v, vals, dof, bound, colour in [
+            (has_nis,  ax_nis_time,  ax_nis_hist,  'NIS',
+             nis_t if has_nis else None, nis if has_nis else None, 4, nis_bound, '#8e44ad'),
+            (has_nees, ax_nees_time, ax_nees_hist, 'NEES',
+             ctrl_t, nees_finite if has_nees else None, 3, nees_bound, '#2980b9'),
+        ]:
+            if not on:
+                continue
+            series = nis if name == 'NIS' else nees
+            ax_t.plot(t_v, series, color=colour, lw=1.2, label=name,
+                      marker='.' if name == 'NIS' else None, ms=3)
+            ax_t.axhline(bound, color='red', linestyle='--', label=f'95% χ²({dof})')
+            ax_t.axhline(dof, color='green', linestyle=':', label='Expected mean')
+            ax_t.set_title(f'{name} vs Time')
+            ax_t.set_ylabel(name)
+            ax_t.grid(True, alpha=0.3)
+            ax_t.legend()
 
-        fig3.suptitle(
-            'UKF Consistency Analysis',
-            fontsize=14,
-            fontweight='bold'
-        )
-
-        # Flatten axes
-        ax_nis_time   = axes3[0, 0]
-        ax_nees_time  = axes3[0, 1]
-        ax_nis_hist   = axes3[1, 0]
-        ax_nees_hist  = axes3[1, 1]
-
-        # ── NIS vs time ───────────────────────────────────────────────
-        if has_nis:
-            nis = df_valid['nis'].values
-            nis_valid = np.isfinite(nis)
-
-            ax_nis_time.plot(
-                ctrl_t[nis_valid],
-                nis[nis_valid],
-                color='#8e44ad',
-                lw=1.2,
-                label='NIS'
-            )
-
-            ax_nis_time.axhline(
-                9.49,
-                color='red',
-                linestyle='--',
-                label='95% χ²(4)'
-            )
-
-            ax_nis_time.axhline(
-                4,
-                color='green',
-                linestyle=':',
-                label='Expected mean'
-            )
-
-            ax_nis_time.set_title('NIS vs Time')
-            ax_nis_time.set_ylabel('NIS')
-            ax_nis_time.grid(True, alpha=0.3)
-            ax_nis_time.legend()
-
-        # ── NEES vs time ──────────────────────────────────────────────
-        if has_nees:
-            nees = df_valid['nees'].values
-
-            ax_nees_time.plot(
-                ctrl_t,
-                nees,
-                color='#2980b9',
-                lw=1.2,
-                label='NEES'
-            )
-
-            ax_nees_time.axhline(
-                9.348,
-                color='red',
-                linestyle='--',
-                label='95% χ²(3)'
-            )
-
-            ax_nees_time.axhline(
-                3,
-                color='green',
-                linestyle=':',
-                label='Expected mean'
-            )
-
-            ax_nees_time.set_title('NEES vs Time')
-            ax_nees_time.set_ylabel('NEES')
-            ax_nees_time.grid(True, alpha=0.3)
-            ax_nees_time.legend()
-
-        # ── NIS histogram ─────────────────────────────────────────────
-        if has_nis:
-            nis = df_valid['nis'].values
-            nis_valid = nis[np.isfinite(nis)]
-
-            if len(nis_valid) > 0:
-                ax_nis_hist.hist(
-                    nis_valid,
-                    bins=100,
-                    density=True,
-                    alpha=0.6,
-                    label='Measured NIS'
-                )
-
-                x = np.linspace(
-                    0,
-                    max(15, nis_valid.max()),
-                    400
-                )
-
-                ax_nis_hist.plot(
-                    x,
-                    chi2.pdf(x, df=4),
-                    lw=2,
-                    label='χ²(4)'
-                )
-
-                ax_nis_hist.axvline(
-                    nis_valid.mean(),
-                    linestyle='--',
-                    label=f'Mean={nis_valid.mean():.2f}'
-                )
-
-            ax_nis_hist.set_title('NIS Distribution')
-            ax_nis_hist.set_xlabel('NIS')
-            ax_nis_hist.set_ylabel('Density')
-            ax_nis_hist.grid(True, alpha=0.3)
-            ax_nis_hist.legend()
-
-        # ── NEES histogram ────────────────────────────────────────────
-        if has_nees:
-            nees = df_valid['nees'].values
-            nees_valid = nees[np.isfinite(nees)]
-
-            if len(nees_valid) > 0:
-                ax_nees_hist.hist(
-                    nees_valid,
-                    bins=100,
-                    density=True,
-                    alpha=0.6,
-                    label='Measured NEES'
-                )
-
-                x = np.linspace(
-                    0,
-                    max(20, nees_valid.max()),
-                    400
-                )
-
-                ax_nees_hist.plot(
-                    x,
-                    chi2.pdf(x, df=3),
-                    lw=2,
-                    label='χ²(3)'
-                )
-
-                ax_nees_hist.axvline(
-                    nees_valid.mean(),
-                    linestyle='--',
-                    label=f'Mean={nees_valid.mean():.2f}'
-                )
-
-            ax_nees_hist.set_title('NEES Distribution')
-            ax_nees_hist.set_xlabel('NEES')
-            ax_nees_hist.set_ylabel('Density')
-            ax_nees_hist.grid(True, alpha=0.3)
-            ax_nees_hist.legend()
+            if len(vals) > 0:
+                ax_h.hist(vals, bins=100, density=True, alpha=0.6, label=f'Measured {name}')
+                x = np.linspace(0, max(4 * dof, vals.max()), 400)
+                ax_h.plot(x, chi2.pdf(x, df=dof), lw=2, label=f'χ²({dof})')
+                ax_h.axvline(vals.mean(), linestyle='--', label=f'Mean={vals.mean():.2f}')
+            ax_h.set_title(f'{name} Distribution')
+            ax_h.set_xlabel(name)
+            ax_h.set_ylabel('Density')
+            ax_h.grid(True, alpha=0.3)
+            ax_h.legend()
 
         fig3.tight_layout(rect=[0, 0, 1, 0.95])
-
         out3 = out_dir / 'consistency_analysis.png'
-        fig3.savefig(
-            out3,
-            dpi=500,
-            bbox_inches='tight'
-        )
-
+        fig3.savefig(out3, dpi=DPI, bbox_inches='tight')
         print(f"Saved: {out3}")
 
     # ── Figure 4 – Pipeline latency analysis ───────────────────────────────
     if has_apriltag_lag or has_yolo_lag or has_meas_age:
+        fig4, (ax_lag_time, ax_lag_bar) = plt.subplots(1, 2, figsize=(15, 5))
+        fig4.suptitle('Pipeline Latency Analysis', fontsize=14, fontweight='bold')
 
-        # --------------------------------------------------------------
-        # Subplot 1: latency vs time
-        # Subplot 2: mean latency breakdown
-        # --------------------------------------------------------------
-
-        fig5, (ax_lag_time, ax_lag_bar) = plt.subplots(
-            1,
-            2,
-            figsize=(15, 5)
-        )
-
-        fig5.suptitle(
-            'Pipeline Latency Analysis',
-            fontsize=14,
-            fontweight='bold'
-        )
-
-        # ── Latency vs time ───────────────────────────────────────────
-        if has_apriltag_lag:
-            for col in apriltag_lag_cols:
-                ax_lag_time.plot(
-                    ctrl_t,
-                    df_valid[col].values,
-                    lw=1.1,
-                    alpha=0.80,
-                    color=LAG_COLOURS[col],
-                    label='AprilTag ' + col.replace('_lag', '').replace('_', ' ')
-                )
-
-            ax_lag_time.plot(
-                ctrl_t,
-                df_valid['apriltag_total_lag'].values,
-                lw=1.4,
-                alpha=0.90,
-                color=LAG_COLOURS['apriltag_total_lag'],
-                ls='--',
-                label='AprilTag total'
-            )
-
-        if has_yolo_lag:
-            for col in yolo_lag_cols:
-                ax_lag_time.plot(
-                    ctrl_t,
-                    df_valid[col].values,
-                    lw=1.1,
-                    alpha=0.80,
-                    color=LAG_COLOURS[col],
-                    label='YOLO ' + col.replace('yolo_', '').replace('_lag', '').replace('_', ' ')
-                )
-
-            ax_lag_time.plot(
-                ctrl_t,
-                df_valid['yolo_total_lag'].values,
-                lw=1.4,
-                alpha=0.90,
-                color=LAG_COLOURS['yolo_total_lag'],
-                ls='-.',
-                label='YOLO total'
-            )
+        bar_specs = []   # (label, column)
+        for on, prefix, cols, total, ls in [
+            (has_apriltag_lag, 'AprilTag', apriltag_lag_cols, 'apriltag_total_lag', '--'),
+            (has_yolo_lag,     'YOLO',     yolo_lag_cols,     'yolo_total_lag',     '-.'),
+        ]:
+            if not on:
+                continue
+            for col, stage in zip(cols, ['Camera → Image', 'Image → Transform', 'Transform → UKF']):
+                ax_lag_time.plot(ctrl_t, df_valid[col].to_numpy(), lw=1.1, alpha=0.80,
+                                 color=LAG_COLOURS[col], label=f'{prefix} {stage}')
+                bar_specs.append((f'{prefix}\n{stage}', col))
+            ax_lag_time.plot(ctrl_t, df_valid[total].to_numpy(), lw=1.4, alpha=0.90,
+                             color=LAG_COLOURS[total], ls=ls, label=f'{prefix} total')
+            bar_specs.append((f'{prefix}\nTotal', total))
 
         if has_meas_age:
-            ax_lag_time.plot(
-                ctrl_t,
-                df_valid['total_lag'].values,
-                lw=0.9,
-                alpha=0.55,
-                color=LAG_COLOURS['total_lag'],
-                ls=':',
-                label='Measurement age'
-            )
+            ax_lag_time.plot(ctrl_t, df_valid['total_lag'].to_numpy(), lw=0.9, alpha=0.55,
+                             color=LAG_COLOURS['total_lag'], ls=':', label='Measurement age')
+            bar_specs.append(('Measurement\nAge', 'total_lag'))
 
         ax_lag_time.set_title('Latency vs Time')
         ax_lag_time.set_xlabel('Time (s)')
@@ -943,191 +612,98 @@ def main():
         ax_lag_time.grid(True, alpha=0.3)
         ax_lag_time.legend(fontsize=7, ncol=2)
 
-        # ── Mean breakdown bar chart ──────────────────────────────────
-        labels = []
-        mean_lags = []
-        bar_colors = []
-
-        if has_apriltag_lag:
-            labels.extend([
-                'AprilTag\nCamera → Image',
-                'AprilTag\nImage → Transform',
-                'AprilTag\nTransform → UKF',
-                'AprilTag\nTotal',
-            ])
-            mean_lags.extend([
-                df_valid['cam_to_image_lag'].mean(),
-                df_valid['image_to_transform_lag'].mean(),
-                df_valid['transform_to_UKF_lag'].mean(),
-                df_valid['apriltag_total_lag'].mean(),
-            ])
-            bar_colors.extend([
-                LAG_COLOURS['cam_to_image_lag'],
-                LAG_COLOURS['image_to_transform_lag'],
-                LAG_COLOURS['transform_to_UKF_lag'],
-                LAG_COLOURS['apriltag_total_lag'],
-            ])
-
-        if has_yolo_lag:
-            labels.extend([
-                'YOLO\nCamera → Image',
-                'YOLO\nImage → Transform',
-                'YOLO\nTransform → UKF',
-                'YOLO\nTotal',
-            ])
-            mean_lags.extend([
-                df_valid['yolo_cam_to_image_lag'].mean(),
-                df_valid['yolo_image_to_transform_lag'].mean(),
-                df_valid['yolo_transform_to_UKF_lag'].mean(),
-                df_valid['yolo_total_lag'].mean(),
-            ])
-            bar_colors.extend([
-                LAG_COLOURS['yolo_cam_to_image_lag'],
-                LAG_COLOURS['yolo_image_to_transform_lag'],
-                LAG_COLOURS['yolo_transform_to_UKF_lag'],
-                LAG_COLOURS['yolo_total_lag'],
-            ])
-
-        if has_meas_age:
-            labels.append('Measurement\nAge')
-            mean_lags.append(df_valid['total_lag'].mean())
-            bar_colors.append(LAG_COLOURS['total_lag'])
-
-        bars = ax_lag_bar.bar(
-            labels,
-            mean_lags,
-            color=bar_colors,
-            alpha=0.85
-        )
-
+        mean_lags = [df_valid[col].mean() for _, col in bar_specs]
+        bars = ax_lag_bar.bar([lbl for lbl, _ in bar_specs], mean_lags,
+                              color=[LAG_COLOURS[col] for _, col in bar_specs], alpha=0.85)
         ax_lag_bar.set_title('Mean Latency Breakdown')
         ax_lag_bar.set_ylabel('Mean latency / age (ms)')
         ax_lag_bar.tick_params(axis='x', labelsize=8)
         ax_lag_bar.grid(True, axis='y', alpha=0.3)
 
-        # Add values above bars
-        max_mean = max(mean_lags) if mean_lags else 1.0
+        max_mean = np.nanmax(mean_lags) if mean_lags else 1.0
         for bar, value in zip(bars, mean_lags):
-            ax_lag_bar.text(
-                bar.get_x() + bar.get_width()/2,
-                value + 0.02 * max_mean,
-                f'{value:.1f} ms',
-                ha='center',
-                va='bottom',
-                fontsize=8
-            )
+            if np.isfinite(value):
+                ax_lag_bar.text(bar.get_x() + bar.get_width() / 2, value + 0.02 * max_mean,
+                                f'{value:.1f} ms', ha='center', va='bottom', fontsize=8)
 
-        fig5.tight_layout(rect=[0, 0, 1, 0.95])
-
-        out5 = out_dir / 'pipeline_latency.png'
-        fig5.savefig(
-            out5,
-            dpi=500,
-            bbox_inches='tight'
-        )
-
-        print(f"Saved: {out5}")
-
+        fig4.tight_layout(rect=[0, 0, 1, 0.95])
+        out4 = out_dir / 'pipeline_latency.png'
+        fig4.savefig(out4, dpi=DPI, bbox_inches='tight')
+        print(f"Saved: {out4}")
     else:
-        print(
-            "WARNING: Pipeline latency columns missing "
-            "– latency analysis skipped."
-        )
+        print("WARNING: Pipeline latency columns missing – latency analysis skipped.")
 
     # ── Print summary stats ───────────────────────────────────────────────
-    print('\n=== Error summary ===')
+    def rms(v):
+        return np.sqrt(np.nanmean(v ** 2))
 
-    if april_valid.any():
-        vals = april_err_x[april_valid]
-        print(f'  April raw X   mean: {vals.mean():+.3f} m   RMS: {np.sqrt(np.mean(vals**2)):.3f} m')
-        vals = april_err_y[april_valid]
-        print(f'  April raw Y   mean: {vals.mean():+.3f} m   RMS: {np.sqrt(np.mean(vals**2)):.3f} m')
-        vals = raw_yaw_err[april_valid]
-        print(f'  April raw yaw mean: {np.mean(vals):+.4f} rad '
-            f'({np.degrees(np.mean(vals)):+.2f}°)   '
-            f'RMS: {np.sqrt(np.mean(vals**2)):.4f} rad '
-            f'({np.degrees(np.sqrt(np.mean(vals**2))):.2f}°)')
-        vals = april_err_abs[april_valid]
-        print(f'  April raw |e|  mean: {vals.mean():.3f} m   max: {vals.max():.3f} m')
+    print('\n=== Error summary (estimate - truth) ===')
+    print('  long = along car heading (+ ahead),  lat = across car heading (+ left)')
 
-    if yolo_lp_valid.any():
-        vals = yolo_lp_err_x[yolo_lp_valid]
-        print(f'  YOLO LP raw X mean: {vals.mean():+.3f} m   RMS: {np.sqrt(np.mean(vals**2)):.3f} m')
-        vals = yolo_lp_err_y[yolo_lp_valid]
-        print(f'  YOLO LP raw Y mean: {vals.mean():+.3f} m   RMS: {np.sqrt(np.mean(vals**2)):.3f} m')
-        vals = yolo_lp_err_abs[yolo_lp_valid]
-        print(f'  YOLO LP raw |e| mean: {vals.mean():.3f} m   max: {vals.max():.3f} m')
+    for s in streams:
+        if not s['valid'].any():
+            continue
+        name = s['label']
+        for field, unit in [('long', 'm'), ('lat', 'm'), ('z', 'm')]:
+            if field in s:
+                vals = s[field][s['valid'] & np.isfinite(s[field])]
+                if len(vals):
+                    print(f'  {name:<13s} {field:<4s} mean: {vals.mean():+.3f} {unit}   RMS: {rms(vals):.3f} {unit}')
+        if 'yaw' in s:
+            vals = s['yaw'][s['valid']]
+            print(f'  {name:<13s} yaw  mean: {np.degrees(vals.mean()):+.2f}°   '
+                  f'RMS: {np.degrees(rms(vals)):.2f}°')
+        vals = s['abs'][s['valid']]
+        print(f'  {name:<13s} |e|  mean: {vals.mean():.3f} m   max: {vals.max():.3f} m')
 
-    if yolo_car_valid.any():
-        vals = yolo_car_err_x[yolo_car_valid]
-        print(f'  YOLO car raw X mean: {vals.mean():+.3f} m   RMS: {np.sqrt(np.mean(vals**2)):.3f} m')
-        vals = yolo_car_err_y[yolo_car_valid]
-        print(f'  YOLO car raw Y mean: {vals.mean():+.3f} m   RMS: {np.sqrt(np.mean(vals**2)):.3f} m')
-        vals = yolo_car_err_abs[yolo_car_valid]
-        print(f'  YOLO car raw |e| mean: {vals.mean():.3f} m   max: {vals.max():.3f} m')
+    print(f'  Filter        long mean: {np.nanmean(filt_err_long):+.3f} m   RMS: {rms(filt_err_long):.3f} m')
+    print(f'  Filter        lat  mean: {np.nanmean(filt_err_lat):+.3f} m   RMS: {rms(filt_err_lat):.3f} m')
+    print(f'  Filter        z    mean: {np.nanmean(filt_err_z):+.3f} m   RMS: {rms(filt_err_z):.3f} m')
+    print(f'  Filter        yaw  mean: {np.degrees(np.nanmean(filt_yaw_err)):+.2f}°   '
+          f'RMS: {np.degrees(rms(filt_yaw_err)):.2f}°')
+    print(f'  Filter        |e|  mean: {np.nanmean(filt_err_abs):.3f} m   max: {np.nanmax(filt_err_abs):.3f} m')
 
-    print(f'  Filt  X   mean: {filt_err_x.mean():+.3f} m   RMS: {np.sqrt(np.mean(filt_err_x**2)):.3f} m')
-    print(f'  Filt  Y   mean: {filt_err_y.mean():+.3f} m   RMS: {np.sqrt(np.mean(filt_err_y**2)):.3f} m')
-    print(f'  Filt  yaw mean: {np.mean(filt_yaw_err):+.4f} rad '
-        f'({np.degrees(np.mean(filt_yaw_err)):+.2f}°)   '
-        f'RMS: {np.sqrt(np.mean(filt_yaw_err**2)):.4f} rad '
-        f'({np.degrees(np.sqrt(np.mean(filt_yaw_err**2))):.2f}°)')
-    print(f'  Filt |e|  mean: {filt_err_abs.mean():.3f} m   max: {filt_err_abs.max():.3f} m')
+    if has_box_mode:
+        yolo_new = new_measurement_mask(df_valid['landing_pad_yolo_car_raw_stamp'].to_numpy())
+        n_box = int((yolo_new & box_mode).sum())
+        print(f'\n=== YOLO measurement mode ===')
+        print(f'  box update: {n_box}   fallback fit: {int(yolo_new.sum()) - n_box}')
 
-    if has_apriltag_lag:
-        lag_vals = df_valid['apriltag_total_lag'].values
-        print(f'\n=== AprilTag total pipeline latency summary ===')
-        print(f'  mean: {lag_vals.mean():.1f} ms   max: {lag_vals.max():.1f} ms   '
-              f'min: {lag_vals.min():.1f} ms')
-
-    if has_yolo_lag:
-        lag_vals = df_valid['yolo_total_lag'].values
-        print(f'\n=== YOLO total pipeline latency summary ===')
-        print(f'  mean: {lag_vals.mean():.1f} ms   max: {lag_vals.max():.1f} ms   '
-              f'min: {lag_vals.min():.1f} ms')
-
-    if has_meas_age:
-        lag_vals = df_valid['total_lag'].values
-        print(f'\n=== measurement age summary ===')
-        print(f'  mean: {lag_vals.mean():.1f} ms   max: {lag_vals.max():.1f} ms   '
-              f'min: {lag_vals.min():.1f} ms')
+    for on, col, title in [
+        (has_apriltag_lag, 'apriltag_total_lag', 'AprilTag total pipeline latency'),
+        (has_yolo_lag,     'yolo_total_lag',     'YOLO total pipeline latency'),
+        (has_meas_age,     'total_lag',          'measurement age'),
+    ]:
+        if on:
+            vals = df_valid[col].to_numpy(dtype=float)
+            print(f'\n=== {title} summary ===')
+            print(f'  mean: {np.nanmean(vals):.1f} ms   max: {np.nanmax(vals):.1f} ms   '
+                  f'min: {np.nanmin(vals):.1f} ms')
 
     if has_per_state:
-        print(f'\n=== UKF per-state 1σ summary (mean ± std) ===')
+        print('\n=== UKF per-state 1σ summary ===')
         for col in sigma_cols:
-            vals = df_valid[col].values
+            vals = df_valid[col].to_numpy()
             print(f'  {SIGMA_LABELS[col]:25s}  mean: {vals.mean():.4f}   '
                   f'max: {vals.max():.4f}   min: {vals.min():.4f}')
     elif has_trace_only:
-        covar_vals = df_valid[trace_col].values
+        vals = df_valid[trace_col].to_numpy()
         print(f'\n=== {trace_col} (trace) summary ===')
-        print(f'  mean: {covar_vals.mean():.4f}   max: {covar_vals.max():.4f}   '
-              f'min: {covar_vals.min():.4f}')
-        
+        print(f'  mean: {vals.mean():.4f}   max: {vals.max():.4f}   min: {vals.min():.4f}')
+
     if has_nis:
-        nis = df_valid['nis'].values
-        nis_valid = nis[np.isfinite(nis)]
-
-        print('\n=== NIS summary ===')
-
-        if len(nis_valid) > 0:
-            print(f'  mean: {nis_valid.mean():.3f}')
-            print(f'  max : {nis_valid.max():.3f}')
-            print(f'  min : {nis_valid.min():.3f}')
+        print('\n=== NIS summary (one per measurement) ===')
+        if len(nis):
+            print(f'  n: {len(nis)}   mean: {nis.mean():.3f}   max: {nis.max():.3f}   min: {nis.min():.3f}')
+            print(f'  above 95% χ²(4) bound: {np.mean(nis > nis_bound) * 100:.1f}%')
         else:
             print('  no finite NIS entries')
-    
-    if has_nees:
-        nees = df_valid['nees'].values
 
+    if has_nees and len(nees_finite):
         print('\n=== NEES summary ===')
-        print(f'  mean: {np.nanmean(nees):.3f}')
-        print(f'  max : {np.nanmax(nees):.3f}')
-        print(f'  min : {np.nanmin(nees):.3f}')
-
-        upper = chi2.ppf(0.95, df=4)
-        frac_bad = np.nanmean(nees > upper)
-        print(f"NEES above 95% bound: {frac_bad*100:.1f}%")
+        print(f'  mean: {nees_finite.mean():.3f}   max: {nees_finite.max():.3f}   '
+              f'min: {nees_finite.min():.3f}')
+        print(f'  above 95% χ²(3) bound: {np.mean(nees_finite > nees_bound) * 100:.1f}%')
 
     plt.show()
 

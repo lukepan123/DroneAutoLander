@@ -13,30 +13,29 @@ from datetime import datetime
 from typing import cast
 
 """ Shared utilities for the AprilTag (apriltag.py) and YOLO (yolo.py) landing-pad
-    perception nodes.
+    perception nodes, and the gimbal controller (gimbal_controller.py).
 
     These used to live inside one combined vision_perception node/thread. They are
-    split out here so both nodes can independently subscribe to the camera and
-    odometry topics, run on their own timers, and broadcast their own TF without
-    resource contention on a shared executor thread - a slow YOLO inference tick can
-    no longer stall AprilTag's gimbal control / TF broadcast loop.
+    split out here so the nodes can independently subscribe to the camera and
+    odometry topics and run on their own timers without resource contention on a
+    shared executor thread - a slow YOLO inference tick can no longer stall
+    AprilTag's detector.
 
     Everything in this module that defines a GEOMETRIC CONVENTION (camera intrinsics,
-    camera->level-frame pose, pixel-row-to-angle-error) must be shared verbatim by
-    both nodes. Now that they are separate processes, they can no longer drift apart
-    on camera mount/gimbal offsets simply because they import the same function.
+    camera->level-frame pose, image-target-to-angle-error) must be shared verbatim by
+    every node. Because they are separate processes, importing the same function is
+    what stops them drifting apart on camera mount/gimbal offsets.
 
-    pixel_row_to_angle_error and LatestValueBuffer provide the shared image geometry
-    and timestamped-value behaviour used by the independent gimbal controller. The
-    perception nodes publish image targets, while gimbal_controller.py owns the only
-    actuator and decides which target source has priority.
+    The perception nodes publish image targets (image_target_message); the gimbal
+    controller owns the only actuator, picks which target source has priority
+    (LatestValueBuffer) and converts it with image_target_to_angle_error.
 
-    Camera pose: gimbal_controller.py does NOT broadcast a camera TF. Each perception
-    node instead buffers FCU odometry (OdometryBuffer) and the measured gimbal angle
-    (GimbalAngleBuffer, fed from /landing_pad/gimbal_angle), interpolates both to the
-    image's header.stamp, and calls camera_pose_in_level_frame with the mount from
-    load_camera_mount. This is time-aligned to the image and cannot fail with a TF
-    extrapolation error - the buffers clamp to the newest sample instead.
+    Camera pose: no node broadcasts a camera TF. Each perception node buffers FCU
+    odometry (OdometryBuffer) and the measured gimbal angle (GimbalAngleBuffer, fed from
+    /landing_pad/gimbal_angle, stamped at measurement time by gimbal_controller.py),
+    interpolates both to the image's header.stamp, and calls camera_pose_in_level_frame
+    with the mount from load_camera_mount. This is time-aligned to the image and cannot
+    fail with a TF extrapolation error - the buffers clamp to the newest sample instead.
 """
 
 
@@ -57,25 +56,6 @@ def get_workspace_root() -> str | None:
 def stamp_to_sec(stamp) -> float:
     """ builtin_interfaces/Time -> float seconds. """
     return stamp.sec + stamp.nanosec * 1e-9
-
-
-def pixel_row_to_angle_error(centre_y: float, image_height: int, fy: float) -> float:
-    """ Convert a detection's vertical pixel centre into a signed angle (degrees)
-        off the image's optical-axis row. This is the exact calculation
-        apriltag.py's gimbal controller has always used on its own AprilTag corner
-        points; it's pulled out here so yolo.py can produce a directly comparable
-        error from its own bounding-box centre using its own (different-resolution)
-        camera intrinsics, and apriltag.py can treat the two as interchangeable inputs
-        to the same PD control law. Purely a function of that frame's own image
-        geometry - independent of the drone's attitude or the current servo angle.
-
-    :param centre_y: Detection centre row, in pixels of the frame it came from
-    :param image_height: Height (pixels) of that same frame
-    :param fy: Vertical focal length (pixels) of that same frame's camera intrinsics
-    :return: Signed angle error in degrees; positive = detection below image centre
-    """
-    pixel_error = centre_y - image_height / 2
-    return float(np.degrees(np.arctan2(pixel_error, fy)))
 
 
 def image_target_message(stamp, centre_x: float, centre_y: float, intrinsics, frame_id: str):
@@ -109,26 +89,6 @@ def image_target_to_angle_error(normalised_centre_y: float, fov_vertical: float)
             )
         )
     )
-
-
-def transform_stamped_to_matrix(transform: object) -> np.ndarray:
-    """ Convert a geometry_msgs TransformStamped into a 4x4 homogeneous matrix. """
-    tf_msg = transform.transform  # type: ignore
-    q = [
-        tf_msg.rotation.x,
-        tf_msg.rotation.y,
-        tf_msg.rotation.z,
-        tf_msg.rotation.w,
-    ]
-    T = tf_transformations.quaternion_matrix(q)
-    T[:3, 3] = np.array(
-        [
-            tf_msg.translation.x,
-            tf_msg.translation.y,
-            tf_msg.translation.z,
-        ]
-    )
-    return T
 
 
 @dataclass
@@ -236,7 +196,7 @@ def camera_pose_in_level_frame(
     """ Camera pose (position + rotation) expressed in the drone-relative,
         local-level frame - the drone's own translation is excluded, only its
         attitude and the gimbal angle are applied. This is the same frame
-        convention used for both the AprilTag and YOLO landing-pad transforms.
+        convention used for both the AprilTag and YOLO landing-pad measurements.
         Both nodes MUST call this exact function (not a re-implementation) so
         they can't drift apart on camera mount/gimbal geometry now that they
         run as separate processes.

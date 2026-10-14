@@ -3,7 +3,6 @@ import sys
 import signal
 import cv2
 import numpy as np
-import tf2_ros
 import rclpy
 import logging
 import warnings
@@ -14,12 +13,11 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import DurabilityPolicy
-from scipy.optimize import least_squares
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
+from std_msgs.msg import Float64MultiArray
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Vector3Stamped
-from geometry_msgs.msg import TransformStamped
 
 from ultralytics import YOLO
 from ultralytics import utils as yutils
@@ -34,29 +32,35 @@ from .vision_common import load_camera_mount
 from .vision_common import stamp_to_sec
 from .vision_common import get_workspace_root
 
-""" YOLO Landing Pad Detection Node.
+""" YOLO Car Detection Node.
 
-    Runs the coarser, heavier perception loop: monocular 'ugv' bounding-box detection
-    -> flat-ground back-projection -> base_link -> landing_pad_link_yolo TF broadcast.
-    This TF broadcast is a second, independent measurement stream feeding the same UKF
-    that apriltag.py's TF also feeds (translation only - see
-    _estimate_yolo_ground_position for why this can't recover rotation/yaw).
+    Runs the coarser, heavier perception loop: monocular 'car' bounding-box detection.
+    This node no longer back-projects the box itself. It publishes the RAW box together
+    with the camera geometry at the image timestamp, and the UKF (controller.py) does
+    the 3D-box measurement update, where it can use the live landing-pad yaw estimate
+    and propagate covariance properly. While the yaw estimate is poor (e.g. seeding),
+    the UKF falls back to the previous yaw-agnostic 3D-box fit on the same data.
 
-    This node does not command the gimbal servo. It publishes the best available image
-    target on /landing_pad/yolo_target for gimbal_controller.py, preferring the landing
-    pad class and using the car class as a coarse fallback. The gimbal controller owns
-    the actuator independently, so YOLO can continue to drive the gimbal even when the
-    AprilTag node is disabled.
+    /landing_pad/yolo_car_meas (std_msgs/Float64MultiArray) layout:
+        [0:2]   image stamp (sec, nanosec)
+        [2:6]   undistorted box edges u_min, u_max, v_min, v_max (px, pinhole K)
+        [6]     confidence
+        [7]     drone altitude at the image stamp (m)
+        [8:12]  intrinsics fx, fy, cx, cy (px)
+        [12:15] camera position in the drone-relative local-level frame (m)
+        [15:24] camera rotation (level <- camera), row-major
+
+    Carrying the camera pose (attitude + gimbal angle, both interpolated to the image
+    stamp) in the measurement lets the UKF replay it exactly during OOSM rollback.
+
+    This node does not command the gimbal servo. It publishes the car image target on
+    /landing_pad/yolo_target for gimbal_controller.py, which owns the actuator
+    independently, so YOLO can continue to drive the gimbal even when the AprilTag node
+    is disabled.
 
     Split out from the combined vision_perception node into its own process so a slow
     YOLO inference tick (OpenVINO on CPU) can never stall apriltag.py's detector or the
     independent gimbal controller.
-
-    For the ground-plane estimate, this node builds the camera pose itself at the image
-    timestamp: buffered FCU odometry (attitude + altitude) and the gimbal angle from
-    /landing_pad/gimbal_angle are both interpolated to the image stamp and fed through
-    camera_pose_in_level_frame. There is no camera TF lookup, so there is nothing to
-    extrapolate and no frame is dropped because a transform arrived a few ms late.
 """
 
 # ---- Ultralytics/OpenVINO runtime safety ----
@@ -117,28 +121,13 @@ class YoloNode(Node):
 
         self.declare_parameter("yolo_conf_threshold", 0.60)
         self.yolo_conf_threshold = (self.get_parameter("yolo_conf_threshold").get_parameter_value().double_value)
-        self.declare_parameter("yolo_landing_pad_class_id", 1)
-        self._landing_pad_class_id = (self.get_parameter("yolo_landing_pad_class_id").get_parameter_value().integer_value)
         self.declare_parameter("yolo_car_class_id", 0)
         self._car_class_id = (self.get_parameter("yolo_car_class_id").get_parameter_value().integer_value)
 
         self.declare_parameter("yolo_edge_margin_px", 0)
         self._yolo_edge_margin_px = (self.get_parameter("yolo_edge_margin_px").get_parameter_value().integer_value)
-
-        # ---- YOLO OBJECT PARAMETERS ----
-        self.declare_parameter("yolo_car_roof_AGL", 1.5)
-        self._landing_pad_z = (self.get_parameter("yolo_car_roof_AGL").get_parameter_value().double_value)
         self.declare_parameter("yolo_ground_ray_z_epsilon", 1e-3)
         self._ground_ray_z_epsilon = (self.get_parameter("yolo_ground_ray_z_epsilon").get_parameter_value().double_value)
-        self.declare_parameter("yolo_car_size_3d", [1.8, 4.3, 0.85])  # car extent (m): width, length, height (of body NOT car)
-        self._car_size_3d = np.array(self.get_parameter("yolo_car_size_3d").get_parameter_value().double_array_value)
-        self.declare_parameter("yolo_car_fit_max_rel_rms", 0.08)  # max 3D-box fit residual, as a fraction of box size
-        self._car_fit_max_rel_rms = self.get_parameter("yolo_car_fit_max_rel_rms").get_parameter_value().double_value
-        self.declare_parameter("yolo_roof_height_gain", 0.2)  # per car detection; how fast the roof height tracks the fit (0 = fixed)
-        self._roof_height_gain = self.get_parameter("yolo_roof_height_gain").get_parameter_value().double_value
-        self.declare_parameter("yolo_car_roof_above_body", 0.65)  # roof height minus body-top height (m)
-        self._car_roof_above_body = self.get_parameter("yolo_car_roof_above_body").get_parameter_value().double_value
-
 
         # ---- CAMERA PARAMETERS ----
         self.declare_parameter("camera_fov_horizontal", 2.7925268)
@@ -156,10 +145,8 @@ class YoloNode(Node):
         self.get_logger().info(f"YOLO processing rate: {self._yolo_processing_rate} Hz")
         self.get_logger().info(
             f"YOLO parameters: model={self.yolo_model_path}, conf={self.yolo_conf_threshold:.2f}, "
-            f"input={self._image_width}x{self._image_height}, "
-            f"landing_pad_id={self._landing_pad_class_id}, car_id={self._car_class_id}"
+            f"input={self._image_width}x{self._image_height}, car_id={self._car_class_id}"
         )
-        self.get_logger().info(f"Roof plane Z above home altitude: {self._landing_pad_z:.3f} m")
         self.get_logger().info(
             f"Video recording parameters: save_frames={self.save_frames}, "
             f"create_video={self.create_video}, video_fps={self.video_fps}"
@@ -172,8 +159,9 @@ class YoloNode(Node):
             self._camera_fov_horizontal,
             tuple(camera_distortion_coeffs), # type:ignore
         )
-        self._camera_matrix_inv = self._intrinsics.matrix_inv
-        self._camera_matrix = np.linalg.inv(self._camera_matrix_inv)
+        K = self._intrinsics.matrix
+        self._intrinsics_flat = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]])
+        self._dist_coeffs = self._intrinsics.dist_coeffs_array
 
         # ---- YOLO MODEL ----
         self.yolo_model = None
@@ -215,10 +203,6 @@ class YoloNode(Node):
         # Camera mount (shared defaults live in vision_common.load_camera_mount)
         self._camera_mount = load_camera_mount(self)
 
-        # ---- TF2 ----
-        # Broadcast only: this node publishes its landing pad / car measurements as TF
-        # but no longer listens to /tf.
-
         _img_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -236,8 +220,7 @@ class YoloNode(Node):
         self._bridge = CvBridge()
         self._landing_pad_found_publisher = self.create_publisher(Bool, "/landing_pad/found", 10)
         self._yolo_target_publisher = self.create_publisher(Vector3Stamped, "/landing_pad/yolo_target", 10)
-
-        self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self._car_measurement_publisher = self.create_publisher(Float64MultiArray, "/landing_pad/yolo_car_meas", 10)
 
         # ---- DIAGNOSTICS ----
         self._yolo_pipeline_timing_publisher = self.create_publisher(
@@ -319,11 +302,10 @@ class YoloNode(Node):
         return frame, stamp
 
     def _yolo_timer_callback(self) -> None:
-        """ Fires at yolo_processing_rate. Runs the coarse YOLO landing-pad detector
-            independently of the AprilTag pipeline and publishes its own measurement
-            update to the UKF (via TF), plus an image target for the independent gimbal
-            controller. The camera pose used for ground back-projection is built locally
-            from time-aligned odometry and gimbal angle.
+        """ Fires at yolo_processing_rate. Runs the YOLO car detector independently of
+            the AprilTag pipeline, publishes the raw box + image-time camera geometry as
+            the UKF measurement, and an image target for the independent gimbal 
+            controller.
         """
 
         if not self.yolo_enabled or self.yolo_model is None:
@@ -353,67 +335,45 @@ class YoloNode(Node):
         # gimbal angle both interpolated to `stamp`).
         T_local_cam = camera_pose_in_level_frame(q, gimbal_deg, self._camera_mount)
 
-        detections = self._yolo_detections(frame)
-
-        landing_pad_detection = detections["landing_pad"]
-        landing_pad_translation = None
-        car_detection = detections["car"]
-        car_translation = None
-
-        # Push a gimbal target, prioritising the landing pad over the coarse car class.
-        any_detection = None
-        if landing_pad_detection is not None:
-            any_detection = landing_pad_detection
-        elif car_detection is not None:
-            any_detection = car_detection
-
-        if any_detection is not None:
-            cx, cy, _bw, _bh, _confidence = any_detection  #type: ignore
-            self._yolo_target_publisher.publish(
-                image_target_message(
-                    stamp, cx, cy, self._intrinsics, "yolo_target"
-                )
-            )
-
-        if landing_pad_detection is not None:
-            cx, cy, bw, bh, confidence = landing_pad_detection #type: ignore
-
-            # A single 2D box gives a bearing to the pad, not depth or orientation,
-            # so we recover (x, y, z) via a flat-ground assumption: cast the ray
-            # through the box centre and intersect it with the ground plane, using
-            # altitude to fix the scale. This carries no rotation information - see
-            # _compose_base_to_landing_pad_yolo, which publishes identity rotation.
-            landing_pad_translation = self._estimate_yolo_ground_position(
-                cx, cy, T_local_cam, altitude
-            )
-
-            if landing_pad_translation is not None:
-                # If we have a detection, then the landing pad is found. Note: unlike
-                # apriltag.py, this branch only ever publishes True - it never asserts
-                # "not found", since a missed YOLO detection on any given tick shouldn't
-                # override AprilTag's own found/not-found signal on the shared topic.
-                self._landing_pad_found_publisher.publish(Bool(data=True))
-                tf_base_to_pad_yolo = self._compose_base_to_landing_pad_yolo(
-                    stamp, landing_pad_translation
-                )
-                self._tf_broadcaster.sendTransform(tf_base_to_pad_yolo)
-                # This TF broadcast is the YOLO measurement update the UKF consumes -
-                # translation only; the UKF's measurement model for this update
-                # should not read rotation/yaw from it.
+        car_detection = self._yolo_detection(frame)
 
         if car_detection is not None:
-            cx, cy, bw, bh, confidence = car_detection #type: ignore
+            cx, cy, bw, bh, confidence = car_detection
+            u0, u1, v0, v1 = cx - 0.5 * bw, cx + 0.5 * bw, cy - 0.5 * bh, cy + 0.5 * bh
 
-            car_translation = self._estimate_yolo_ground_position(
-                cx, cy, T_local_cam, altitude, kind="car", bw=bw, bh=bh
+            # Undistort a 3x3 grid over the box (corners, edge midpoints, centre) and
+            # take its extent: distortion bends straight edges, so corners alone can
+            # miss the true extent. P=K keeps the output in the same pinhole pixel frame
+            # the UKF projects into.
+            if np.any(self._dist_coeffs):
+                us, vs = np.meshgrid([u0, cx, u1], [v0, cy, v1])
+                und = cv2.undistortPoints(
+                    np.c_[us.ravel(), vs.ravel()].reshape(-1, 1, 2),
+                    self._intrinsics.matrix, self._dist_coeffs, P=self._intrinsics.matrix,
+                ).reshape(-1, 2)
+                u0, u1 = und[:, 0].min(), und[:, 0].max()
+                v0, v1 = und[:, 1].min(), und[:, 1].max()
+                cx, cy = und[4]   # grid centre
+
+            self._yolo_target_publisher.publish(
+                image_target_message(stamp, cx, cy, self._intrinsics, "yolo_target")
             )
 
-            if car_translation is not None:
+            # Only a box whose centre ray points at the ground is a usable measurement.
+            # Note: unlike apriltag.py, this only ever publishes True - a missed YOLO
+            # detection shouldn't override AprilTag's own found signal on the topic.
+            ray = T_local_cam[:3, :3] @ self._intrinsics.matrix_inv @ np.array([cx, cy, 1.0])
+            if ray[2] < -self._ground_ray_z_epsilon * np.linalg.norm(ray):
                 self._landing_pad_found_publisher.publish(Bool(data=True))
-                tf_base_to_car_yolo = self._compose_base_to_car_yolo(
-                    stamp, car_translation,
-                )
-                self._tf_broadcaster.sendTransform(tf_base_to_car_yolo)
+                msg = Float64MultiArray()
+                msg.data = np.r_[
+                    stamp.sec, stamp.nanosec, #type: ignore
+                    u0, u1, v0, v1,
+                    confidence, altitude,
+                    self._intrinsics_flat,
+                    T_local_cam[:3, 3], T_local_cam[:3, :3].ravel(),
+                ].astype(float).tolist()
+                self._car_measurement_publisher.publish(msg)
 
         # Pipeline Latency Diagnostics
         if self.diagnostics_enabled:
@@ -426,35 +386,21 @@ class YoloNode(Node):
             self._yolo_pipeline_timing_publisher.publish(timing_msg)
 
         if self.show_debug_window:
-            self._show_yolo_debug(
-                frame,
-                landing_pad_detection,
-                car_detection,
-                landing_pad_translation,
-                car_translation,
-            )
+            self._show_yolo_debug(frame, car_detection)
             cv2.imshow("YOLO Debug", frame)
             cv2.waitKey(1)
 
         if self.save_frames or self.create_video:
             self._frame_recorder.save(frame)
 
-    def _yolo_detections(self, frame):
-        """Run YOLO and return the best detection for each supported class.
-        Returns:
-            {
-                "landing_pad": (cx, cy, width, height, confidence),
-                "car": (cx, cy, width, height, confidence),
-            }
-            Missing classes have value None.
+    def _yolo_detection(self, frame):
+        """ Run YOLO and return the highest-confidence car detection.
+
+        :return: (cx, cy, width, height, confidence), or None if no car was found
         """
+        best = None
 
-        detections = {"landing_pad": None, "car": None}
-
-        if not self.yolo_enabled or self.yolo_model is None:
-            return detections
-
-        results = self.yolo_model(
+        results = self.yolo_model(  #type: ignore
             frame,                                   # 640x360
             imgsz=(self._yolo_image_height, self._yolo_image_width), # (384, 640)
             verbose=False,
@@ -467,17 +413,7 @@ class YoloNode(Node):
 
             for box in result.boxes:
                 confidence = float(box.conf[0])
-
-                if confidence < self.yolo_conf_threshold:
-                    continue
-
-                class_id = int(box.cls[0])
-
-                if class_id == self._landing_pad_class_id:
-                    key = "landing_pad"
-                elif class_id == self._car_class_id:
-                    key = "car"
-                else:
+                if confidence < self.yolo_conf_threshold or int(box.cls[0]) != self._car_class_id:
                     continue
 
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
@@ -491,248 +427,49 @@ class YoloNode(Node):
                 ):
                     continue
 
-                width = x2 - x1
-                height = y2 - y1
-                cx = (x1 + x2) * 0.5
-                cy = (y1 + y2) * 0.5
-                detection = (float(cx), float(cy), float(width), float(height), confidence)
+                if best is None or confidence > best[4]:
+                    best = (
+                        float((x1 + x2) * 0.5), float((y1 + y2) * 0.5),
+                        float(x2 - x1), float(y2 - y1), confidence,
+                    )
 
-                # Keep highest-confidence detection for each class
-                previous = detections[key]
+        return best
 
-                if previous is None or confidence > previous[4]:
-                    detections[key] = detection  #type: ignore
+    def _show_yolo_debug(self, frame, detection):
+        """ Draw the YOLO car detection on the debug frame. """
+        if detection is None:
+            return
 
-        return detections
+        cx, cy, bw, bh, confidence = detection
+        box_color = (0, 255, 255)
 
-    def _show_yolo_debug(
-        self,
-        frame,
-        landing_pad_detection,
-        car_detection,
-        landing_pad_translation=None,
-        car_translation=None,
-    ):
-        """Show YOLO debug detections."""
+        x1 = int(cx - bw * 0.5)
+        y1 = int(cy - bh * 0.5)
+        x2 = int(cx + bw * 0.5)
+        y2 = int(cy + bh * 0.5)
 
-        def draw_detection(detection, translation, label, box_color):
-            """ In-line helper function to debug YOLO detections"""
-            if detection is None:
-                return
-
-            cx, cy, bw, bh, confidence = detection
-
-            x1 = int(cx - bw * 0.5)
-            y1 = int(cy - bh * 0.5)
-            x2 = int(cx + bw * 0.5)
-            y2 = int(cy + bh * 0.5)
-
-            # Bounding box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-
-            # Centre point
-            cv2.circle(frame, (int(cx), int(cy)), 5, box_color, -1)
-
-            # Crosshair
-            cv2.drawMarker(
-                frame,
-                (int(cx), int(cy)),
-                box_color,
-                markerType=cv2.MARKER_CROSS,
-                markerSize=20,
-                thickness=2,
-            )
-
-            # Label
-            cv2.putText(
-                frame,
-                f"{label} {confidence:.2f}",
-                (x1, max(20, y1 - 5)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                box_color,
-                2,
-            )
-
-            # Estimated XYZ
-            if translation is not None:
-                cv2.putText(
-                    frame,
-                    (
-                        f"xyz: "
-                        f"{translation[0]:.2f}, "
-                        f"{translation[1]:.2f}, "
-                        f"{translation[2]:.2f}"
-                    ),
-                    (x1, min(frame.shape[0] - 10, y2 + 20)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    box_color,
-                    1,
-                )
-
-        # Draw landing pad
-        draw_detection(
-            landing_pad_detection,
-            landing_pad_translation,
-            "Landing pad",
-            (255, 0, 255),
+        # Bounding box, centre point and crosshair
+        cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+        cv2.circle(frame, (int(cx), int(cy)), 5, box_color, -1)
+        cv2.drawMarker(
+            frame,
+            (int(cx), int(cy)),
+            box_color,
+            markerType=cv2.MARKER_CROSS,
+            markerSize=20,
+            thickness=2,
         )
 
-        # Draw car
-        draw_detection(
-            car_detection,
-            car_translation,
-            "Car",
-            (0, 255, 255),
+        # Label
+        cv2.putText(
+            frame,
+            f"Car {confidence:.2f}",
+            (x1, max(20, y1 - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            box_color,
+            2,
         )
-
-
-    def _estimate_yolo_ground_position(
-        self, cx, cy, T_local_cam, altitude, kind="landing_pad", bw=None, bh=None
-    ) -> np.ndarray | None:
-        """ Back-project a YOLO bounding box into a drone-relative 3D position
-            (translation only).
-
-            kind="landing_pad": intersect the box-centre ray with the roof plane.
-            kind="car": intersect the box-centre ray with the car's mid-height plane, then,
-                if bw/bh are given, refine by fitting a car-sized 3D box so that its
-                projected bounding box matches the YOLO box. This stays valid for oblique
-                views (foreshortening, visible roof + sides), unlike a size-based depth.
-                The car's yaw relative to the camera heading is fitted too, with a weak
-                prior towards "aligned". The box size also reveals if the roof is higher or
-                lower than self._landing_pad_z (car on a slope, altitude drift); that offset
-                is low-passed back into self._landing_pad_z, which the pad estimate uses too.
-                Only car detections correct the roof height; the pad has no known size.
-
-        :return: np.ndarray [x, y, z] in the local-level frame, or None if the camera isn't
-                looking toward the ground
-        """
-
-        R = T_local_cam[:3, :3]
-        cam = T_local_cam[:3, 3]  # camera position relative to the drone
-
-        ray = R @ self._camera_matrix_inv @ np.array([cx, cy, 1.0])
-        ray /= np.linalg.norm(ray)
-        if ray[2] >= -self._ground_ray_z_epsilon:
-            return None
-
-        # Plane to intersect: the roof for the pad, the car's mid-height for the car
-        plane_z = self._landing_pad_z - ((self._car_roof_above_body + 0.5 * self._car_size_3d[2]) if kind == "car" else 0.0)
-        t = (plane_z - (altitude + cam[2])) / ray[2]
-        if t <= 0:
-            return None
-        pos = cam + t * ray
-        if kind != "car":
-            return pos
-
-        roof_offset = 0.5 * self._car_size_3d[2] + self._car_roof_above_body
-        if bw is None or bh is None:
-            return pos + np.array([0.0, 0.0, roof_offset])
-
-        # Car footprint axes, assuming the car is yaw-aligned with the camera heading:
-        # width along the image x-axis, length along the perpendicular horizontal axis.
-        u_w = np.array([R[0, 0], R[1, 0], 0.0])
-        if np.linalg.norm(u_w) < 0.2:  # camera x-axis ~vertical: heading undefined
-            return pos + np.array([0.0, 0.0, roof_offset])
-        u_w /= np.linalg.norm(u_w)
-        u_l = np.array([-u_w[1], u_w[0], 0.0])
-
-        # 8 box corners in the car frame (width, length, height) and the YOLO box edges
-        corners = np.array([[a, b, c] for a in (-.5, .5) for b in (-.5, .5) for c in (-.5, .5)])
-        corners = corners * self._car_size_3d
-        box = np.array([cx - bw / 2, cx + bw / 2, cy - bh / 2, cy + bh / 2])
-
-        k_dz = 3.0  # height prior (px per metre): weak in pass 1, ~pinned in pass 2
-
-        def residual(p):  # p = [x, y, yaw offset, height offset] -> projected-box edges minus YOLO box edges
-            c, s = np.cos(p[2]), np.sin(p[2])
-            axes = np.array([c * u_w + s * u_l, c * u_l - s * u_w, [0.0, 0.0, 1.0]])
-            pts = (np.array([p[0], p[1], pos[2] + p[3]]) + corners @ axes - cam) @ R  # camera frame
-            uv = pts @ self._camera_matrix.T
-            uv = uv[:, :2] / np.maximum(uv[:, 2:], 0.1)
-            return np.array([
-                uv[:, 0].min() - box[0], uv[:, 0].max() - box[1],
-                uv[:, 1].min() - box[2], uv[:, 1].max() - box[3],
-                np.degrees(p[2]) / 5.0,  # weak yaw prior: costs 1 px per 5 deg
-                k_dz * p[3],
-            ])
-
-        def fit():
-            # Fit from a few yaw guesses (one start gets stuck at "aligned"). The sign of the
-            # yaw is not observable from a box, so blend the fits by likelihood (~2 px edge
-            # noise) instead of picking one at random: ambiguous -> midpoint, clear -> best.
-            fits = [least_squares(residual, [pos[0], pos[1], yaw0, 0.0], method="lm", max_nfev=25, ftol=1e-3, xtol=1e-3)
-                    for yaw0 in (-0.3, 0.3)]
-            cost = np.array([f.cost for f in fits])
-            w = np.exp(-(cost - cost.min()) / 4.0)
-            rms = np.sqrt(np.mean(fits[cost.argmin()].fun[:4] ** 2))
-            return w @ np.array([f.x for f in fits]) / w.sum(), rms
-
-        # Pass 1: let the height float to learn where the roof really is (slope, altitude
-        # drift) and low-pass that into self._landing_pad_z.
-        (x, y, _, dz), rms = fit()
-        if rms > max(self._car_fit_max_rel_rms * 0.5 * (bw + bh), 3.0):
-            return pos + np.array([0.0, 0.0, roof_offset])  # box doesn't fit the car model (bad yaw / bad detection)
-        self._landing_pad_z += self._roof_height_gain * dz
-        pos = np.array([x, y, pos[2] + self._roof_height_gain * dz])
-
-        self.get_logger().info(
-            f"car fit: rms={rms:.1f}px (limit {self._car_fit_max_rel_rms * 0.5 * (bw + bh):.1f}) "
-            f"bw={bw:.0f} bh={bh:.0f} roof={self._landing_pad_z:.2f} alt={altitude:.2f}",
-            throttle_duration_sec=1.0)
-
-        # Pass 2: fit x, y with that height ~fixed (a free height adds noise to x, y in
-        # oblique views, because height and range are coupled).
-        k_dz = 100.0
-        (x, y, _, _), _ = fit()
-        return np.array([x, y, self._landing_pad_z - altitude])
-
-
-    @staticmethod
-    def _compose_base_to_landing_pad_yolo(stamp, translation) -> TransformStamped:
-        """ Pack a YOLO-derived translation-only landing-pad estimate into a
-            TransformStamped, using the same frame convention as the AprilTag
-            transform. Rotation is published as identity since a single monocular
-            detection carries no orientation information.
-
-        :param stamp:       ROS timestamp
-        :param translation: np.ndarray [x, y, z], drone-relative in the local-level
-                             frame (see _estimate_yolo_ground_position)
-        :return: TransformStamped: local -> landing_pad_link_yolo
-        """
-
-        tf_msg = TransformStamped()
-        tf_msg.header.stamp = stamp
-        tf_msg.header.frame_id = "local"
-        tf_msg.child_frame_id = "landing_pad_link_yolo"
-        tf_msg.transform.translation.x = float(translation[0])
-        tf_msg.transform.translation.y = float(translation[1])
-        tf_msg.transform.translation.z = float(translation[2])
-        tf_msg.transform.rotation.x = 0.0
-        tf_msg.transform.rotation.y = 0.0
-        tf_msg.transform.rotation.z = 0.0
-        tf_msg.transform.rotation.w = 1.0
-
-        return tf_msg
-
-    @staticmethod
-    def _compose_base_to_car_yolo(stamp, translation) -> TransformStamped:
-        """ Pack a YOLO car detection into a translation-only TF. """
-
-        tf_msg = TransformStamped()
-        tf_msg.header.stamp = stamp
-        tf_msg.header.frame_id = "local"
-        tf_msg.child_frame_id = "car_link_yolo"
-        tf_msg.transform.translation.x = float(translation[0])
-        tf_msg.transform.translation.y = float(translation[1])
-        tf_msg.transform.translation.z = float(translation[2])
-        tf_msg.transform.rotation.x = 0.0
-        tf_msg.transform.rotation.y = 0.0
-        tf_msg.transform.rotation.z = 0.0
-        tf_msg.transform.rotation.w = 1.0
-
-        return tf_msg
 
 
 # ---- MAIN ----

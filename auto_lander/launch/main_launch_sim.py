@@ -146,7 +146,6 @@ def generate_launch_description():
             {"yolo_enabled": True},
             {"yolo_model_path": "ugv_yolo11n_openvino_model"},
             {"yolo_conf_threshold": 0.50},
-            {"yolo_landing_pad_class_id": 11},
             {"yolo_car_class_id": 0},
 
             # ----- Ground-plane projection -----
@@ -282,7 +281,7 @@ def generate_launch_description():
             {"PID_d_blend_start": 6.0},
             {"PID_d_blend_end": 3.0},
             {"PID_d_hold_radius": 6.0},
-            {"PID_marker_yaw_sigma_threshold": 0.6},
+            {"PID_marker_yaw_sigma_threshold": 0.25},
 
             {"PID_drop_off_strength": 0.5},
             {"PID_terminal_gain": 1.0},

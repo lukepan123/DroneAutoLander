@@ -47,12 +47,11 @@ class PIDController:
         drop_off,
         vz_up_max,
         vz_dn_max,
-        max_tilt=0.5,
+        max_tilt,
         platform_vz_ff=False,
     ):
         """Initialise the PD/PN controller.
 
-        :param max_climb_rate:  m/s, fallback for vz_up_max / vz_dn_max if those are not given
         :param vz_up_max:       m/s, MUST equal WPNAV_SPEED_UP / 100 on the FCU
         :param vz_dn_max:       m/s, MUST equal WPNAV_SPEED_DN / 100 on the FCU
         :param max_tilt:        rad, roll/pitch clamp, keep <= ANGLE_MAX on the FCU
@@ -85,7 +84,7 @@ class PIDController:
 
         self.d_blend_start = d_blend_start   # start blending toward marker yaw
         self.d_blend_end = d_blend_end       # fully aligned with marker yaw
-        self.d_hold_radius = d_hold_radius   # inside this, hold yaw if tag lost
+        self.d_hold_radius = d_hold_radius   # inside this, hold yaw if marker yaw unavailable
 
         # Guidance tuning
         self.drop_off_strength = drop_off_strength
@@ -98,9 +97,9 @@ class PIDController:
         self.Kd = self.Kd_0
 
         # Logging
-        self._last_outputs = self._nan_outputs()
+        self.reset_outputs()
 
-    def controller(
+    def update(
         self,
         dt,
         target_altitude,
@@ -110,29 +109,33 @@ class PIDController:
         alt_pos_control,
         quad_yaw,
         quad_vel,
-        u,
-        du,
+        landing_pad_relative_position,
+        landing_pad_relative_velocity,
     ):
         """PD/PN Controller Logic
 
         :param target_altitude:  desired hover/approach altitude above the pad (m, ENU z)
         :param target_desc_rate: desired climb rate (m/s, ENU z, negative = descend), used
                                  when alt_pos_control is False
-        :param marker_yaw:       AprilTag-measured pad yaw (rad, ENU), or None/NaN
-                                 if no tag is currently detected
+        :param marker_yaw:       UKF pad yaw (rad, ENU), or None/NaN when its uncertainty
+                                 is too high to align to
         :param cutoff:           bool — if True, command max descent and hold yaw (kill switch)
         :param alt_pos_control:  bool — if True, control altitude through a height P loop,
                                  false, command target_desc_rate directly
         :param quad_yaw:         drone yaw ψ (rad)
         :param quad_vel:         drone velocity v_a (m/s) — 3-vector [vx, vy, vz]
-        :param u:                target-drone relative position p_m (ENU globally aligned)
-                                 (m) — 3-vector [x, y, z]
-        :param du:               target-drone velocity v_m (m/s) (ENU globally aligned)
-                                — 3-vector [vx, vy, vz]
+        :param landing_pad_relative_position: target-drone relative position p_m (ENU
+                                 globally aligned) (m) — 3-vector [x, y, z]
+        :param landing_pad_relative_velocity: target-drone velocity v_m (m/s) (ENU
+                                 globally aligned) — 3-vector [vx, vy, vz]
         :return: AttitudeTarget msg (attitude quaternion + thrust field interpreted by the
                  FCU as a normalised climb rate, 0.5 = hold)
         """
-        tag_detected = (marker_yaw is not None) and not np.isnan(marker_yaw)
+        quad_vel = np.asarray(quad_vel)
+        u = np.asarray(landing_pad_relative_position)
+        du = np.asarray(landing_pad_relative_velocity)
+
+        marker_valid = (marker_yaw is not None) and not np.isnan(marker_yaw)
 
         if self.prev_yaw is None:
             self.prev_yaw = quad_yaw
@@ -144,7 +147,7 @@ class PIDController:
             dist_to_pad = np.hypot(u[0], u[1])        # horizontal range to pad
             heading_to_pad = np.arctan2(u[1], u[0])   # bearing drone -> pad
 
-            if tag_detected:
+            if marker_valid:
                 if dist_to_pad > self.d_blend_start:
                     target_yaw = heading_to_pad
                 elif dist_to_pad > self.d_blend_end:
@@ -169,23 +172,6 @@ class PIDController:
 
         # Cutoff condition
         if cutoff:
-            # ---- Build MAVROS message (ENU)
-            q = quaternion_from_euler(0, 0, target_yaw)
-
-            msg = AttitudeTarget()
-            msg.type_mask = (
-                AttitudeTarget.IGNORE_ROLL_RATE
-                | AttitudeTarget.IGNORE_PITCH_RATE
-                | AttitudeTarget.IGNORE_YAW_RATE
-            )
-
-            msg.orientation.x = q[0]
-            msg.orientation.y = q[1]
-            msg.orientation.z = q[2]
-            msg.orientation.w = q[3]
-            # Thrust field 0.0 = fastest descent the FCU allows (-WPNAV_SPEED_DN)
-            msg.thrust = 0.0
-
             # Attitude was commanded level, so restart tilt slewing from zero on resume
             self.prev_phi = 0.0
             self.prev_theta = 0.0
@@ -196,11 +182,12 @@ class PIDController:
                 F_x=0.0, F_y=0.0, F_z=0.0, F_thrust=0.0,
                 climb_rate_cmd=-float(self.vz_dn_max), thrust_field=0.0,
                 roll_cmd=0.0, pitch_cmd=0.0, yaw_cmd=float(target_yaw),
-                slew_yaw=int(slew_yaw), marker_yaw_valid=int(tag_detected), cutoff_active=1,
+                slew_yaw=int(slew_yaw), marker_yaw_valid=int(marker_valid), cutoff_active=1,
             )
             self._last_outputs = out
 
-            return msg
+            # Level attitude; thrust field 0.0 = fastest descent the FCU allows (-WPNAV_SPEED_DN)
+            return self._attitude_target(0.0, 0.0, target_yaw, 0.0)
 
         # ---- PN/PD Controller (ENU) ----
         r = np.linalg.norm(u[:2])
@@ -287,27 +274,12 @@ class PIDController:
             slew_roll=int(abs(phi - phi_pre) > 1e-9),
             slew_pitch=int(abs(theta - theta_pre) > 1e-9),
             slew_yaw=int(slew_yaw),
-            marker_yaw_valid=int(tag_detected),   # passed the sigma_yaw gate in update()
+            marker_yaw_valid=int(marker_valid),   # passed the sigma_yaw gate in the orchestrator
             cutoff_active=0,
         )
         self._last_outputs = out
 
-        # ---- Build MAVROS message
-        q = quaternion_from_euler(phi, theta, target_yaw)
-
-        msg = AttitudeTarget()
-        msg.type_mask = (
-            AttitudeTarget.IGNORE_ROLL_RATE
-            | AttitudeTarget.IGNORE_PITCH_RATE
-            | AttitudeTarget.IGNORE_YAW_RATE
-        )
-        msg.orientation.x = q[0]
-        msg.orientation.y = q[1]
-        msg.orientation.z = q[2]
-        msg.orientation.w = q[3]
-        msg.thrust = thrust_field
-
-        return msg
+        return self._attitude_target(phi, theta, target_yaw, thrust_field)
 
 
     def stop(self, stamp):
@@ -324,51 +296,6 @@ class PIDController:
         msg.twist.angular.z = 0.0
 
         return msg
-
-
-    def look(self, stamp):
-        """Make drone yaw to search for target."""
-
-        msg = TwistStamped()
-        msg.header.stamp = stamp
-        msg.header.frame_id = "base_link"
-        msg.twist.linear.x = 0.0
-        msg.twist.linear.y = 0.0
-        msg.twist.linear.z = 0.0
-        msg.twist.angular.x = 0.0
-        msg.twist.angular.y = 0.0
-        msg.twist.angular.z = 0.1
-
-        return msg
-
-
-    def update(
-        self,
-        dt,
-        target_altitude,
-        target_desc_rate,
-        marker_yaw,
-        cutoff,
-        alt_pos_control,
-        quad_yaw,
-        quad_vel,
-        landing_pad_relative_position,
-        landing_pad_relative_velocity,
-    ):
-        """Update the controller with the current state and return a MAVROS command."""
-
-        return self.controller(
-            dt=dt,
-            target_altitude=target_altitude,
-            target_desc_rate=target_desc_rate,
-            marker_yaw=marker_yaw,
-            cutoff=cutoff,
-            alt_pos_control=alt_pos_control,
-            quad_yaw=quad_yaw,
-            quad_vel=np.asarray(quad_vel),
-            u=np.asarray(landing_pad_relative_position),
-            du=np.asarray(landing_pad_relative_velocity),
-        )
 
 
     def goPosition(self, stamp, lat, lon, alt, yaw=None):
@@ -412,6 +339,25 @@ class PIDController:
         return msg
 
 
+    @staticmethod
+    def _attitude_target(roll, pitch, yaw, thrust_field) -> AttitudeTarget:
+        """ Build an attitude + normalised climb-rate setpoint (body rates ignored). """
+        q = quaternion_from_euler(roll, pitch, yaw)
+
+        msg = AttitudeTarget()
+        msg.type_mask = (
+            AttitudeTarget.IGNORE_ROLL_RATE
+            | AttitudeTarget.IGNORE_PITCH_RATE
+            | AttitudeTarget.IGNORE_YAW_RATE
+        )
+        msg.orientation.x = q[0]
+        msg.orientation.y = q[1]
+        msg.orientation.z = q[2]
+        msg.orientation.w = q[3]
+        msg.thrust = thrust_field
+        return msg
+
+
     def _slew(self, target, prev, max_rate, dt):
         """ Slew the PID output to the maximum rate.
 
@@ -445,14 +391,15 @@ class PIDController:
         return np.arctan2(v[1], v[0])
 
     # Logging functions
-    def _nan_outputs(self) -> dict:
+    @staticmethod
+    def _nan_outputs() -> dict:
         return {k: float("nan") for k in CONTROL_OUTPUT_KEYS}
 
 
     def reset_outputs(self) -> None:
         """Call once per control tick before the controller may run, so ticks
-        where controller() isn't called log NaN instead of stale values."""
-        self._last_outputs = {k: float("nan") for k in CONTROL_OUTPUT_KEYS}
+        where update() isn't called log NaN instead of stale values."""
+        self._last_outputs = self._nan_outputs()
 
 
     def get_control_outputs(self) -> dict:
