@@ -221,7 +221,7 @@ class PIDController:
 
         if self.platform_vz_ff:
             # FCU climb rate is in the world frame, so add the pad's own vertical velocity
-            # (du_z = pad_vz - drone_vz  ->  pad_vz = du_z + drone_vz)
+            # (du_z = pad_vz - drone_vz  ->  pad_vz = du_z + drone_vz) -> NOTE: No platform vz estimate available rn
             vz_cmd = vz_cmd + du[QUAD_State.Z] + quad_vel[QUAD_State.Z]
 
         vz_cmd_pre = vz_cmd

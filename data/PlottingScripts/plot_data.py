@@ -584,8 +584,7 @@ def main():
     if args.csv is not None:
         csv_path = args.csv
     else:
-        csvs = sorted(glob.glob(os.path.join(script_dir, "controller_*.csv")))
-        csv_path = csvs[-1] if csvs else ""
+        csv_path = os.path.join(script_dir, 'controller_20261018_011116.csv')
     if not os.path.isfile(csv_path):
         print(f"ERROR: could not find CSV at '{csv_path}'")
         print("Usage: python plot_data.py [path/to/data.csv] "

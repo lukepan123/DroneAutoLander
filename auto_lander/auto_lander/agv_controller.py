@@ -82,31 +82,55 @@ def straight_trajectory() -> Trajectory:
     """ Straight line trajectory.
     """
     return Trajectory([
-        TrajectorySegment(t_start=0.0,  t_end=5.0,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=0.0),
+        TrajectorySegment(t_start=0.0,  t_end=3.0,  v_start=0.0,  v_end=2.778, w_start=0.0, w_end=0.0),
         # TrajectorySegment(t_start=5.0,  t_end=20.0,  v_start=15.0,  v_end=15.0, w_start=0.0, w_end=0.0),
         # TrajectorySegment(t_start=20.0,  t_end=30.0,  v_start=15.0,  v_end=20.0, w_start=0.0, w_end=0.0),
     ])
 
-def sin_trajectory() -> Trajectory:
-    """ Rough sinusoidal trajectory with ~20 m amplitude.
+def sin_trajectory(duration: float = 60.0,
+                   amplitude: float = 10.0,
+                   period: float = 12.0,
+                   v: float = 10.0,
+                   dt: float = 0.25,
+                   t_straight: float = 5.0) -> Trajectory:
+    """ Sinusoidal trajectory with +/- amplitude lateral offset at constant v.
+
+    Heading follows theta(t) = theta_max * sin(omega * t), eased in over the
+    first half-period so w(0) = 0. theta_max is chosen so the lateral peak,
+    (v / omega) * integral_0^{pi/2} sin(theta_max * sin(u)) du, hits amplitude.
     """
-    return Trajectory([
-        TrajectorySegment(t_start=0.0,  t_end=7.5,  v_start=15.0, v_end=15.0, w_start=0.000, w_end=-0.125),
-        TrajectorySegment(t_start=7.5,  t_end=15.0, v_start=15.0, v_end=15.0, w_start=-0.125, w_end=-0.200),
-        TrajectorySegment(t_start=15.0, t_end=22.5, v_start=15.0, v_end=15.0, w_start=-0.200, w_end=0.000),
-        TrajectorySegment(t_start=22.5, t_end=30.0, v_start=15.0, v_end=15.0, w_start=0.000, w_end=0.200),
-        TrajectorySegment(t_start=30.0, t_end=37.5, v_start=15.0, v_end=15.0, w_start=0.200, w_end=0.125),
-        TrajectorySegment(t_start=37.5, t_end=45.0, v_start=15.0, v_end=15.0, w_start=0.125, w_end=0.000),
-        TrajectorySegment(t_start=45.0, t_end=52.5, v_start=15.0, v_end=15.0, w_start=0.000, w_end=-0.125),
-        TrajectorySegment(t_start=52.5, t_end=60.0, v_start=15.0, v_end=15.0, w_start=-0.125, w_end=-0.200),
-    ])
+    omega = 2.0 * np.pi / period
+
+    # Lateral peak vs theta_max is monotonic on [0, pi/2]; invert by interpolation
+    u = (np.arange(200) + 0.5) * (np.pi / 2) / 200       # midpoint-rule nodes
+    thetas = np.linspace(0.0, np.pi / 2, 501)
+    peaks = v / omega * (np.pi / 2) * np.sin(np.outer(thetas, np.sin(u))).mean(axis=1)
+    theta_max = np.interp(amplitude, peaks, thetas)
+
+    # theta(t) = theta_max * env(t) * sin(omega t), env = smoothstep over t_ramp
+    t = np.linspace(0.0, duration, int(np.ceil(duration / dt)) + 1)
+    t_ramp = 0.5 * period
+    s = np.clip(t / t_ramp, 0.0, 1.0)
+    env = s * s * (3.0 - 2.0 * s)
+    d_env = 6.0 * s * (1.0 - s) / t_ramp
+    w = theta_max * (d_env * np.sin(omega * t) + env * omega * np.cos(omega * t))
+
+    # Straight lead-in, then the sine shifted to start at t_straight
+    segments = [TrajectorySegment(t_start=0.0, t_end=t_straight, v_start=0, v_end=v)] if t_straight > 0 else []
+    t += t_straight
+    segments += [
+        TrajectorySegment(t_start=float(t0), t_end=float(t1), v_start=v, v_end=v,
+                          w_start=float(w0), w_end=float(w1))
+        for t0, t1, w0, w1 in zip(t[:-1], t[1:], w[:-1], w[1:])
+    ]
+    return Trajectory(segments)
 
 def turn_trajectory() -> Trajectory:
     """ Turning trajectory.
     """
     return Trajectory([
-        TrajectorySegment(t_start=0.0,  t_end=4.0,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=0.0),
-        TrajectorySegment(t_start=4.0,  t_end=4.5,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=-0.2),
+        TrajectorySegment(t_start=0.0,  t_end=2.0,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=0.0),
+        TrajectorySegment(t_start=2.0,  t_end=2.5,  v_start=0.0,  v_end=15.0, w_start=0.0, w_end=-0.2),
     ])
 
 def mix_trajectory1() -> Trajectory:
@@ -144,7 +168,7 @@ def mix_trajectory2() -> Trajectory:
 class AGV_Controller(Node):
     def __init__(self,
                  trajectory: Optional[Trajectory] = None,
-                 add_noise: bool = False,
+                 add_noise: bool = True,
                  linear_noise_std: float = 0.05,
                  angular_noise_std: float = 0.01,
                  angular_speed_limit: Optional[float] = 1.0,
@@ -212,7 +236,7 @@ def main():
 
     node = AGV_Controller(
         trajectory=trajectory,
-        add_noise=True,
+        add_noise=False,
         linear_noise_std=0.05,
         angular_noise_std=0.01,
         angular_speed_limit=None,

@@ -9,7 +9,7 @@ from rclpy.time import Time
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile
-from rclpy.qos import ReliabilityPolicy 
+from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
@@ -36,8 +36,8 @@ from .ukf import UKF
 from .pid_controller import PIDController
 from .pid_controller import CONTROL_OUTPUT_KEYS
 
-""" Main orchestrator control loop, handles high level controller state logic and 
-    orchestration of UKF and low-level controller for autonomous landing process. 
+""" Main orchestrator control loop, handles high level controller state logic and
+    orchestration of UKF and low-level controller for autonomous landing process.
 
     Landing algorithim consists of several states.
 """
@@ -55,6 +55,10 @@ class Orchestrator(Node):
         # If in sim, log ground truth
         self.declare_parameter("ground_truth_available", True)
         self.GROUND_TRUTH_AVAILABLE = self.get_parameter("ground_truth_available").get_parameter_value().bool_value
+        # Shadow fit: run the yaw-agnostic box fit on every box-mode frame and log it as a
+        # raw baseline (never fed to the filter). Diagnostics only: costs CPU, off in flight.
+        self.declare_parameter("yolo_shadow_fit_enabled", False)
+        self.YOLO_SHADOW_FIT_ENABLED = self.get_parameter("yolo_shadow_fit_enabled").get_parameter_value().bool_value
 
         # Max runtime before RTL
         self.declare_parameter("max_runtime", 120.0)
@@ -76,6 +80,16 @@ class Orchestrator(Node):
         self.LANDING_Z_TOUCHDOWN_ACCEL_THRESHOLD = self.get_parameter("landing_z_touchdown_accel_threshold").get_parameter_value().double_value
         self.declare_parameter("landing_centered_error_threshold", 2.0)
         self.LANDING_CENTERED_ERROR_THRESHOLD = self.get_parameter("landing_centered_error_threshold").get_parameter_value().double_value
+        # Early acquisition (3000 -> 4000 before the lock timer): the UKF is confident and
+        # the drone is matching the pad's velocity, continuously for the dwell time
+        self.declare_parameter("landing_confident_pos_sigma", 0.50)      # m, 1-sigma horizontal position
+        self.LANDING_CONFIDENT_POS_SIGMA = self.get_parameter("landing_confident_pos_sigma").get_parameter_value().double_value
+        self.declare_parameter("landing_confident_vel_sigma", 0.90)      # m/s, 1-sigma pad velocity vector
+        self.LANDING_CONFIDENT_VEL_SIGMA = self.get_parameter("landing_confident_vel_sigma").get_parameter_value().double_value
+        self.declare_parameter("landing_confident_rel_vel", 0.60)        # m/s, |horizontal relative velocity|
+        self.LANDING_CONFIDENT_REL_VEL = self.get_parameter("landing_confident_rel_vel").get_parameter_value().double_value
+        self.declare_parameter("landing_confident_dwell (s)", 1.0)
+        self.LANDING_CONFIDENT_DWELL = self.get_parameter("landing_confident_dwell (s)").get_parameter_value().double_value
 
         # Landing state timers/parameters
         self.declare_parameter("landing_chase_altitude", 6.0)
@@ -99,22 +113,22 @@ class Orchestrator(Node):
         self.declare_parameter("gps_lat", 0.00)
         self.GPS_LOITER_LAT = self.get_parameter("gps_lat").get_parameter_value().double_value
         self.declare_parameter("gps_lon", 0.00)
-        self.GPS_LOITER_LON = self.get_parameter("gps_lon").get_parameter_value().double_value        
+        self.GPS_LOITER_LON = self.get_parameter("gps_lon").get_parameter_value().double_value
         self.gps_target = dict(lat=self.GPS_LOITER_LAT, lon=self.GPS_LOITER_LON, alt=self.target_alt + self.LANDING_HEIGHT_ABOVE_GND)
         self.declare_parameter("gps_in_loc_buffer (m)", 2.0)
         self.GPS_LOC_BUFFER = self.get_parameter("gps_in_loc_buffer (m)").get_parameter_value().double_value
 
         # Initial Landing Pad state
         self.declare_parameter('initial_position_state', [0.0, 0.0, 0.0])
-        self.INIT_LP_POS = self.get_parameter("initial_position_state").get_parameter_value().double_array_value     
+        self.INIT_LP_POS = self.get_parameter("initial_position_state").get_parameter_value().double_array_value
         self.landing_pad_relative_position = self.INIT_LP_POS
         self.landing_pad_relative_position_forward_predict = self.INIT_LP_POS
         self.declare_parameter('initial_velocity_state', [0.0, 0.0, 0.0])
-        self.INIT_LP_VEL = self.get_parameter("initial_velocity_state").get_parameter_value().double_array_value     
+        self.INIT_LP_VEL = self.get_parameter("initial_velocity_state").get_parameter_value().double_array_value
         self.landing_pad_relative_velocity = self.INIT_LP_VEL
         self.landing_pad_relative_velocity_forward_predict = self.INIT_LP_VEL
         self.declare_parameter('initial_yaw_state', 0.0)
-        self.INIT_LP_YAW = self.get_parameter("initial_yaw_state").get_parameter_value().double_value     
+        self.INIT_LP_YAW = self.get_parameter("initial_yaw_state").get_parameter_value().double_value
         self.landing_pad_yaw = self.INIT_LP_YAW
         self.landing_pad_yaw_forward_predict = self.INIT_LP_YAW
 
@@ -123,9 +137,9 @@ class Orchestrator(Node):
         self.LANDING_LEAD_TIME_MAX = self.get_parameter("landing_lead_time_max").get_parameter_value().double_value
         self.declare_parameter("landing_cut_height_max", 1.0)
         self.LANDING_CUT_HEIGHT_MAX = self.get_parameter("landing_cut_height_max").get_parameter_value().double_value
-        self.declare_parameter("landing_cut_margin", 0.00)
+        self.declare_parameter("landing_cut_margin", 0.10)
         self.LANDING_CUT_MARGIN = self.get_parameter("landing_cut_margin").get_parameter_value().double_value
-        self.declare_parameter("landing_pad_size", [1.80, 1.45])
+        self.declare_parameter("landing_pad_size", [1.80, 1.48])
         self.LANDING_PAD_SIZE = self.get_parameter("landing_pad_size").get_parameter_value().double_array_value
         self.declare_parameter("landing_gear_size", [0.3, 0.3])
         self.LANDING_GEAR_SIZE = self.get_parameter("landing_gear_size").get_parameter_value().double_array_value
@@ -141,17 +155,21 @@ class Orchestrator(Node):
         self.quad_pose = np.zeros(3)
         self.quad_vel  = np.zeros(3)
         self.quad_z_accel = 0.0
+        self.quad_roll  = 0.0
+        self.quad_pitch = 0.0
+        self.quad_yaw   = 0.0
+        self.landing_pad_relative_odometry = Odometry()
+        self.alt_pos_control = True
+
         self._last_quad_z_velocity = None
         self._last_quad_z_velocity_time = None
         self._z_touchdown_trigger = False
         self._z_touchdown_trigger_accel = 0.0
         self._z_touchdown_trigger_prev_velocity = 0.0
         self._z_touchdown_trigger_velocity = 0.0
-        self.quad_roll  = 0.0
-        self.quad_pitch = 0.0
-        self.quad_yaw   = 0.0
-        self.landing_pad_relative_odometry = Odometry()
-        self.alt_pos_control = True
+        self._yolo_shadow_fit = None     # box-mode runs: fit on the same frame, logged only
+        self._yolo_shadow_stamp = None
+        self._ukf_diverged = False       # set by the UKF loop on a re-seed, consumed by the control loop
 
         # ---- State 0xxx (Pre-arm) Variables ----
         self._mode_requested = False
@@ -176,6 +194,12 @@ class Orchestrator(Node):
         # ---- State 3xxx (Maintaining Landing Pad Lock) Variables ----
         self._landing_pad_locked_time_SP = self.LANDING_TIME_VISUAL_TIME_SP + self.LANDING_PAD_LOCK_TIME_SP
         self._landing_pad_lost_time = None
+        self._confident_since = None     # start of the current run of early-acquisition confidence
+        self._lock_timer_start = None    # entry into 3000; restarted on every retry after an abort
+        self._gate_pos_sigma = np.nan    # early-acquisition gate inputs, logged for tuning
+        self._gate_vel_sigma = np.nan
+        self._gate_rel_speed = np.nan
+        self._gate_confident = 0
 
         # ---- State 4xxx (Beginning Landing Descent) Variables ----
         self._lead_time = 0.3
@@ -215,7 +239,7 @@ class Orchestrator(Node):
                 0.20,
             ])
         self.UKF_INIT_P_DIAG_ = self.get_parameter("UKF_initial_P_diag").get_parameter_value().double_array_value
-        self.declare_parameter('UKF_initial_Q_diag', 
+        self.declare_parameter('UKF_initial_Q_diag',
             [
                 0.005,
                 0.005,
@@ -229,7 +253,10 @@ class Orchestrator(Node):
         self.declare_parameter('UKF_unhealthy_covar', 1000.0)
         self.UKF_UNHEALTHY_COVAR = self.get_parameter("UKF_unhealthy_covar").get_parameter_value().double_value
         self.declare_parameter('UKF_freq', 20.0)
-        self.UKF_FREQ = self.get_parameter("UKF_freq").get_parameter_value().double_value  
+        self.UKF_FREQ = self.get_parameter("UKF_freq").get_parameter_value().double_value
+        # Divergence guard: this many live measurements gated out in a row -> re-seed
+        self.declare_parameter('UKF_max_consecutive_rejections', 5)   # ~0.5 s of YOLO frames
+        self.UKF_MAX_CONSEC_REJECT = self.get_parameter("UKF_max_consecutive_rejections").get_parameter_value().integer_value
 
         # AprilTag fusion toggle (the AprilTag node may not be running at all)
         self.declare_parameter('apriltag_enabled', False)
@@ -239,20 +266,29 @@ class Orchestrator(Node):
         # yaw-agnostic box fit (position only) is fed instead, as during seeding
         self.declare_parameter('UKF_yolo_box_yaw_sigma_max', 0.25)   # rad
         self.UKF_YOLO_BOX_YAW_SIGMA_MAX = self.get_parameter("UKF_yolo_box_yaw_sigma_max").get_parameter_value().double_value
-        self.declare_parameter('UKF_yolo_box_pixel_sigma', 25.0)      # px, per box edge
+        self.declare_parameter('UKF_yolo_box_pixel_sigma', 10.0)      # px, per box edge
         self.UKF_YOLO_BOX_PIXEL_SIGMA = self.get_parameter("UKF_yolo_box_pixel_sigma").get_parameter_value().double_value
 
-        # YOLO car model (moved from yolo.py)
-        self.declare_parameter("yolo_car_roof_AGL", 1.5)
-        self.YOLO_CAR_ROOF_AGL = self.get_parameter("yolo_car_roof_AGL").get_parameter_value().double_value
-        self.declare_parameter("yolo_car_size_3d", [1.8, 4.3, 0.85])  # car extent (m): width, length, height (of body NOT car)
-        self.YOLO_CAR_SIZE_3D = self.get_parameter("yolo_car_size_3d").get_parameter_value().double_array_value
+        # YOLO car shape: union of boxes in the car model's frame (x forward, y left, z up,
+        # same origin as the car's odometry), 6 numbers per box:
+        # x_min, x_max, y_min, y_max, z_min, z_max (m). Override per car in the launch file.
+        self.declare_parameter("yolo_car_boxes", [
+            -2.31, 2.24, -0.89, 0.89, 0.00, 0.85,      # lower body, bumpers, wheels
+            -2.25, 1.30, -0.89, 0.89, 0.85, 1.15,      # upper body, trunk deck
+            -1.40, 0.45, -0.64, 0.64, 1.15, 1.38,      # greenhouse
+            -1.15, 0.20, -0.64, 0.64, 1.38, 1.49,      # roof
+            -1.40, 0.40, -0.74, 0.74, 1.515, 1.525,    # landing platform (1.80 x 1.48)
+        ])
+        self.YOLO_CAR_BOXES = self.get_parameter("yolo_car_boxes").get_parameter_value().double_array_value
+        self.declare_parameter("yolo_car_rear_axle", [-1.45, 0.0])  # rear axle in the car frame (m)
+        self.YOLO_CAR_REAR_AXLE = self.get_parameter("yolo_car_rear_axle").get_parameter_value().double_array_value
+        # Landing pad top-centre in the same frame: the point the UKF tracks
+        self.declare_parameter("yolo_car_pad_position", [-0.5, 0.0, 1.525])
+        self.YOLO_CAR_PAD_POSITION = self.get_parameter("yolo_car_pad_position").get_parameter_value().double_array_value
         self.declare_parameter("yolo_car_fit_max_rel_rms", 0.08)  # max 3D-box fit residual, as a fraction of box size
         self.YOLO_CAR_FIT_MAX_REL_RMS = self.get_parameter("yolo_car_fit_max_rel_rms").get_parameter_value().double_value
-        self.declare_parameter("yolo_roof_height_gain", 0.2)  # per car detection; how fast the roof height tracks (0 = fixed)
+        self.declare_parameter("yolo_roof_height_gain", 0.2)  # per car detection; how fast the pad height tracks (0 = fixed)
         self.YOLO_ROOF_HEIGHT_GAIN = self.get_parameter("yolo_roof_height_gain").get_parameter_value().double_value
-        self.declare_parameter("yolo_car_roof_above_body", 0.65)  # roof height minus body-top height (m)
-        self.YOLO_CAR_ROOF_ABOVE_BODY = self.get_parameter("yolo_car_roof_above_body").get_parameter_value().double_value
 
         # region ---- CTRL PARAMETERS ----
         self.declare_parameter('CTRL_freq', 20.0)
@@ -315,8 +351,9 @@ class Orchestrator(Node):
             self.UKF_MAHALANOBIS_THRESH,
             self.INIT_LP_POS, self.INIT_LP_VEL, self.INIT_LP_YAW,
             self.UKF_SEED_WINDOW_N, self._UKF_seed_window_min_dt,
-            self.YOLO_CAR_SIZE_3D, self.YOLO_CAR_ROOF_ABOVE_BODY, self.YOLO_CAR_ROOF_AGL,
+            self.YOLO_CAR_BOXES, self.YOLO_CAR_PAD_POSITION,
             self.YOLO_CAR_FIT_MAX_REL_RMS, self.YOLO_ROOF_HEIGHT_GAIN,
+            rear_axle=self.YOLO_CAR_REAR_AXLE,
         )
 
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
@@ -435,7 +472,7 @@ class Orchestrator(Node):
         self.landing_pad_true_odometry = Odometry()
         if self.DIAGNOSTICS_ENABLED:
             self.start_diagnostics()
-        
+
         self.get_logger().info("Auto Lander (callbacks) started")
 
 
@@ -454,7 +491,7 @@ class Orchestrator(Node):
 
     def _set_single_message_interval(self, message_id, rate, description) -> None:
         """ Set a single message interval.
-        
+
         :param message_id: ID of the message whose interval is being set
         :param rate: Rate (Hz) to set message ID to
         :param description: Description of message ID
@@ -481,7 +518,7 @@ class Orchestrator(Node):
 
     def _on_message_interval_done(self, fut, description, message_id, rate) -> None:
         """ Handle message interval service response.
-        
+
         :param fut: Client object
         :param description: Description of message ID
         :param message_id: ID of the message whose interval is being set
@@ -505,7 +542,7 @@ class Orchestrator(Node):
 
     def _fcu_state_callback(self, msg: State) -> None:
         """ Confirm state from FCU, and if good arm the FCU.
-        
+
         :param msg: State msg from FCU
         """
 
@@ -524,7 +561,7 @@ class Orchestrator(Node):
 
 
     def _odometry_callback(self, msg: Odometry) -> None:
-        """ Obtain FCU Odometry, process quaternions into euler roll, pitch and yaw 
+        """ Obtain FCU Odometry, process quaternions into euler roll, pitch and yaw
             values. Also monitors takeoff condition.
 
         :param msg: Odometry msg from quadcopter
@@ -598,7 +635,7 @@ class Orchestrator(Node):
 
     def _gps_callback(self, msg) -> None:
         """Obtain GPS coords.
-        
+
         :param msg: GPS coords
         """
 
@@ -652,7 +689,7 @@ class Orchestrator(Node):
 
     def _on_set_mode_done(self, fut) -> None:
         """Check if mode properly set on FCU.
-        
+
         :param fut: Client object
         """
 
@@ -689,7 +726,7 @@ class Orchestrator(Node):
 
     def _on_arm_done(self, fut) -> None:
         """Check if FCU Armed.
-        
+
         :param fut: Client object
         """
 
@@ -727,7 +764,7 @@ class Orchestrator(Node):
 
     def _on_takeoff_done(self, fut):
         """Confirm FCU takeoff successful.
-        
+
         :param fut: Client object
         """
 
@@ -747,7 +784,7 @@ class Orchestrator(Node):
 
     def _initiate_rtl(self, reason) -> None:
         """Initiate return to land mode and disable tracking.
-        
+
         :param reason: Reason for RTL
         """
 
@@ -771,7 +808,7 @@ class Orchestrator(Node):
 
     def _on_rtl_done(self, fut, reason):
         """Handle RTL mode change response.
-        
+
         :param fut: Client object
         :param reason: Reason for RTL
         """
@@ -826,7 +863,7 @@ class Orchestrator(Node):
     # region ---- UKF LOOP ----
     def _UKF_loop(self):
         """ Run UKF predict and update loops. Manages state estimation of the landing
-            pad platform. Calls upon the YOLO car measurement and, if enabled, the 
+            pad platform. Calls upon the YOLO car measurement and, if enabled, the
             AprilTag measurement.
         """
 
@@ -879,7 +916,7 @@ class Orchestrator(Node):
         alt = -self.landing_pad_relative_position_forward_predict[LP_State.PZ]
 
         d_near, d_far = 0.0, self.LANDING_HEIGHT_ABOVE_GND + 2.0
-        scale_max, gamma = 10.0, 2.0
+        scale_max, gamma = 20.0, 2.0
         scale_t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
         yolo_car_scale = 1.0 + (scale_max - 1.0) * scale_t ** gamma
 
@@ -946,14 +983,31 @@ class Orchestrator(Node):
                     measurements.append(("yolo", stamp, np.append(pos, 0.0), R_yolo_car, None, timing))
             else:
                 measurements.append(("yolo", stamp, d[2:6], R_yolo_box, cam, timing))
+                # Shadow fit: logged as the raw baseline, never fed to the filter
+                if self.YOLO_SHADOW_FIT_ENABLED:
+                    self._yolo_shadow_fit = self._UKF_filter.fit_car_box(d[2:6], cam, learn=False)
+                    self._yolo_shadow_stamp = stamp
 
-        # Update each measurement stream through the same UKF path.
+        # Update each measurement stream through the same UKF path. The drone velocity
+        # rides along so a seed can turn relative motion back into the car's own.
         for measurement_type, stamp, z, R, cam, timing in measurements:
-            if not self._UKF_filter.update(measurement_type, stamp, z, R, now_sec, cam, timing):
+            if not self._UKF_filter.update(measurement_type, stamp, z, R, now_sec, cam, timing,
+                                           quad_vel=self.quad_vel):
                 self.get_logger().warn(
                     f"UKF {measurement_type} update failed!",
                     throttle_duration_sec=2.0,
                 )
+
+        # Divergence guard: the gate rejecting every frame means the filter has lost the
+        # car (e.g. a bad seed). Re-seed rather than coast; the control loop aborts any
+        # descent in progress and waits for the new seed before descending again.
+        if self._UKF_filter.consecutive_rejections >= self.UKF_MAX_CONSEC_REJECT:
+            self.get_logger().warn(
+                f"UKF: {self._UKF_filter.consecutive_rejections} consecutive rejections - re-seeding"
+            )
+            self._UKF_filter.reset()
+            self._UKF_filter.x[LP_State.PZ] = self.LANDING_HEIGHT_ABOVE_GND - self.quad_pose[QUAD_State.Z]
+            self._ukf_diverged = True
 
         # ---- Grab per-state covariance diagnostics every tick ----
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
@@ -1001,12 +1055,13 @@ class Orchestrator(Node):
              self._UKF_forward_predict_x[LP_State.PZ]]
         )
 
-        # Relative velocity = pad velocity (CTRA: speed along heading, no vertical) - quad
+        # Relative velocity = pad velocity (axle velocity + rotation about the axle) - quad
         fwd_yaw = self._UKF_forward_predict_x[LP_State.YAW]
         self.landing_pad_yaw_forward_predict = fwd_yaw
+        fwd_pv = self._pad_velocity(self._UKF_forward_predict_x)
         self.landing_pad_relative_velocity_forward_predict = np.array([
-            self._UKF_forward_predict_x[LP_State.V] * np.cos(fwd_yaw) - self.quad_vel[0],
-            self._UKF_forward_predict_x[LP_State.V] * np.sin(fwd_yaw) - self.quad_vel[1],
+            fwd_pv[0] - self.quad_vel[0],
+            fwd_pv[1] - self.quad_vel[1],
             -self.quad_vel[2],
         ])
 
@@ -1017,8 +1072,9 @@ class Orchestrator(Node):
         )
 
         yaw = x[LP_State.YAW]
-        rel_vx = x[LP_State.V] * np.cos(yaw) - self.quad_vel[0]
-        rel_vy = x[LP_State.V] * np.sin(yaw) - self.quad_vel[1]
+        pv = self._pad_velocity(x)
+        rel_vx = pv[0] - self.quad_vel[0]
+        rel_vy = pv[1] - self.quad_vel[1]
         rel_vz = -self.quad_vel[2]
         self.landing_pad_relative_velocity = np.array([rel_vx, rel_vy, rel_vz])
 
@@ -1049,6 +1105,16 @@ class Orchestrator(Node):
             self.get_logger().warn(f"UKF loop took {elapsed:.2f} ms!")
 
 
+    def _pad_velocity(self, state):
+        """ Pad velocity in the level frame: rear-axle velocity along the heading plus
+            the pad's rotation about the axle (omega x r). """
+        yaw, om, v = state[LP_State.YAW], state[LP_State.YAW_RATE], state[LP_State.V]
+        c, s = np.cos(yaw), np.sin(yaw)
+        dx, dy = self._UKF_filter.axle_to_pad
+        rx, ry = c * dx - s * dy, s * dx + c * dy
+        return np.array([v * c - om * ry, v * s + om * rx])
+
+
     # region ---- CTRL LOOP ----
     def _control_loop(self) -> None:
         """ Run main control and orchestration loop. Handles state machine logic.
@@ -1063,6 +1129,9 @@ class Orchestrator(Node):
 
         # Horizontal error to the forward-predicted pad
         err = np.hypot(*self.landing_pad_relative_position_forward_predict[:2]) #type: ignore
+
+        # Consume the UKF divergence flag (set when the filter re-seeded itself)
+        diverged, self._ukf_diverged = self._ukf_diverged, False
 
         # ---- State 0000 (Pre-arm)
         # Below conditions need to be met ALWAYS so we check regardless of state
@@ -1164,28 +1233,74 @@ class Orchestrator(Node):
             and t_now - self._landing_pad_first_seen_time > self.LANDING_TIME_VISUAL_TIME_SP
         ):
             self.get_logger().info(
-                f"Landing Pad visual hold ok, starting {self._landing_pad_locked_time_SP} sec timer..."
+                f"Landing Pad visual hold ok, starting {self.LANDING_PAD_LOCK_TIME_SP} sec timer..."
             )
+            self._lock_timer_start = t_now
             self.controller_state = 3000
 
         # ---- State 3000 (Move over and Maintain Landing Pad Lock)
-        if (
-            self.controller_state == 3000
-            and self._landing_pad_found
-            and t_now - self._landing_pad_first_seen_time > self._landing_pad_locked_time_SP
-            and err < self.LANDING_CENTERED_ERROR_THRESHOLD
-        ):
-            self.get_logger().info("Landing Pad Acquired")
-            self.controller_state = 4000
+        # Descend once centred, either early when the estimate is confident (for
+        # LANDING_CONFIDENT_DWELL) or, as a fallback, once the lock timer runs out.
+        # Never while the UKF is (re-)seeding: its state is a placeholder until then.
+        if self.controller_state == 3000:
+            d = self._UKF_diag
+            pad_speed = abs(self._UKF_filter.x[LP_State.V])
+            pos_sigma = np.hypot(d["sigma_px"], d["sigma_py"])
+            # Pad velocity = axle speed along heading + rotation about the axle, so heading
+            # uncertainty adds v*sigma_yaw sideways and yaw-rate uncertainty |r|*sigma_omega
+            arm = float(np.hypot(*self._UKF_filter.axle_to_pad))
+            vel_sigma = float(np.sqrt(d["sigma_v"]**2 + (pad_speed * d["sigma_yaw"])**2
+                                      + (arm * d["sigma_yaw_rate"])**2))
+            rel_speed = np.hypot(*self.landing_pad_relative_velocity_forward_predict[:2]) #type: ignore
+            centred = self._landing_pad_found and err < self.LANDING_CENTERED_ERROR_THRESHOLD
+
+            confident_now = (
+                centred
+                and self._UKF_start
+                and not self._UKF_filter.seed_pending
+                and pos_sigma < self.LANDING_CONFIDENT_POS_SIGMA
+                and vel_sigma < self.LANDING_CONFIDENT_VEL_SIGMA
+                and rel_speed < self.LANDING_CONFIDENT_REL_VEL
+            )
+            self._confident_since = (self._confident_since or t_now) if confident_now else None
+
+            confident = (
+                self._confident_since is not None
+                and t_now - self._confident_since >= self.LANDING_CONFIDENT_DWELL
+            )
+            self._gate_pos_sigma, self._gate_vel_sigma = pos_sigma, vel_sigma
+            self._gate_rel_speed, self._gate_confident = rel_speed, int(confident)
+            if self._lock_timer_start is None:
+                self._lock_timer_start = t_now
+            timed_out = t_now - self._lock_timer_start > self.LANDING_PAD_LOCK_TIME_SP
+
+            if centred and not self._UKF_filter.seed_pending and (confident or timed_out):
+                self.get_logger().info(
+                    f"Landing Pad Acquired ({'confident' if confident else 'lock timer'}) - "
+                    f"{t_now - self._lock_timer_start:.1f} s after lock started, "
+                    f"err={err:.2f} m, sigma_pos={pos_sigma:.2f} m, "
+                    f"sigma_vel={vel_sigma:.2f} m/s, rel_vel={rel_speed:.2f} m/s"
+                )
+                self.controller_state = 4000
+        else:
+            self._confident_since = None
+            self._gate_pos_sigma = self._gate_vel_sigma = self._gate_rel_speed = np.nan
+            self._gate_confident = 0
 
         # ---- State 4000 (Begin Landing Descent)
         if self.controller_state == 4000:
             self.target_alt = 0.0 # self.LANDING_HEIGHT_THRESHOLD  # land
             h = -self.landing_pad_relative_position[LP_State.PZ]
 
+            # A re-seeded UKF has no usable estimate: climb out and retry rather than
+            # descend on a placeholder state.
+            if diverged:
+                self.get_logger().warn("Landing Aborted - UKF re-seeding")
+                self._landing_attempts += 1
+                self.controller_state = 5000
             # Fallback touchdown detection: prioritize the measured velocity impact
             # over the height-based cutoff, which can fail if the height estimate drifts.
-            if self._z_touchdown_trigger:
+            elif self._z_touchdown_trigger:
                 self._z_touchdown_trigger = False
                 self.cutoff = True
                 self._landed_time = t_now
@@ -1215,13 +1330,19 @@ class Orchestrator(Node):
             else:
                 self.target_alt = self.LANDING_RECOVERY_HEIGHT
                 if -self.landing_pad_relative_position_forward_predict[LP_State.PZ] > self.target_alt - 0.5:
+                    # Retry: restart the lock timer so the descent waits for confidence again
+                    # (the timer remains the fallback if confidence never comes)
+                    self._lock_timer_start = t_now
+                    self.get_logger().info(
+                        f"Recovered after abort, retrying - starting {self.LANDING_PAD_LOCK_TIME_SP} sec timer..."
+                    )
                     self.controller_state = 3000
 
         # ---- State 6000 (Landing Success - Idle Until RTL)
         if self.controller_state == 6000 and (t_now - self._landed_time) > self._idle_before_RTL_SP:
             self._landing_pad_first_seen_time = None
             self._landing_pad_lost_time = None
-            self.get_logger().info("Landing Complete - Idling Done", 
+            self.get_logger().info("Landing Complete - Idling Done",
                                    throttle_duration_sec=10.0)
             if not self._disarm_requested:
                 self._request_disarm()
@@ -1319,7 +1440,7 @@ class Orchestrator(Node):
             )
             self._initiate_rtl(f"boundary violation at ({x:.1f}, {y:.1f})")
             return
-        
+
         # Check UKF health (when not landed)
         if (self.controller_state < 6000 and self._UKF_diag["covar_max_eig"] > self.UKF_UNHEALTHY_COVAR):
             # Counter for 3 loops
@@ -1366,8 +1487,8 @@ class Orchestrator(Node):
             throttle_duration_sec=0.1,
         )
         return in_termination
-        
-    
+
+
     # region ---- DIAGNOSTICS FUNCTION CALLBACKS ----
     def _landing_pad_true_odometry_callback(self, msg: Odometry):
         """SITL ONLY: Pass true odometry of landing pad for data."""
@@ -1458,7 +1579,7 @@ class Orchestrator(Node):
 
 
     def start_diagnostics(self):
-        """ Start diagnostic logging and creation of .csv file. ALso creates the true 
+        """ Start diagnostic logging and creation of .csv file. ALso creates the true
             odometry subscriptions to obtain ground truth data.
         """
 
@@ -1481,18 +1602,18 @@ class Orchestrator(Node):
                 self._landing_pad_true_odometry_callback,
                 _odom_qos,
             )
-        
+
         self._pipeline_timing_sub = self.create_subscription(
-            Vector3Stamped, 
-            "/landing_pad/pipeline_timing", 
-            self._pipeline_timing_callback, 
+            Vector3Stamped,
+            "/landing_pad/pipeline_timing",
+            self._pipeline_timing_callback,
             _odom_qos
         )
         self._pipeline_timing_buffer: dict[tuple[int, int], Vector3Stamped] = {}
         self._yolo_pipeline_timing_sub = self.create_subscription(
-            Vector3Stamped, 
-            "/landing_pad/yolo_pipeline_timing", 
-            self._yolo_pipeline_timing_callback, 
+            Vector3Stamped,
+            "/landing_pad/yolo_pipeline_timing",
+            self._yolo_pipeline_timing_callback,
             _odom_qos
         )
         self._yolo_pipeline_timing_buffer: dict[tuple[int, int], Vector3Stamped] = {}
@@ -1637,13 +1758,19 @@ class Orchestrator(Node):
 
                 # Covariance off-diagonals for offline NEES
                 "P_px_py", "P_px_yaw", "P_py_yaw",
+
+                # Filtered position at the latest YOLO image stamp (NaN if rejected)
+                "yolo_post_rel_x", "yolo_post_rel_y", "yolo_post_rel_z",
+
+                # Early-acquisition (confidence) gate inputs, state 3000 only
+                "gate_pos_sigma", "gate_vel_sigma", "gate_rel_speed", "gate_confident",
             ]
         )
         self.get_logger().info(f"CSV logging initialized: {self._csv_filename}")
 
 
     def log_diagnostics(self):
-        """ Log data from controller into .csv file. 
+        """ Log data from controller into .csv file.
         """
 
         # UKF Diagnostics
@@ -1654,8 +1781,16 @@ class Orchestrator(Node):
         latest = m["latest"]
 
         # YOLO raw is a fitted position (fallback) or box edges in pixels (box mode)
-        yolo_pos = np.full(3, np.nan) if yolo["box"] else yolo["raw"][:3]
+        if yolo["box"]:
+            shadow_ok = (self._yolo_shadow_fit is not None
+                         and self._yolo_shadow_stamp == yolo["raw_stamp"])
+            yolo_pos = self._yolo_shadow_fit if shadow_ok else np.full(3, np.nan)
+        else:
+            yolo_pos = yolo["raw"][:3]
         yolo_box = yolo["raw"] if yolo["box"] else np.full(4, np.nan)
+
+        # Filtered position at the YOLO image stamp (needs the matching ukf.py change)
+        yolo_post = yolo.get("post_x", np.full(3, np.nan))
 
         # PID Diagnostics
         p = self._pid_controller.get_control_outputs()
@@ -1710,6 +1845,9 @@ class Orchestrator(Node):
             Pc[LP_State.PX, LP_State.PY],
             Pc[LP_State.PX, LP_State.YAW],
             Pc[LP_State.PY, LP_State.YAW],
+            *yolo_post,
+            self._gate_pos_sigma, self._gate_vel_sigma,
+            self._gate_rel_speed, self._gate_confident,
         ]
 
         # ---- Ground truth (NaN when unavailable, e.g. real flights) ----
@@ -1724,7 +1862,10 @@ class Orchestrator(Node):
 
             # NEES over (px, py, yaw); acceleration and yaw rate are masked out
             nees_states = [LP_State.PX, LP_State.PY, LP_State.YAW]
-            e = np.array([*(p_pos - q_pos)[:2], pad_true_yaw]) - self._UKF_filter.x[nees_states]
+            c, s = np.cos(pad_true_yaw), np.sin(pad_true_yaw)
+            dx, dy = self.YOLO_CAR_PAD_POSITION[0], self.YOLO_CAR_PAD_POSITION[1]
+            pad_true_xy = p_pos[:2] + np.array([c * dx - s * dy, s * dx + c * dy])
+            e = np.array([*(pad_true_xy - q_pos[:2]), pad_true_yaw]) - self._UKF_filter.x[nees_states]
             e[-1] = self._UKF_filter._wrap(e[-1])
             try:
                 nees = float(e @ np.linalg.solve(Pc[np.ix_(nees_states, nees_states)], e))
@@ -1749,7 +1890,7 @@ class Orchestrator(Node):
 
                 # Landing pad relative data
                 apr["raw_stamp"], *apr["raw"][:3], apr["raw"][LP_Meas.YAW] - quad_true_yaw,
-                yolo["raw_stamp"], *yolo_pos, int(yolo["box"]), *yolo_box,
+                yolo["raw_stamp"], *yolo_pos, int(yolo["box"]), *yolo_box, #type: ignore
                 *est_pos, *est_vel, self.landing_pad_yaw - quad_true_yaw,
                 *(p_pos - q_pos), *(p_vel - q_vel), pad_true_yaw - quad_true_yaw,
 

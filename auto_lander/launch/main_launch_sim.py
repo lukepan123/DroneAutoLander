@@ -116,7 +116,7 @@ def generate_launch_description():
             {"odometry_buffer_window_s": 1.0},
         ],
     )
-    
+
     # Run YOLO landing pad detector node
     yolo_pose_detector = Node(
         package="auto_lander",
@@ -148,8 +148,8 @@ def generate_launch_description():
             {"yolo_conf_threshold": 0.50},
             {"yolo_car_class_id": 0},
 
-            # ----- Ground-plane projection -----
-            {"yolo_car_roof_AGL": 2.0},
+            # ----- Ground-ray check -----
+            # (car shape / pad height now live on the controller, see yolo_car_boxes)
             {"yolo_ground_ray_z_epsilon": 0.05},
 
             # ----- Camera -----
@@ -201,6 +201,7 @@ def generate_launch_description():
             # ----- General / safety -----
             {"diagnostics_enabled": True},
             {"ground_truth_available": True},
+            {"yolo_shadow_fit_enabled": True},    # SITL analysis; False on the Pi in flight
             {"use_sim_time": True},
             {"max_runtime": 200.0},
             {"boundary_limit": 800.0},
@@ -230,7 +231,7 @@ def generate_launch_description():
 
             # ----- UKF parameters -----
             {"UKF_seeding_num_samples": 5},
-            {"UKF_alpha": 1.0},
+            {"UKF_alpha": 0.5},
             {"UKF_beta": 2.0},
             {"UKF_kappa": 0.0},
             {"UKF_mahalanobis_threshold": 15.0},
@@ -248,15 +249,34 @@ def generate_launch_description():
             {"UKF_initial_Q_diag": [
                 0.001,
                 0.001,
-                0.100,
+                0.010,
+                0.030,
                 0.050,
-                0.100,
                 0.001,
                 0.010,
             ]},
 
             {"UKF_unhealthy_covar": 500.0},
             {"UKF_freq": 20.0},
+
+            # ----- YOLO measurement model -----
+            {"UKF_yolo_box_yaw_sigma_max": 0.25},  # rad; 0.0 = fit-only baseline
+            {"UKF_yolo_box_pixel_sigma": 5.0},     # px per box edge; NIS says ~2 in sim
+
+            # ----- Car shape (car model frame: x fwd, y left, z up; metres) -----
+            # Frame = prius_hybrid base_link (same origin as /landing_pad/odom), origin at
+            # ground level. Boxes fitted to the SDF collision primitives; mirrors estimated.
+            # 6 numbers per box; add or remove rows freely.
+            {"yolo_car_boxes": [
+                # x_min   x_max   y_min    y_max   z_min  z_max     (xy scaled 0.95)
+                -2.196,   2.126, -0.846,   0.846,  0.00,  0.85,    # lower body, bumpers, wheels
+                -2.139,   1.233, -0.846,   0.846,  0.85,  1.15,    # upper body, trunk deck
+                -1.332,   0.426, -0.608,   0.608,  1.15,  1.38,    # greenhouse
+                -1.094,   0.188, -0.608,   0.608,  1.38,  1.49,    # roof
+                -1.332,   0.378, -0.703,   0.703,  1.515, 1.525,   # landing platform
+            ]},
+            # Platform top-centre in the same frame. Keep plot_errors.py TRUE_OFFSET_* equal to it.
+            {"yolo_car_pad_position": [-0.5, 0.0, 1.525]},
 
             # ----- Controller loop -----
             {"CTRL_freq": 20.0},
@@ -268,7 +288,7 @@ def generate_launch_description():
 
             # Altitude: outer height loop only, FCU runs vel/accel/throttle
             {"PID_Kp_pos_z": 2.0},
-            {"PID_vz_up_max": 2.0},           # = WPNAV_SPEED_UP 
+            {"PID_vz_up_max": 2.0},           # = WPNAV_SPEED_UP
             {"PID_vz_dn_max": 2.0},           # = WPNAV_SPEED_DN
             {"PID_max_tilt": 0.5},            # rad, <= ANGLE_MAX
 

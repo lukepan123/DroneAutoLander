@@ -22,9 +22,15 @@ Car frame convention (same as the body-frame offset below):
     +lateral      = to the car's left       (estimate left of truth)
 All errors are  estimate - truth.
 
-Raw measurements are compared against the truth at their own image timestamp, not
-the (later) controller row they were logged on, so pipeline latency doesn't show up
-as a fake along-track error.
+Three like-for-like comparisons are drawn:
+    - Filter estimate vs truth at the UKF tick (`est_time`) the estimate is valid at,
+      not the (later) controller row it was logged on.
+    - Raw measurement vs truth at its own image timestamp (crosses), so pipeline
+      latency doesn't show up as a fake along-track error. Compare these against the
+      filter state at the same image stamp (dots, needs `yolo_post_rel_*` columns).
+    - Raw measurement held until the next one arrives, vs truth at the row time
+      (dashed step line). This is what a controller using raw directly would see, and
+      is the fair live competitor for the filter estimate.
 
 YOLO raw positions only exist while the UKF is in fallback (box-fit) mode; in box
 mode the raw measurement is pixel edges, so no YOLO raw points are plotted there.
@@ -47,15 +53,26 @@ from scipy.stats import chi2
 # ── Config ─────────────────────────────────────────────────────────────────
 
 # Body-frame offset applied to the true XY position
-TRUE_OFFSET_X_BODY = 0.0     # m, +X body direction
-TRUE_OFFSET_Y_BODY = -0.40   # m, +Y body direction
+TRUE_OFFSET_X_BODY = -0.5     # m, +X body direction
+TRUE_OFFSET_Y_BODY = 0.0   # m, +Y body direction
 TRUE_OFFSET_Z_BODY = 1.50    # m, +Z body direction
 
 OUTLIER_SPEED_THRESH = 5.0   # m/s
 
-# Set to None to disable either limit (seconds since start of log)
-T_START = 35
-T_END   = 45
+# Set to None to disable either limit (seconds since start of log). With the auto
+# start/end below on, these act as outer bounds.
+T_START = 10
+T_END   = 70
+
+# Start the analysis at the first entry into pad lock (3xxx), once the drone is over
+# the car and tracking it. Before that the filter is seeding or the drone is still
+# closing in. T_START still applies if later.
+AUTO_START_AT_LOCK = True
+
+# End the analysis at touchdown: the first landing-confirmed state (6xxx) or, if the
+# landing never completed, the start of the last abort (5xxx). Data after either is
+# the drone on the pad or climbing away, not tracking. T_END still applies if earlier.
+AUTO_END_AT_LANDING = True
 
 DPI = 500
 
@@ -226,15 +243,25 @@ def add_state_transitions(ax, df, time_col='timestamp', label=True):
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
-def main():
-    script_dir = Path(__file__).parent
-    if len(sys.argv) > 1:
-        csv_path = Path(sys.argv[1])
-    else:
-        csv_path = script_dir / 'controller_20261014_192622.csv'
+def main(csv_path=None, out_dir=None, window=None, show=True):
+    """ Analyse one controller CSV. All arguments are optional, so running the script
+        directly behaves exactly as before; batch_analysis.py calls it with them set.
 
-    out_dir = script_dir / 'plots'
-    out_dir.mkdir(exist_ok=True)
+    :param csv_path: CSV to read (default: first command-line argument, else the
+                     hard-coded file below)
+    :param out_dir:  Folder for the figures (default: ./plots next to this script)
+    :param window:   (t_start, t_end) in seconds since the start of the log. Overrides
+                     T_START / T_END and the auto start/end.
+    :param show:     Open the figures in a window (False: save and close)
+    """
+    script_dir = Path(__file__).parent
+    if csv_path is None:
+        csv_path = Path(sys.argv[1]) if len(sys.argv) > 1 \
+            else script_dir / 'controller_20261017_222005.csv'
+    csv_path = Path(csv_path)
+
+    out_dir = Path(out_dir) if out_dir is not None else script_dir / 'plots'
+    out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Reading: {csv_path.name}")
     df = pd.read_csv(csv_path)
 
@@ -243,10 +270,52 @@ def main():
     t0 = float(df['timestamp'].iloc[0])
     df['timestamp'] = df['timestamp'] - t0
 
-    if T_START is not None:
-        df = df[df['timestamp'] >= T_START]
-    if T_END is not None:
-        df = df[df['timestamp'] <= T_END]
+    has_state = 'controller_state' in df.columns
+    group = pd.to_numeric(df['controller_state'], errors='coerce') // 1000 if has_state else None
+    t_all = df['timestamp']
+
+    # ── Auto start: first entry into pad lock (3xxx) ──
+    t_start = T_START
+    if AUTO_START_AT_LOCK and has_state and window is None:
+        locked = t_all[group == 3]
+        if not len(locked):
+            print("Auto start: no 3000 state in log, using T_START.")
+        else:
+            t_lock = float(locked.iloc[0])
+            if t_start is None or t_lock > t_start:
+                t_start = t_lock
+                print(f"Auto start: analysis starts at t = {t_lock:.2f} s, pad lock (3000).")
+            else:
+                print(f"Auto start: pad lock at t = {t_lock:.2f} s is before T_START, ignored.")
+
+    # ── Auto end: first landing confirmed (6xxx), else last abort (5xxx) ──
+    t_end = T_END
+    if AUTO_END_AT_LANDING and has_state and window is None:
+        landed = t_all[group == 6]
+        abort_starts = t_all[(group == 5) & (group.shift() != 5)]
+        t_cut, why = None, ''
+        if len(landed):
+            t_cut, why = float(landed.iloc[0]), 'landing confirmed (6000)'
+        elif len(abort_starts):
+            t_cut, why = float(abort_starts.iloc[-1]), 'last landing abort (5000)'
+
+        if t_cut is None:
+            print("Auto end: no 6000/5000 state in log, using T_END.")
+        elif t_start is not None and t_cut <= t_start:
+            print(f"Auto end: {why} at t = {t_cut:.2f} s is before the start, ignored.")
+        elif t_end is None or t_cut < t_end:
+            t_end = t_cut
+            print(f"Auto end: analysis ends at t = {t_cut:.2f} s, {why}.")
+
+    # Explicit window (batch runs) replaces the limits above
+    if window is not None:
+        t_start, t_end = window
+        print(f"Window: t = {t_start:.2f} s to {t_end:.2f} s (set by caller).")
+
+    if t_start is not None:
+        df = df[df['timestamp'] >= t_start]
+    if t_end is not None:
+        df = df[df['timestamp'] <= t_end]
     df = df.reset_index(drop=True)
 
     # ── Clean outlier spikes in the ground-truth trajectory ──────────────
@@ -260,7 +329,7 @@ def main():
         t_arr,
     )
     true_yaw, _ = clean_true_yaw(df['landing_pad_glob_true_yaw'].to_numpy(), t_arr)
-    true_z = df['landing_pad_rel_true_z'].to_numpy(dtype=float)
+    true_z = df['landing_pad_rel_true_z'].to_numpy(dtype=float).copy()
     true_z += TRUE_OFFSET_Z_BODY
 
     # ── Apply configurable body-frame XY offset ────────────────────────
@@ -300,9 +369,21 @@ def main():
     df_valid = df[measurement_mask].copy().reset_index(drop=True)
     ctrl_t = df_valid['timestamp'].to_numpy()
 
-    # ── Filter errors (estimate valid at the controller row time) ─────────
+    # ── Filter errors (estimate valid at the UKF tick, not the log row) ───
+    # est_time shares the timestamp clock but was not shifted by t0, and is 0.0
+    # until the UKF loop first runs, so fall back to the row time there.
+    if 'est_time' in df_valid.columns:
+        est_raw = pd.to_numeric(df_valid['est_time'], errors='coerce').to_numpy(dtype=float)
+        est_t = np.where(est_raw > 0, est_raw - t0, ctrl_t)
+    else:
+        print("WARNING: 'est_time' column not found – filter scored at the row time.")
+        est_t = ctrl_t
+    dt_est = (ctrl_t - est_t) * 1000.0
+    print(f"Row time - estimate time: mean {np.nanmean(dt_est):.1f} ms, "
+          f"max {np.nanmax(dt_est):.1f} ms")
+
     filt_err_long, filt_err_lat, filt_err_abs, tz, tyaw = errors_at(
-        ctrl_t,
+        est_t,
         df_valid['landing_pad_rel_x'].to_numpy(),
         df_valid['landing_pad_rel_y'].to_numpy(),
     )
@@ -321,11 +402,38 @@ def main():
         e_long, e_lat, e_abs, tz, tyaw = errors_at(t_meas, x, y)
         s = dict(key=key, label=label, colour=colour, valid=valid, t=t_meas,
                  x=x, y=y, long=e_long, lat=e_lat, abs=e_abs)
+
+        # Live baseline: the raw value exactly as a controller using it directly would
+        # see it (held until the next measurement), scored against truth at row time.
+        held = (stamp > 0) & np.isfinite(x) & np.isfinite(y)
+        h_long, h_lat, h_abs, _, _ = errors_at(ctrl_t, x, y)
+        s['held'] = held
+        s['held_long'] = np.where(held, h_long, np.nan)
+        s['held_lat'] = np.where(held, h_lat, np.nan)
+        s['held_abs'] = np.where(held, h_abs, np.nan)
+
         if f'{prefix}_rel_z_raw' in df_valid.columns:
             s['z'] = df_valid[f'{prefix}_rel_z_raw'].to_numpy(dtype=float) - tz
         if f'{prefix}_glob_yaw_raw' in df_valid.columns:
             s['yaw'] = wrap_angle(df_valid[f'{prefix}_glob_yaw_raw'].to_numpy() - tyaw)
         streams.append(s)
+
+    # ── Filter state at each YOLO image stamp (same instant as the raw point) ──
+    post = None
+    if 'yolo_post_rel_x' in df_valid.columns and \
+            'landing_pad_yolo_car_raw_stamp' in df_valid.columns:
+        p_stamp = df_valid['landing_pad_yolo_car_raw_stamp'].to_numpy()
+        ppx = df_valid['yolo_post_rel_x'].to_numpy(dtype=float)
+        ppy = df_valid['yolo_post_rel_y'].to_numpy(dtype=float)
+        p_ok = new_measurement_mask(p_stamp) & np.isfinite(ppx) & np.isfinite(ppy)
+        p_t = np.where(p_stamp > 0, p_stamp - t0, np.nan)
+        p_long, p_lat, p_abs, _, _ = errors_at(p_t, ppx, ppy)
+        post = dict(t=p_t, ok=p_ok, long=p_long, lat=p_lat, abs=p_abs)
+        if not p_ok.any():
+            post = None
+    else:
+        print("NOTE: 'yolo_post_rel_*' columns not found – filter-at-image-stamp "
+              "comparison skipped.")
 
     def plot_raw(ax, field, scale=1.0, suffix=''):
         """ Scatter one error field for every raw stream that has it. """
@@ -337,6 +445,23 @@ def main():
                 ax.scatter(s['t'][ok], scale * s[field][ok], color=s['colour'],
                            marker='x', s=22, linewidths=1.0, alpha=ALPHA,
                            label=s['label'] + suffix)
+
+    def plot_held(ax, field):
+        """ Step line of the held (live) raw error for every stream that has it. """
+        for s in streams:
+            v = s.get(f'held_{field}')
+            if v is not None and np.isfinite(v).any():
+                ax.plot(ctrl_t, v, color=s['colour'], lw=0.8, ls='--',
+                        drawstyle='steps-post', alpha=0.7,
+                        label=s['label'] + ' held (live)')
+
+    def plot_post(ax, field):
+        """ Scatter the filter error at each YOLO image stamp. """
+        if post is not None and field in post:
+            ok = post['ok'] & np.isfinite(post[field])
+            if ok.any():
+                ax.scatter(post['t'][ok], post[field][ok], color=FILT_C,
+                           marker='o', s=10, alpha=ALPHA, label='Filter @ image stamp')
 
     # YOLO pixel-space box mode (new logs only)
     has_box_mode = 'yolo_box_mode' in df_valid.columns
@@ -399,16 +524,21 @@ def main():
         (ax_z, filt_err_z, 'z', 'Z error (m)',
          'Height (Z) error  (+ = estimate above truth)'),
     ]:
-        ax.plot(ctrl_t, fe, color=FILT_C, lw=1.0, alpha=ALPHA, label='Filter estimate')
+        ax.plot(est_t, fe, color=FILT_C, lw=1.0, alpha=ALPHA, label='Filter estimate')
         plot_raw(ax, field)
+        if field in ('long', 'lat'):
+            plot_held(ax, field)
+            plot_post(ax, field)
         ax.axhline(0, color='0.5', lw=0.6, ls='--')
         ax.set_ylabel(ylabel, fontsize=10)
         ax.set_title(title, fontsize=10)
         ax.grid(True, alpha=0.3)
 
     # ── Panel: Absolute horizontal error + latency secondary axis ───────
-    ax_abs.plot(ctrl_t, filt_err_abs, color=FILT_C, lw=1.0, alpha=ALPHA, label='Filter |error|')
+    ax_abs.plot(est_t, filt_err_abs, color=FILT_C, lw=1.0, alpha=ALPHA, label='Filter |error|')
     plot_raw(ax_abs, 'abs', suffix=' |error|')
+    plot_held(ax_abs, 'abs')
+    plot_post(ax_abs, 'abs')
     ax_abs.set_ylim(bottom=0)
     ax_abs.set_ylabel('|error| (m)', fontsize=10)
     ax_abs.set_title('Absolute horizontal error (Euclidean norm, XY)', fontsize=10)
@@ -431,9 +561,11 @@ def main():
         lines_l, labels_l = ax_abs.get_legend_handles_labels()
         lines_r, labels_r = ax_lag.get_legend_handles_labels()
         ax_abs.legend(lines_l + lines_r, labels_l + labels_r, fontsize=8, loc='upper right')
+    else:
+        ax_abs.legend(fontsize=8, loc='upper right')
 
     # ── Panel: Yaw error ───────────────────────────────────────────────
-    ax_yaw.plot(ctrl_t, np.degrees(filt_yaw_err), color=FILT_C, lw=1.0, alpha=ALPHA,
+    ax_yaw.plot(est_t, np.degrees(filt_yaw_err), color=FILT_C, lw=1.0, alpha=ALPHA,
                 label='Filter estimate')
     plot_raw(ax_yaw, 'yaw', scale=np.degrees(1.0))
     ax_yaw.axhline(0, color='0.5', ls='--', lw=0.8)
@@ -648,20 +780,38 @@ def main():
             if field in s:
                 vals = s[field][s['valid'] & np.isfinite(s[field])]
                 if len(vals):
-                    print(f'  {name:<13s} {field:<4s} mean: {vals.mean():+.3f} {unit}   RMS: {rms(vals):.3f} {unit}')
+                    print(f'  {name:<18s} {field:<4s} mean: {vals.mean():+.3f} {unit}   RMS: {rms(vals):.3f} {unit}')
         if 'yaw' in s:
             vals = s['yaw'][s['valid']]
-            print(f'  {name:<13s} yaw  mean: {np.degrees(vals.mean()):+.2f}°   '
+            print(f'  {name:<18s} yaw  mean: {np.degrees(vals.mean()):+.2f}°   '
                   f'RMS: {np.degrees(rms(vals)):.2f}°')
         vals = s['abs'][s['valid']]
-        print(f'  {name:<13s} |e|  mean: {vals.mean():.3f} m   max: {vals.max():.3f} m')
+        print(f'  {name:<18s} |e|  mean: {vals.mean():.3f} m   max: {vals.max():.3f} m')
 
-    print(f'  Filter        long mean: {np.nanmean(filt_err_long):+.3f} m   RMS: {rms(filt_err_long):.3f} m')
-    print(f'  Filter        lat  mean: {np.nanmean(filt_err_lat):+.3f} m   RMS: {rms(filt_err_lat):.3f} m')
-    print(f'  Filter        z    mean: {np.nanmean(filt_err_z):+.3f} m   RMS: {rms(filt_err_z):.3f} m')
-    print(f'  Filter        yaw  mean: {np.degrees(np.nanmean(filt_yaw_err)):+.2f}°   '
+    print(f'  {"Filter":<18s} long mean: {np.nanmean(filt_err_long):+.3f} m   RMS: {rms(filt_err_long):.3f} m')
+    print(f'  {"Filter":<18s} lat  mean: {np.nanmean(filt_err_lat):+.3f} m   RMS: {rms(filt_err_lat):.3f} m')
+    print(f'  {"Filter":<18s} z    mean: {np.nanmean(filt_err_z):+.3f} m   RMS: {rms(filt_err_z):.3f} m')
+    print(f'  {"Filter":<18s} yaw  mean: {np.degrees(np.nanmean(filt_yaw_err)):+.2f}°   '
           f'RMS: {np.degrees(rms(filt_yaw_err)):.2f}°')
-    print(f'  Filter        |e|  mean: {np.nanmean(filt_err_abs):.3f} m   max: {np.nanmax(filt_err_abs):.3f} m')
+    print(f'  {"Filter":<18s} |e|  mean: {np.nanmean(filt_err_abs):.3f} m   max: {np.nanmax(filt_err_abs):.3f} m')
+
+    # Like-for-like pairs
+    print('\n=== Like-for-like comparisons ===')
+    print('  Live (control value):    filter @ est_time  vs  raw held to row time')
+    for s in streams:
+        if s['held'].any():
+            for field in ('long', 'lat'):
+                v = s[f'held_{field}']
+                print(f'  {s["label"] + " held":<18s} {field:<4s} '
+                      f'mean: {np.nanmean(v):+.3f} m   RMS: {rms(v):.3f} m')
+    print('  Filtering quality:       filter @ image stamp  vs  raw @ image stamp')
+    if post is not None:
+        for field in ('long', 'lat'):
+            v = post[field][post['ok']]
+            print(f'  {"Filter @ stamp":<18s} {field:<4s} '
+                  f'mean: {v.mean():+.3f} m   RMS: {rms(v):.3f} m')
+    else:
+        print('  (no filter-at-stamp data in this log)')
 
     if has_box_mode:
         yolo_new = new_measurement_mask(df_valid['landing_pad_yolo_car_raw_stamp'].to_numpy())
@@ -705,7 +855,10 @@ def main():
               f'min: {nees_finite.min():.3f}')
         print(f'  above 95% χ²(3) bound: {np.mean(nees_finite > nees_bound) * 100:.1f}%')
 
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close('all')
 
 
 if __name__ == '__main__':

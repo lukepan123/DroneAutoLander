@@ -7,35 +7,35 @@ from scipy.optimize import least_squares
 from .state_definitions import LP_State
 from .state_definitions import LP_Meas
 
-""" UKF Class definitions to implement a target/chaser kinematic model. Consists of all 
-    higher level UKF logic for prediction and updating of kinematic model, as well as 
-    UKF rollback for update measurements. 
+""" UKF Class definitions to implement a target/chaser kinematic model. Consists of all
+    higher level UKF logic for prediction and updating of kinematic model, as well as
+    UKF rollback for update measurements.
 
     Two measurement models are supported:
       - "pose" (cam is None): z = (px, py, pz, yaw), measured directly. Used by AprilTag
         and by the YOLO fallback (fitted position, yaw unmeasured).
       - "box"  (cam given):   z = (u_min, u_max, v_min, v_max), the YOLO bounding box
-        edges in pixels. h(x) projects the car's 3D box (at the sigma point's position
-        AND yaw) through the image-time camera pose. The UKF therefore uses the current
+        edges in pixels. h(x) projects the car's shape (a union of boxes, at the sigma
+        point's pad position AND yaw) through the image-time camera pose. The UKF therefore uses the current
         yaw estimate and propagates the yaw/position/height coupling through the
         covariance properly, instead of a yaw-agnostic fit upstream.
 """
 
 class UKF:
-    """ Defines the UKF class for the landing platform. Every predict() and every 
+    """ Defines the UKF class for the landing platform. Every predict() and every
         accepted update() call pushes one of these, in chronological order, allowing the
-        filter to rewind to any point in the buffer window and *replay* history exactly 
-        rather than re-simulate over it. This is what lets multiple, independent 
+        filter to rewind to any point in the buffer window and *replay* history exactly
+        rather than re-simulate over it. This is what lets multiple, independent
         measurement streams (e.g. AprilTag + YOLO) each perform out-of-sequence-
-        measurement (OOSM) corrections without one stream's correction silently erasing 
+        measurement (OOSM) corrections without one stream's correction silently erasing
         the other's.
-    
+
         kind == "predict": data = quad_vel used for that process step
         kind == "update":  data = _Meas(z, R, cam) used for that measurement correction.
                            For box measurements, cam holds the camera pose (attitude +
                            gimbal) at the image stamp, so a replay projects through the
                            exact geometry the image was taken with.
-    
+
         x / P / X_prop are the UKF state, covariance, and propagated sigma
         points immediately AFTER this event was applied.
     """
@@ -46,21 +46,25 @@ class UKF:
     _Meas = namedtuple("_Meas", ["z", "R", "cam"])
 
 
-    def __init__(self, P_diag_init, Q_diag_init, 
+    def __init__(self, P_diag_init, Q_diag_init,
                  alpha, beta, kappa,
-                 mahalanobis_threshold, 
+                 mahalanobis_threshold,
                  init_pos, init_vel, init_yaw,
                  seed_window_n, seed_window_min_dt,
-                 car_size, car_roof_above_body, car_roof_agl,
-                 car_fit_max_rel_rms, car_roof_gain) -> None:
+                 car_boxes, pad_position,
+                 car_fit_max_rel_rms, car_roof_gain, rear_axle=None) -> None:
+
         """ Initialise the UKF. Preprocesses and computes the required sigma weights and
             stores them to reduce run-time computation.
 
-        :param car_size:            Car body extent (m): width, length, height (body, not roof)
-        :param car_roof_above_body: Roof height minus body-top height (m)
-        :param car_roof_agl:        Initial roof (landing pad) height above home altitude (m)
+        :param car_boxes:           Car shape as a union of boxes in the car model frame
+                                    (x forward, y left, z up), flat list of 6 per box:
+                                    x_min, x_max, y_min, y_max, z_min, z_max (m)
+        :param pad_position:        Landing pad top-centre in the same frame (m). This is
+                                    the point the filter tracks; its z is also the initial
+                                    pad height above home altitude.
         :param car_fit_max_rel_rms: Max fallback box-fit residual, as a fraction of box size
-        :param car_roof_gain:       Low-pass gain for the learned roof height (0 = fixed)
+        :param car_roof_gain:       Low-pass gain for the learned pad height (0 = fixed)
         """
         # ---- UKF PARAMETERS ----
         # Dimensions
@@ -101,17 +105,38 @@ class UKF:
             1 - self.alpha**2 + self.beta
         )
 
-        # ---- CAR BOX MODEL ----
-        # 8 body corners in the car frame, scaled: columns = (lateral, longitudinal, vertical)
-        self._car_size = np.asarray(car_size, dtype=float)
-        self._car_corners = np.array(
-            [[a, b, c] for a in (-.5, .5) for b in (-.5, .5) for c in (-.5, .5)]
-        ) * self._car_size
-        # Pad (state PZ) sits on the roof; the box centre is this far below it
-        self._roof_to_centre = car_roof_above_body + 0.5 * self._car_size[2]
-        self._roof_agl = car_roof_agl   # learned online, persists across reset()
+        # ---- CAR SHAPE MODEL ----
+        # Union of boxes in the car frame. The state tracks the pad, so every corner is
+        # stored relative to the pad: a corner in the level frame is pad + R(yaw) @ corner.
+        boxes = np.asarray(car_boxes, dtype=float).ravel()
+        pad = np.asarray(pad_position, dtype=float).ravel()
+        if boxes.size == 0 or boxes.size % 6 != 0:
+            raise ValueError("car_boxes must hold 6 values per box "
+                             "(x_min, x_max, y_min, y_max, z_min, z_max)")
+        if pad.size != 3:
+            raise ValueError("pad_position must hold 3 values (x, y, z)")
+        boxes = boxes.reshape(-1, 6)
+        if np.any(boxes[:, 0::2] > boxes[:, 1::2]):
+            raise ValueError("car_boxes: each min must be <= its max")
+        corners = np.array([
+            [x, y, z]
+            for x0, x1, y0, y1, z0, z1 in boxes
+            for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)
+        ])
+        self._car_corners = corners - pad                       # (8 * n_boxes, 3)
+
+        # Centre of the car's overall extents, relative to the pad (fit initial guess)
+        self._centre_from_pad = 0.5 * (corners.min(axis=0) + corners.max(axis=0)) - pad
+
+        self._roof_agl = pad[2]   # pad height above home altitude, learned online,
+                                  # persists across reset()
         self._car_fit_max_rel_rms = car_fit_max_rel_rms
         self._car_roof_gain = car_roof_gain
+
+        # Ackermann kinematics: only the rear axle moves along the heading. CTRA is run
+        # at the axle; this is the pad's offset from it in the car frame (x fwd, y left).
+        self.axle_to_pad = (np.zeros(2) if rear_axle is None
+                            else pad[:2] - np.asarray(rear_axle, dtype=float)[:2])
 
         # ---- UKF INITIALISATION ----
         # Initial state
@@ -159,6 +184,7 @@ class UKF:
 
         # Diagnostic variables
         self._last_nis = np.nan
+        self.consecutive_rejections = 0   # live measurements gated out in a row (divergence check)
 
 
     def predict(self, quad_vel, timestamp: float, buffer: bool = True) -> None:
@@ -270,24 +296,27 @@ class UKF:
             now: float,
             cam=None,
             pipeline_timing=None,
+            quad_vel=None,
     ) -> bool:
-        """ Do update step for UKF. Manages higher level update functions such as 
-            checking the measurement timestamp and performing the UKF rewind and 
-            rollback. Safe to call from multiple independent measurement streams (e.g. 
-            AprilTag and YOLO) in any interleaving/order - out-of-sequence measurements 
-            are spliced into the correct chronological position and every event after 
+        """ Do update step for UKF. Manages higher level update functions such as
+            checking the measurement timestamp and performing the UKF rewind and
+            rollback. Safe to call from multiple independent measurement streams (e.g.
+            AprilTag and YOLO) in any interleaving/order - out-of-sequence measurements
+            are spliced into the correct chronological position and every event after
             that point (predicts AND updates, from every stream) is replayed against the
             corrected timeline.
 
         :param measurement_type: Stream name ("apriltag" or "yolo")
         :param stamp:           Measurement (image) timestamp (s)
-        :param z:               Pose (px, py, pz, yaw) if cam is None, otherwise box 
+        :param z:               Pose (px, py, pz, yaw) if cam is None, otherwise box
                                 edges (u_min, u_max, v_min, v_max) in pixels
         :param R:               Measurement covariance (4x4)
         :param now:             Current timestamp (s)
-        :param cam:             (R_level_cam, t_level_cam, K, altitude) at the image 
+        :param cam:             (R_level_cam, t_level_cam, K, altitude) at the image
                                 stamp for box measurements, else None
         :param pipeline_timing: Optional Vector3Stamped containing pipeline timestamps
+        :param quad_vel:        Drone velocity (local frame), stored with seed samples so
+                                the seed can recover the car's own velocity
         :return: True on success, False on failure.
         """
         last_timestamp = self._measurement_last_stamps[measurement_type]
@@ -316,7 +345,8 @@ class UKF:
             if cam is not None:
                 return False
             buf = self._seed_buffers[measurement_type]
-            buf.append((stamp, meas.z, meas.R))
+            qv = None if quad_vel is None else np.asarray(quad_vel, dtype=float)[:2].copy()
+            buf.append((stamp, meas.z, meas.R, qv))
             span = buf[-1][0] - buf[0][0]
             if len(buf) >= self._seed_window_n or span >= self._seed_window_min_dt:
                 self.seed_from_window(list(buf))
@@ -331,6 +361,7 @@ class UKF:
             self.predict(self._last_quad_vel, stamp)
             accepted = self._update_apply(meas)
             if accepted:
+                self._record_post_update(measurement_type)
                 self._last_update_time = stamp
                 self._push_update_event(stamp, meas)
             return accepted
@@ -379,6 +410,9 @@ class UKF:
             self._last_update_time = t_now
             return False
 
+        # x is at the image stamp here, before the replay moves it on to "now"
+        self._record_post_update(measurement_type)
+
         # Only commit to the rewind now that we know it succeeded: prune
         # entries forward of the anchor from the real buffer, then rebuild
         # it by splicing this OOSM in and replaying every event that originally
@@ -405,22 +439,22 @@ class UKF:
         return True
 
 
-    def fit_car_box(self, box, cam) -> np.ndarray | None:
-        """ Yaw-agnostic fallback for a YOLO box, used while the yaw estimate is too 
+    def fit_car_box(self, box, cam, learn: bool = True) -> np.ndarray | None:
+        """ Yaw-agnostic fallback for a YOLO box, used while the yaw estimate is too
             poor for the pixel-space update (e.g. during seeding). Returns a drone-
             relative pad position to feed through the "pose" model with yaw unmeasured.
 
-            Intersect the box-centre ray with the car's mid-height plane, then refine by
-            fitting a car-sized 3D box so that its projected bounding box matches the 
-            YOLO box. This stays valid for oblique views (foreshortening, visible roof + 
-            sides), unlike a size-based depth. The car's yaw relative to the camera 
+            Intersect the box-centre ray with the plane at the car's mid-height, then
+            refine by fitting the car shape (union of boxes) so that its projected
+            bounding box matches the YOLO box. This stays valid for oblique views (foreshortening, visible roof +
+            sides), unlike a size-based depth. The car's yaw relative to the camera
             heading is fitted too, with a weak prior towards "aligned". The box size also
-            reveals if the roof is higher or lower than the learned roof height (car on a
+            reveals if the pad is higher or lower than the learned pad height (car on a
             slope, altitude drift); that offset is low-passed into self._roof_agl.
 
         :param box: (u_min, u_max, v_min, v_max) in pixels
         :param cam: (R_level_cam, t_level_cam, K, altitude) at the image stamp
-        :return: np.ndarray [px, py, pz] (pad on the roof) in the local-level frame, or 
+        :return: np.ndarray [px, py, pz] (pad top-centre) in the local-level frame, or
                  None if the camera isn't looking toward the ground
         """
         R_lc, t_lc, K, altitude = cam
@@ -433,25 +467,30 @@ class UKF:
         if ray[2] >= -1e-3:
             return None
 
-        # Car mid-height plane
-        t = (self._roof_agl - self._roof_to_centre - (altitude + t_lc[2])) / ray[2]
+        # Plane at the height of the centre of the car's extents
+        dz_c = self._centre_from_pad[2]
+        t = (self._roof_agl + dz_c - (altitude + t_lc[2])) / ray[2]
         if t <= 0:
             return None
-        pos = t_lc + t * ray
-        roof = np.array([0.0, 0.0, self._roof_to_centre])
+        centre = t_lc + t * ray
 
         # Heading of the horizontal axis perpendicular to the image x-axis: the car is
         # assumed (weakly) to have its length along this.
         u_w = R_lc[:2, 0]
         if np.linalg.norm(u_w) < 0.2:  # camera x-axis ~vertical: heading undefined
-            return pos + roof
+            return centre - np.array([0.0, 0.0, dz_c])   # xy pad offset ignored
         psi_cam = np.arctan2(u_w[0], -u_w[1])
+
+        # Initial pad position, assuming the car points along psi_cam
+        c, s = np.cos(psi_cam), np.sin(psi_cam)
+        dx, dy = self._centre_from_pad[:2]
+        pad0 = centre - np.array([c * dx - s * dy, s * dx + c * dy, dz_c])
 
         k_dz = 3.0  # height prior (px per metre): weak in pass 1, ~pinned in pass 2
 
-        def residual(p):  # p = [x, y, yaw offset, height offset]
+        def residual(p):  # p = [pad x, pad y, yaw offset, height offset]
             edges = self._box_edges(
-                np.array([[p[0], p[1], pos[2] + p[3]]]), np.array([psi_cam + p[2]]), cam
+                np.array([[p[0], p[1], pad0[2] + p[3]]]), np.array([psi_cam + p[2]]), cam
             )[0]
             return np.r_[edges - box, np.degrees(p[2]) / 5.0, k_dz * p[3]]
 
@@ -459,7 +498,7 @@ class UKF:
             # Fit from a few yaw guesses (one start gets stuck at "aligned"). The sign of
             # the yaw is not observable from a box, so blend the fits by likelihood (~2 px
             # edge noise) instead of picking one at random: ambiguous -> midpoint.
-            fits = [least_squares(residual, [pos[0], pos[1], yaw0, 0.0], method="lm",
+            fits = [least_squares(residual, [pad0[0], pad0[1], yaw0, 0.0], method="lm",
                                   max_nfev=25, ftol=1e-3, xtol=1e-3)
                     for yaw0 in (-0.3, 0.3)]
             cost = np.array([f.cost for f in fits])
@@ -467,12 +506,13 @@ class UKF:
             rms = np.sqrt(np.mean(fits[cost.argmin()].fun[:4] ** 2))
             return w @ np.array([f.x for f in fits]) / w.sum(), rms
 
-        # Pass 1: let the height float to learn where the roof really is
+        # Pass 1: let the height float to learn where the pad really is
         (x, y, _, dz), rms = fit()
         if rms > max(self._car_fit_max_rel_rms * 0.5 * (bw + bh), 3.0):
-            return pos + roof  # box doesn't fit the car model (bad yaw / bad detection)
-        self._roof_agl += self._car_roof_gain * dz
-        pos = np.array([x, y, pos[2] + self._car_roof_gain * dz])
+            return pad0  # box doesn't fit the car model (bad yaw / bad detection)
+        if learn:
+            self._roof_agl += self._car_roof_gain * dz
+        pad0 = np.array([x, y, pad0[2] + self._car_roof_gain * dz])
 
         # Pass 2: fit x, y with that height ~fixed (height and range are coupled in
         # oblique views, so a free height adds noise to x, y)
@@ -504,6 +544,7 @@ class UKF:
 
         self._rejected_measurements = 0
         self._last_nis = np.nan
+        self.consecutive_rejections = 0
 
 
     @property
@@ -524,6 +565,7 @@ class UKF:
                 "image_to_transform_lag": np.nan,
                 "transform_to_UKF_lag": np.nan,
                 "total_lag": np.nan,
+                "post_x": np.full(3, np.nan),
             })
 
 
@@ -540,6 +582,7 @@ class UKF:
         d["image_to_transform_lag"] = np.nan
         d["transform_to_UKF_lag"] = np.nan
         d["total_lag"] = d["meas_age"]
+        d["post_x"] = np.full(3, np.nan)   # filled by _record_post_update if accepted
 
         if pipeline_timing is not None:
             t1 = pipeline_timing.vector.x
@@ -552,6 +595,15 @@ class UKF:
                 + d["image_to_transform_lag"]
                 + d["transform_to_UKF_lag"]
             )
+
+
+    def _record_post_update(self, measurement_type) -> None:
+        """ Store the filtered position at the measurement's own stamp. Call right
+            after a successful _update_apply, before any OOSM replay moves x on.
+        """
+        self._measurement_diagnostics[measurement_type]["post_x"] = self.x[
+            [LP_State.PX, LP_State.PY, LP_State.PZ]
+        ].copy()
 
 
     def get_measurement_diagnostics(self) -> dict:
@@ -626,7 +678,7 @@ class UKF:
 
 
     def seed_from_window(
-        self, samples: list[tuple[float, np.ndarray, np.ndarray]], ignore_above: float = 1e6
+        self, samples: list[tuple], ignore_above: float = 1e6
     ) -> None:
         """ Seed position, yaw, velocity AND yaw-rate from a short window of raw
             measurements, instead of a single sample. Differencing several noisy
@@ -639,15 +691,17 @@ class UKF:
             Call this once, right after reset(), in place of seed_position() -
             not in addition to it - once your window of samples is full.
 
-        :param samples: (timestamp, z, R) tuples, oldest first, ALL FROM THE
-                        SAME STREAM (mixing streams with different noise/rate
-                        characteristics will bias the fit). z = (px,py,pz,yaw).
+        :param samples: (timestamp, z, R[, quad_vel]) tuples, oldest first, ALL FROM
+                        THE SAME STREAM (mixing streams with different noise/rate
+                        characteristics will bias the fit). z = (px,py,pz,yaw), relative
+                        to the drone. quad_vel (drone xy velocity, or None) turns the
+                        fitted relative velocity back into the car's own velocity.
         :param ignore_above: as per seed_position - axes with R >= this are
                             treated as unmeasured by this stream and skipped.
         """
         n = len(samples)
         if n < 3:
-            t0, z0, R0 = samples[-1]
+            t0, z0, R0 = samples[-1][:3]
             self.seed_position(z0, t0, R0, ignore_above)
             return
 
@@ -690,6 +744,13 @@ class UKF:
             seeded_any = True
 
         if have_xy:
+            # The fit is to RELATIVE positions, so its slope is car minus drone velocity.
+            # Add the drone's mean velocity over the window to get the car's own motion.
+            qv = [smp[3] for smp in samples if len(smp) > 3 and smp[3] is not None]
+            if qv:
+                quad_v = np.mean(qv, axis=0)
+                vx, vy = vx + quad_v[0], vy + quad_v[1]
+
             speed_mag = float(np.hypot(vx, vy))
             r_pos = max(R_last[LP_Meas.PX, LP_Meas.PX], R_last[LP_Meas.PY, LP_Meas.PY])
             span = dt[-1] - dt[0]
@@ -733,12 +794,12 @@ class UKF:
 
 
     def _update_apply(self, meas, replay: bool = False) -> bool:
-        """ Do update step for UKF. Handles lower level UKF update functions such as 
-            actual covariance and state updates. Called via the public .update() 
+        """ Do update step for UKF. Handles lower level UKF update functions such as
+            actual covariance and state updates. Called via the public .update()
             function (both the in-order path and OOSM replay).
 
-        :param meas:   _Meas(z, R, cam). cam None -> pose model, else box model. R is 
-                       stored per event so replays use the R that was actually in 
+        :param meas:   _Meas(z, R, cam). cam None -> pose model, else box model. R is
+                       stored per event so replays use the R that was actually in
                        effect when they first happened.
         :param replay: True when re-applying a buffered event during OOSM replay
         :return: True on success, False on failure.
@@ -747,9 +808,8 @@ class UKF:
 
         # Propagate sigma points through the measurement model
         if box:
-            centre = self.X_prop[:, [LP_State.PX, LP_State.PY, LP_State.PZ]].copy()
-            centre[:, 2] -= self._roof_to_centre
-            self.Z[:] = self._box_edges(centre, self.X_prop[:, LP_State.YAW], meas.cam)
+            pad = self.X_prop[:, [LP_State.PX, LP_State.PY, LP_State.PZ]]
+            self.Z[:] = self._box_edges(pad, self.X_prop[:, LP_State.YAW], meas.cam)
         else:
             self._hx_vectorized(self.X_prop, self.Z)
 
@@ -788,6 +848,7 @@ class UKF:
         if nis > self._mahalanobis_threshold:
             if not replay:
                 self._rejected_measurements += 1
+                self.consecutive_rejections += 1
             return False
 
         # Kalman gain, if S is singular skip update
@@ -795,6 +856,10 @@ class UKF:
             K = np.linalg.solve(S.T, P_xz.T).T
         except np.linalg.LinAlgError:
             return False
+
+        # Measurement passed the gate: the filter is still tracking
+        if not replay:
+            self.consecutive_rejections = 0
 
         # Update state
         self.x += K @ y
@@ -817,24 +882,25 @@ class UKF:
         return True
 
 
-    def _box_edges(self, centre, yaw, cam) -> np.ndarray:
-        """ Project the car's 3D body box into the image and return its bounding box.
+    def _box_edges(self, pad, yaw, cam) -> np.ndarray:
+        """ Project the car shape (union of boxes) into the image and return its
+            overall bounding box.
 
-        :param centre: (N, 3) body-centre positions, drone-relative, local-level frame
-        :param yaw:    (N,) car headings in the local-level frame
-        :param cam:    (R_level_cam, t_level_cam, K, altitude) at the image stamp
+        :param pad: (N, 3) landing pad positions, drone-relative, local-level frame
+        :param yaw: (N,) car headings in the local-level frame
+        :param cam: (R_level_cam, t_level_cam, K, altitude) at the image stamp
         :return: (N, 4) [u_min, u_max, v_min, v_max] in pixels
         """
         R_lc, t_lc, K, _ = cam
         c, s = np.cos(yaw)[:, None], np.sin(yaw)[:, None]
-        lat, lon, vert = self._car_corners.T
+        fwd, left, up = self._car_corners.T
 
-        # Corners in the level frame: lon along heading (c, s), lat along (-s, c)
+        # Corners in the level frame: forward along (c, s), left along (-s, c)
         pts = np.stack([
-            centre[:, None, 0] + c * lon - s * lat,
-            centre[:, None, 1] + s * lon + c * lat,
-            centre[:, None, 2] + vert,
-        ], axis=-1)                                         # (N, 8, 3)
+            pad[:, None, 0] + c * fwd - s * left,
+            pad[:, None, 1] + s * fwd + c * left,
+            pad[:, None, 2] + up,
+        ], axis=-1)                                         # (N, M, 3)
 
         uv = ((pts - t_lc) @ R_lc) @ K.T                    # camera frame -> pixels
         uv = uv[..., :2] / np.maximum(uv[..., 2:], 0.1)
@@ -901,7 +967,7 @@ class UKF:
             "mahalanobis_threshold": self._mahalanobis_threshold,
             "rejected_measurements": self._rejected_measurements,
         }
-    
+
 
     @staticmethod
     def _f_A(theta):
@@ -922,7 +988,7 @@ class UKF:
 
 
     def _fx_vectorized(self, X, Y, quad_vel, dt) -> None:
-        """ Vectorised state model updater. Implements a localised frame version of the 
+        """ Vectorised state model updater. Implements a localised frame version of the
             CTRA kinematic model for a vehicle.
 
         :param X: Old state vector
@@ -949,18 +1015,27 @@ class UKF:
         fA = self._f_A(theta)
         fB = self._f_B(theta)
 
-        px_new = (
-            px
+        # Pad -> rear axle (the point CTRA actually describes), propagate, axle -> pad
+        dx, dy = self.axle_to_pad
+        c0, s0 = np.cos(yaw), np.sin(yaw)
+        rx = px - (c0 * dx - s0 * dy)
+        ry = py - (s0 * dx + c0 * dy)
+
+        rx_new = (
+            rx
             + v * dt * sinc_term * np.cos(mid_yaw)
             + a * dt**2 * (np.cos(yaw) * fA + np.sin(yaw) * fB)
-            - quad_dx
         )
-        py_new = (
-            py
+        ry_new = (
+            ry
             + v * dt * sinc_term * np.sin(mid_yaw)
             + a * dt**2 * (np.sin(yaw) * fA - np.cos(yaw) * fB)
-            - quad_dy
         )
+
+        yaw_new = yaw + theta
+        c1, s1 = np.cos(yaw_new), np.sin(yaw_new)
+        px_new = rx_new + (c1 * dx - s1 * dy) - quad_dx
+        py_new = ry_new + (s1 * dx + c1 * dy) - quad_dy
 
         Y[:, LP_State.PX] = px_new
         Y[:, LP_State.PY] = py_new
@@ -1026,7 +1101,7 @@ class UKF:
             than _buffer_window relative to the newest entry.
 
         :param timestamp: Timestamp of this update event
-        :param meas:      _Meas(z, R, cam) applied for this update event (cam carries 
+        :param meas:      _Meas(z, R, cam) applied for this update event (cam carries
                           the image-time camera pose for box measurements)
         """
         self._UKF_buffer.append(

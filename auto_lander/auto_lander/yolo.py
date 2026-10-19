@@ -53,6 +53,10 @@ from .vision_common import get_workspace_root
     Carrying the camera pose (attitude + gimbal angle, both interpolated to the image
     stamp) in the measurement lets the UKF replay it exactly during OOSM rollback.
 
+    When several cars are detected, the node keeps following the same one: it picks the
+    candidate nearest the previously chosen box, and only falls back to the most
+    confident detection once that track has gone stale (see _select_candidate).
+
     This node does not command the gimbal servo. It publishes the car image target on
     /landing_pad/yolo_target for gimbal_controller.py, which owns the actuator
     independently, so YOLO can continue to drive the gimbal even when the AprilTag node
@@ -124,10 +128,18 @@ class YoloNode(Node):
         self.declare_parameter("yolo_car_class_id", 0)
         self._car_class_id = (self.get_parameter("yolo_car_class_id").get_parameter_value().integer_value)
 
-        self.declare_parameter("yolo_edge_margin_px", 0)
+        self.declare_parameter("yolo_edge_margin_px", 2)
         self._yolo_edge_margin_px = (self.get_parameter("yolo_edge_margin_px").get_parameter_value().integer_value)
         self.declare_parameter("yolo_ground_ray_z_epsilon", 1e-3)
         self._ground_ray_z_epsilon = (self.get_parameter("yolo_ground_ray_z_epsilon").get_parameter_value().double_value)
+
+        # ---- TRACK CONTINUITY PARAMETERS ----
+        # Max jump of the box centre between frames, in box sizes, to count as the same car
+        self.declare_parameter("yolo_track_gate", 1.0)
+        self._track_gate = (self.get_parameter("yolo_track_gate").get_parameter_value().double_value)
+        # After this long without a matching detection, reacquire the most confident car
+        self.declare_parameter("yolo_track_hold_s", 0.5)
+        self._track_hold_s = (self.get_parameter("yolo_track_hold_s").get_parameter_value().double_value)
 
         # ---- CAMERA PARAMETERS ----
         self.declare_parameter("camera_fov_horizontal", 2.7925268)
@@ -246,6 +258,10 @@ class YoloNode(Node):
         self._img_seq = 0
         self._last_processed_seq = -1
 
+        # ---- TRACK STATE ----
+        self._track_box = None        # (cx, cy, w, h) of the last chosen detection
+        self._track_time = -np.inf    # image stamp (s) of the last chosen detection
+
         # ---- PROCESSING TIMER ----
         self._yolo_timer = self.create_timer(
             1.0 / self._yolo_processing_rate, self._yolo_timer_callback
@@ -304,7 +320,7 @@ class YoloNode(Node):
     def _yolo_timer_callback(self) -> None:
         """ Fires at yolo_processing_rate. Runs the YOLO car detector independently of
             the AprilTag pipeline, publishes the raw box + image-time camera geometry as
-            the UKF measurement, and an image target for the independent gimbal 
+            the UKF measurement, and an image target for the independent gimbal
             controller.
         """
 
@@ -335,7 +351,8 @@ class YoloNode(Node):
         # gimbal angle both interpolated to `stamp`).
         T_local_cam = camera_pose_in_level_frame(q, gimbal_deg, self._camera_mount)
 
-        car_detection = self._yolo_detection(frame)
+        # Keep following the same car if YOLO returns several candidates
+        car_detection = self._select_candidate(self._yolo_detection(frame), stamp_to_sec(stamp))
 
         if car_detection is not None:
             cx, cy, bw, bh, confidence = car_detection
@@ -394,11 +411,12 @@ class YoloNode(Node):
             self._frame_recorder.save(frame)
 
     def _yolo_detection(self, frame):
-        """ Run YOLO and return the highest-confidence car detection.
+        """ Run YOLO and return every car detection that passes the confidence, class
+            and edge-margin filters.
 
-        :return: (cx, cy, width, height, confidence), or None if no car was found
+        :return: list of (cx, cy, width, height, confidence), empty if no car was found
         """
-        best = None
+        candidates = []
 
         results = self.yolo_model(  #type: ignore
             frame,                                   # 640x360
@@ -427,12 +445,42 @@ class YoloNode(Node):
                 ):
                     continue
 
-                if best is None or confidence > best[4]:
-                    best = (
-                        float((x1 + x2) * 0.5), float((y1 + y2) * 0.5),
-                        float(x2 - x1), float(y2 - y1), confidence,
-                    )
+                candidates.append((
+                    float((x1 + x2) * 0.5), float((y1 + y2) * 0.5),
+                    float(x2 - x1), float(y2 - y1), confidence,
+                ))
 
+        return candidates
+
+    def _select_candidate(self, candidates, t):
+        """ Keep following the same car across frames. With a fresh track, pick the
+            candidate whose centre is nearest the last chosen box (in box sizes). If
+            none is within the gate, skip the frame rather than jump to a different
+            object. With no recent track (start-up, or no match for track_hold_s), take
+            the most confident candidate.
+
+        :param candidates: list of (cx, cy, width, height, confidence)
+        :param t:          image stamp (s)
+        :return: the chosen (cx, cy, width, height, confidence), or None
+        """
+        if not candidates:
+            return None
+
+        track_fresh = self._track_box is not None and t - self._track_time <= self._track_hold_s
+
+        if not track_fresh:
+            best = max(candidates, key=lambda c: c[4])
+        else:
+            tcx, tcy, tbw, tbh = self._track_box  #type: ignore
+            scale = max(tbw, tbh, 10.0)
+            dist = [np.hypot(c[0] - tcx, c[1] - tcy) / scale for c in candidates]
+            k = int(np.argmin(dist))
+            if dist[k] > self._track_gate:
+                return None
+            best = candidates[k]
+
+        self._track_box = best[:4]
+        self._track_time = t
         return best
 
     def _show_yolo_debug(self, frame, detection):
