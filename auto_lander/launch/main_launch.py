@@ -95,7 +95,7 @@ def generate_launch_description():
                               description="true: the AprilTag node opens a USB/V4L2 webcam and "
                                           "republishes /camera/image_raw. false: an external "
                                           "camera driver publishes /camera/image_raw"),
-        DeclareLaunchArgument("yolo_model", default_value="ugv_sim_yolo11n_openvino_model",
+        DeclareLaunchArgument("yolo_model", default_value="ugv_yolo11n_openvino_model",
                               description="YOLO model path (absolute, or relative to the cwd)"),
         DeclareLaunchArgument("record_bag", default_value="true",
                               description="Record a rosbag of the key topics to ./bags/<run_id>"),
