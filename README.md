@@ -20,27 +20,16 @@ All real-flight settings live in `main_launch.py`. Items marked `TODO` at the to
 - [ ] Camera calibrated at the processed resolution (16:9): `CAMERA_HFOV_RAD`, `CAMERA_DISTORTION`
 - [ ] Camera mount measured (translation + rotation): `CAMERA_MOUNT`
 - [ ] Car and pad measured: `CAR_BOXES`, `PAD_HEIGHT_M`, `CAR_PAD_POSITION`, `CAR_REAR_AXLE`, `PAD_SIZE`
-- [ ] YOLO model detects the real car and runs at about 10 Hz on the companion computer
 - [ ] FCU parameters set (see [FCU parameters](#fcu-parameters)), geofence on
-- [ ] Waiting point chosen, within `boundary_limit` of home
+- [ ] GPS Waiting point chosen, within `boundary_limit` of home
 
 **At the field (bench, props off)**
-- [ ] `fpv-switch` stopped, `a2_gui.py` closed
 - [ ] `ros2 param get /mavros/setpoint_raw thrust_scaling` returns 1.0 (otherwise ArduPilot ignores every attitude setpoint)
-- [ ] `python3 -c "import numpy, cv_bridge"` works (NumPy 2 breaks `cv_bridge`)
-- [ ] Everything running inside `tmux` on the Pi, not a bare SSH session over the radio
 - [ ] MAVROS on the serial link, **without** `use_sim_time`
 - [ ] `ros2 topic hz /mavros/global_position/local` reads **at least 20 Hz**
 - [ ] `/camera/image_raw` is publishing and YOLO boxes the car
 - [ ] Gimbal moves, and `/landing_pad/gimbal_angle` follows the real angle
-- [ ] Log says `Waiting for the pilot to select GUIDED` and nothing arms
-- [ ] Select GUIDED: it arms and requests takeoff. Flip out of GUIDED: log says `pilot override` and setpoints stop
-- [ ] No `UKF loop took` / `Control loop took` warnings, CPU temperature OK
-
-**Flying**
-- [ ] Pilot on the sticks, mode switch with GUIDED and LOITER/LAND
-- [ ] Progression: tracking only, then stationary car, then slow straight runs
-- [ ] After each flight, keep `controller_*.csv`, `bags/<run_id>` and the YOLO video
+- [ ] No `UKF loop took too long` / `Control loop took too long` warnings, CPU temperature OK
 
 ### Launch
 
@@ -65,11 +54,11 @@ ros2 launch auto_lander main_launch.py gps_lat:=<deg> gps_lon:=<deg>
 | `record_bag` | true | Key topics, no images |
 
 ### How a real run behaves
-- **Start:** idle until the pilot selects GUIDED. It then arms, waits 5 s, takes off to 8.5 m (chase altitude + pad height), flies to the waiting point, searches, tracks and lands.
+- **Start:** Goes straight into GUIDED, waits 5 secs, and takes off to 8.5 m (chase altitude + pad height), flies to the waiting point, searches, tracks and lands. (An option exists to manually fly to the point and then switch to GUIDED)
 - **Pilot override:** leaving GUIDED after arming makes the controller passive for the rest of the run (state 8000): no setpoints, no RTL, no disarm. Relaunch to retry.
 - **Landing:** throttle cut at 1 m or below once the termination check passes, then a **force disarm 0.5 s later**.
 - **Safety RTL:** boundary, `max_runtime`, UKF covariance blow-up, more than 3 failed attempts, or a waiting point beyond `boundary_limit`. Only ever issued while in GUIDED.
-- **Touchdown fallback** (velocity-reversal cut) is **disabled** for first flights (`landing_z_touchdown_accel_threshold: 1000.0`). `quad_z_accel` is logged so it can be tuned.
+- **Touchdown fallback** (big accel_z detection cut) is **disabled** for first flights (`landing_z_touchdown_accel_threshold: 1000.0`). `quad_z_accel` is logged so it can be tuned.
 
 **Known limitations (pending fix)**
 - It always flies to the waiting point; there is no option to search from where the pilot hands over.
