@@ -276,7 +276,7 @@ def generate_launch_description():
             {"ground_truth_available": False},    # no Gazebo truth topics in flight
             {"yolo_shadow_fit_enabled": False},   # SITL-only diagnostic, costs CPU
             {"use_sim_time": False},
-            {"wait_for_pilot_guided": True},      # pilot flips to GUIDED to start
+            {"wait_for_pilot_guided": False},      # pilot flips to GUIDED to start
             {"mavros_message_rate_hz": 0.0},      # 0 = FCU SRx_* rates (see checklist)
             {"max_runtime": ParameterValue(LaunchConfiguration("max_runtime"), value_type=float)},
             {"boundary_limit": ParameterValue(LaunchConfiguration("boundary_limit"), value_type=float)},
