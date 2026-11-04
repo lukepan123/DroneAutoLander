@@ -2,10 +2,60 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>auto_lander</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <version>0.1.0</version>
+  <description>
+    Vision-only autonomous landing of an ArduCopter quadcopter on a moving car.
+    A YOLO car detector on a monocular gimbal camera feeds a UKF that tracks the
+    landing pad; a PD/PN guidance loop flies the drone via MAVROS in GUIDED mode.
+    Runs in ArduPilot SITL with Gazebo, and on a Raspberry Pi companion computer.
+  </description>
   <maintainer email="luke.pan88@gmail.com">luke</maintainer>
   <license>TODO: License declaration</license>
+
+  <url type="repository">https://github.com/lukepan123/DroneAutoLander</url>
+
+  <!-- ===== ROS client library and messages ===== -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+
+  <!-- ===== Flight controller link ===== -->
+  <exec_depend>mavros</exec_depend>
+  <exec_depend>mavros_msgs</exec_depend>
+  <!-- gimbal_control plugin (/mavros/gimbal_control/*) lives in mavros_extras -->
+  <exec_depend>mavros_extras</exec_depend>
+
+  <!-- ===== Transforms ===== -->
+  <exec_depend>tf2_ros_py</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
+  <exec_depend>python3-transforms3d</exec_depend>
+
+  <!-- ===== Vision ===== -->
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <!-- ===== Numerics ===== -->
+  <!-- NumPy must stay below 2: the Humble cv_bridge binaries are built against 1.x -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+
+  <!-- ===== Launch and logging ===== -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2_storage_default_plugins</exec_depend>
+
+  <!--
+    ===== Not installed by rosdep =====
+    SITL only (deliberately not a dependency, so the Pi doesn't pull in Gazebo):
+      ros-humble-ros-gz-bridge, plus ArduPilot and ardupilot_gazebo built from source.
+
+    pip packages (no rosdep keys):
+      pip install "numpy<2" ultralytics openvino pupil-apriltags
+    casadi is only used by the legacy mpc_controller.py, which nothing launches.
+  -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
