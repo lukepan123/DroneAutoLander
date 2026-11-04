@@ -42,6 +42,26 @@ from .pid_controller import CONTROL_OUTPUT_KEYS
     Landing algorithim consists of several states.
 """
 
+# ---- PIPELINE LATENCY STAGES ----
+# Each stream reports end-of-stage timestamps after the image stamp (detector clock):
+#   apriltag: image received, transform ready        (side topic /landing_pad/pipeline_timing)
+#   yolo:     image received, processing started,
+#             inference done, measurement published  (embedded in yolo_car_meas [24:28])
+# The controller adds two of its own:
+#   wait:  last detector timestamp -> UKF tick that consumes the measurement
+#   apply: UKF tick start -> this measurement's update done (fit, OOSM replay, ...)
+# and total = image stamp -> update done. All in ms, logged once per measurement.
+LATENCY_STAGES = {
+    "apriltag": ("transport", "processing"),
+    "yolo":     ("transport", "queue", "inference", "post"),
+}
+LATENCY_TAIL = ("wait", "apply", "total")
+LATENCY_COLUMNS = [
+    f"{stream}_{stage}_lag"
+    for stream, stages in LATENCY_STAGES.items()
+    for stage in stages + LATENCY_TAIL
+]
+
 class Orchestrator(Node):
     """ Defines the orchestrator node."""
 
@@ -59,6 +79,14 @@ class Orchestrator(Node):
         # raw baseline (never fed to the filter). Diagnostics only: costs CPU, off in flight.
         self.declare_parameter("yolo_shadow_fit_enabled", False)
         self.YOLO_SHADOW_FIT_ENABLED = self.get_parameter("yolo_shadow_fit_enabled").get_parameter_value().bool_value
+        # Real flight: never switch the FCU into GUIDED ourselves. The pilot selecting
+        # GUIDED on the RC is the "go" signal; arming and takeoff then follow as in SITL.
+        self.declare_parameter("wait_for_pilot_guided", False)
+        self.WAIT_FOR_PILOT_GUIDED = self.get_parameter("wait_for_pilot_guided").get_parameter_value().bool_value
+        # MAVLink stream rate requested for GLOBAL_POSITION_INT / ATTITUDE (Hz). 0 = leave
+        # the FCU's SRx_* stream rates alone.
+        self.declare_parameter("mavros_message_rate_hz", 0.0)
+        self.MAVROS_MESSAGE_RATE_HZ = self.get_parameter("mavros_message_rate_hz").get_parameter_value().double_value
 
         # Max runtime before RTL
         self.declare_parameter("max_runtime", 120.0)
@@ -75,16 +103,23 @@ class Orchestrator(Node):
         self.declare_parameter("landing_height_threshold", 0.20)
         self.LANDING_HEIGHT_THRESHOLD = self.get_parameter("landing_height_threshold").get_parameter_value().double_value
         # Touchdown fallback: detect a sharp downward-to-upward vertical velocity reversal.
-        # This check is independent of the estimated height above the pad.
+        # Only armed below this estimated height above the pad (inf = ungated, the SITL
+        # behaviour). Real EKF velocity is noisy enough to fake a reversal mid-air, and a
+        # false trigger here ends in a force disarm.
         self.declare_parameter("landing_z_touchdown_accel_threshold", 4.0)  # m/s^2
         self.LANDING_Z_TOUCHDOWN_ACCEL_THRESHOLD = self.get_parameter("landing_z_touchdown_accel_threshold").get_parameter_value().double_value
+        self.declare_parameter("landing_z_touchdown_max_height", float("inf"))  # m
+        self.LANDING_Z_TOUCHDOWN_MAX_HEIGHT = self.get_parameter("landing_z_touchdown_max_height").get_parameter_value().double_value
         self.declare_parameter("landing_centered_error_threshold", 2.0)
         self.LANDING_CENTERED_ERROR_THRESHOLD = self.get_parameter("landing_centered_error_threshold").get_parameter_value().double_value
+        # State 2100 holds until the car's relative bearing is within this of the drone heading
+        self.declare_parameter("landing_acquire_bearing_max_deg", 120.0)
+        self.LANDING_ACQUIRE_BEARING_MAX = np.radians(self.get_parameter("landing_acquire_bearing_max_deg").get_parameter_value().double_value)
         # Early acquisition (3000 -> 4000 before the lock timer): the UKF is confident and
         # the drone is matching the pad's velocity, continuously for the dwell time
         self.declare_parameter("landing_confident_pos_sigma", 0.50)      # m, 1-sigma horizontal position
         self.LANDING_CONFIDENT_POS_SIGMA = self.get_parameter("landing_confident_pos_sigma").get_parameter_value().double_value
-        self.declare_parameter("landing_confident_vel_sigma", 0.90)      # m/s, 1-sigma pad velocity vector
+        self.declare_parameter("landing_confident_vel_sigma", 2.00)      # m/s, 1-sigma pad velocity vector
         self.LANDING_CONFIDENT_VEL_SIGMA = self.get_parameter("landing_confident_vel_sigma").get_parameter_value().double_value
         self.declare_parameter("landing_confident_rel_vel", 0.60)        # m/s, |horizontal relative velocity|
         self.LANDING_CONFIDENT_REL_VEL = self.get_parameter("landing_confident_rel_vel").get_parameter_value().double_value
@@ -100,7 +135,7 @@ class Orchestrator(Node):
         self.target_alt_rate = self.DESCENT_RATE_FAR_SP
         self.declare_parameter("landing_descent_rate_close", -0.50)
         self.DESCENT_RATE_CLOSE_SP = self.get_parameter("landing_descent_rate_close").get_parameter_value().double_value
-        self.declare_parameter("landing_time_visual_min_time (s)", 0.6)
+        self.declare_parameter("landing_time_visual_min_time (s)", 1.1)
         self.LANDING_TIME_VISUAL_TIME_SP = self.get_parameter("landing_time_visual_min_time (s)").get_parameter_value().double_value
         self.declare_parameter("landing_pad_locked_time (s)", 10.0)
         self.LANDING_PAD_LOCK_TIME_SP = self.get_parameter("landing_pad_locked_time (s)").get_parameter_value().double_value
@@ -159,6 +194,8 @@ class Orchestrator(Node):
         self.quad_pitch = 0.0
         self.quad_yaw   = 0.0
         self.landing_pad_relative_odometry = Odometry()
+        self.landing_pad_acceleration = np.zeros(2)   # pad accel (level frame, xy), from the UKF
+        self._pad_acc_ff = np.full(2, np.nan)         # feedforward actually applied this tick (logged)
         self.alt_pos_control = True
 
         self._last_quad_z_velocity = None
@@ -169,7 +206,13 @@ class Orchestrator(Node):
         self._z_touchdown_trigger_velocity = 0.0
         self._yolo_shadow_fit = None     # box-mode runs: fit on the same frame, logged only
         self._yolo_shadow_stamp = None
+        self._yolo_fit_yaw = None        # (stamp, yaw, sigma) of the last box yaw fed to the UKF
         self._ukf_diverged = False       # set by the UKF loop on a re-seed, consumed by the control loop
+
+        # Pipeline latency: one sample per measurement, written by the UKF loop and popped
+        # by the next CSV row (so repeated rows log NaN instead of duplicating it)
+        self._latency_pending = {}
+        self._latency_last_stamp = dict.fromkeys(LATENCY_STAGES)
 
         # ---- State 0xxx (Pre-arm) Variables ----
         self._mode_requested = False
@@ -217,8 +260,13 @@ class Orchestrator(Node):
         # ---- State 7xxx (RTL) Variables ----
         self._rtl_initiated = False
 
+        # ---- State 8xxx (Pilot override) Variables ----
+        # Latched once the FCU leaves GUIDED without us asking (pilot mode switch or an
+        # FCU failsafe). The controller then goes passive: no setpoints, no RTL, no disarm.
+        self._pilot_override = False
+
         # region ---- UKF PARAMETERS ----
-        self.declare_parameter('UKF_seeding_num_samples', 5)
+        self.declare_parameter('UKF_seeding_num_samples', 10)
         self.UKF_SEED_WINDOW_N = self.get_parameter("UKF_seeding_num_samples").get_parameter_value().integer_value
         self.declare_parameter('UKF_alpha', 1.0)
         self.UKF_ALPHA = self.get_parameter("UKF_alpha").get_parameter_value().double_value
@@ -257,17 +305,35 @@ class Orchestrator(Node):
         # Divergence guard: this many live measurements gated out in a row -> re-seed
         self.declare_parameter('UKF_max_consecutive_rejections', 5)   # ~0.5 s of YOLO frames
         self.UKF_MAX_CONSEC_REJECT = self.get_parameter("UKF_max_consecutive_rejections").get_parameter_value().integer_value
+        # OOSM history: must exceed the worst image -> UKF latency (slower on the Pi)
+        self.declare_parameter('UKF_buffer_window_s', 0.5)
+        self.UKF_BUFFER_WINDOW = self.get_parameter("UKF_buffer_window_s").get_parameter_value().double_value
 
         # AprilTag fusion toggle (the AprilTag node may not be running at all)
         self.declare_parameter('apriltag_enabled', False)
         self.APRILTAG_ENABLED = self.get_parameter("apriltag_enabled").get_parameter_value().bool_value
 
         # YOLO pixel-space box update: used once yaw is known well enough, otherwise the
-        # yaw-agnostic box fit (position only) is fed instead, as during seeding
+        # box fit (position, plus resolved box yaw) is fed instead, as during seeding
         self.declare_parameter('UKF_yolo_box_yaw_sigma_max', 0.25)   # rad
         self.UKF_YOLO_BOX_YAW_SIGMA_MAX = self.get_parameter("UKF_yolo_box_yaw_sigma_max").get_parameter_value().double_value
         self.declare_parameter('UKF_yolo_box_pixel_sigma', 10.0)      # px, per box edge
         self.UKF_YOLO_BOX_PIXEL_SIGMA = self.get_parameter("UKF_yolo_box_pixel_sigma").get_parameter_value().double_value
+
+        # Box-derived yaw for the fallback fit: the box gives |car yaw - camera heading|,
+        # resolved against the filter's heading (front/back, mirror) and fed as a yaw
+        # measurement. Speeds up yaw convergence at low car speed, where motion says little.
+        # Only used inside a speed window: below it the motion heading can't be trusted
+        # for front/back, above it motion already beats the box. Also caps the seeded yaw
+        # variance (see UKF yaw_seed_var_max). False = original behaviour, bit for bit.
+        self.declare_parameter('UKF_yolo_fit_yaw_enabled', True)
+        self.UKF_YOLO_FIT_YAW_ENABLED = self.get_parameter("UKF_yolo_fit_yaw_enabled").get_parameter_value().bool_value
+        self.declare_parameter('UKF_yolo_fit_yaw_speed_window', [0.3, 10.0])  # m/s, estimated car speed
+        self.UKF_YOLO_FIT_YAW_SPEED_WINDOW = self.get_parameter("UKF_yolo_fit_yaw_speed_window").get_parameter_value().double_array_value
+        self.declare_parameter('UKF_yolo_fit_yaw_pixel_sigma', 3.0)   # px, YOLO edge noise behind the fitted yaw sigma
+        self.UKF_YOLO_FIT_YAW_PIXEL_SIGMA = self.get_parameter("UKF_yolo_fit_yaw_pixel_sigma").get_parameter_value().double_value
+        self.declare_parameter('UKF_yolo_fit_yaw_sigma_floor', 0.05)  # rad, absorbs car-model mismatch
+        self.UKF_YOLO_FIT_YAW_SIGMA_FLOOR = self.get_parameter("UKF_yolo_fit_yaw_sigma_floor").get_parameter_value().double_value
 
         # YOLO car shape: union of boxes in the car model's frame (x forward, y left, z up,
         # same origin as the car's odometry), 6 numbers per box:
@@ -309,7 +375,7 @@ class Orchestrator(Node):
         self.PID_MASS = self.get_parameter("PID_mass").get_parameter_value().double_value
         self.declare_parameter('PID_gravity', 9.81)
         self.PID_GRAVITY = self.get_parameter("PID_gravity").get_parameter_value().double_value
-        self.declare_parameter('PID_drag_coefficient', 0.002)
+        self.declare_parameter('PID_drag_coefficient', 0.03)
         self.PID_DRAG_COEFFICIENT = self.get_parameter("PID_drag_coefficient").get_parameter_value().double_value
 
         self.declare_parameter('PID_vz_up_max', 2.0)
@@ -338,6 +404,11 @@ class Orchestrator(Node):
         self.PID_TERMINAL_GAIN = self.get_parameter("PID_terminal_gain").get_parameter_value().double_value
         self.declare_parameter('PID_drop_off', 7.0)
         self.PID_DROP_OFF = self.get_parameter("PID_drop_off").get_parameter_value().double_value
+        # Pad-acceleration feedforward (centripetal + along-track), scaled by this gain. Lets
+        # the PD hold the forecast cut point through turns instead of lagging outside them.
+        # 0.0 = off (pure PD); reduce below 1 if the estimated a / yaw rate are noisy.
+        self.declare_parameter('PID_accel_ff_gain', 1.0)
+        self.PID_ACCEL_FF_GAIN = self.get_parameter("PID_accel_ff_gain").get_parameter_value().double_value
 
         # region ---- INITIALISATIONS ----
         self._UKF_start = False
@@ -354,6 +425,8 @@ class Orchestrator(Node):
             self.YOLO_CAR_BOXES, self.YOLO_CAR_PAD_POSITION,
             self.YOLO_CAR_FIT_MAX_REL_RMS, self.YOLO_ROOF_HEIGHT_GAIN,
             rear_axle=self.YOLO_CAR_REAR_AXLE,
+            yaw_seed_var_max=1.0 if self.UKF_YOLO_FIT_YAW_ENABLED else None,
+            buffer_window=self.UKF_BUFFER_WINDOW,
         )
 
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
@@ -415,7 +488,8 @@ class Orchestrator(Node):
             Bool, "/landing_pad/found", self._landing_pad_found_callback, 1
         )
 
-        # Raw YOLO car box + image-time camera geometry (layout documented in yolo.py)
+        # Raw YOLO car box + image-time camera geometry + pipeline timestamps (layout
+        # documented in yolo.py)
         self._yolo_msg = None
         self._yolo_meas_sub = self.create_subscription(
             Float64MultiArray, "/landing_pad/yolo_car_meas", self._yolo_measurement_callback, 10
@@ -469,6 +543,7 @@ class Orchestrator(Node):
         self._UKF_est_time = 0.0
         self._UKF_fwd_horizon = 0.0
         self._rtl_reason = ""
+        self._csv_last_flush = 0.0
         self.landing_pad_true_odometry = Odometry()
         if self.DIAGNOSTICS_ENABLED:
             self.start_diagnostics()
@@ -478,15 +553,18 @@ class Orchestrator(Node):
 
     # region ---- CALLBACK IMPLEMENTATIONS ----
     def _set_message_intervals(self) -> None:
-        """ Set specfied message interval rates.
+        """ Request MAVLink stream rates (mavros_message_rate_hz > 0 only). The odometry
+            rate sets how well camera poses are interpolated to image stamps and how
+            fresh the velocity is that the touchdown fallback differentiates.
         """
-        # rate = 40.0  # Hz
-        # # Drives global_position/local odometry
-        # self._set_single_message_interval(33, rate, "GLOBAL_POSITION_INT")
-        # # Drives local_position/velocity_local
-        # self._set_single_message_interval(32, rate, "LOCAL_POSITION_NED")
-        # # Orientation/angular-rate freshness for both above
-        # self._set_single_message_interval(31, rate, "ATTITUDE_QUATERNION")
+        rate = self.MAVROS_MESSAGE_RATE_HZ
+        if rate <= 0.0:
+            return
+        # Drives /mavros/global_position/local (position + velocity)
+        self._set_single_message_interval(33, rate, "GLOBAL_POSITION_INT")
+        # Drives the orientation inside that odometry (ArduPilot sends ATTITUDE, not
+        # ATTITUDE_QUATERNION, by default)
+        self._set_single_message_interval(30, rate, "ATTITUDE")
 
 
     def _set_single_message_interval(self, message_id, rate, description) -> None:
@@ -605,13 +683,16 @@ class Orchestrator(Node):
                 self.quad_z_accel = (z_velocity - self._last_quad_z_velocity) / z_dt # type: ignore
 
                 # During state 4000, a sharp down-to-up velocity reversal can indicate
-                # impact/rebound. Do not gate this fallback on the estimated pad height.
+                # impact/rebound. Only a loose height gate (landing_z_touchdown_max_height,
+                # inf in SITL), since the height estimate itself may have drifted.
                 velocity_rising = (self._last_quad_z_velocity < z_velocity) #type: ignore
 
                 if (
                     self.controller_state == 4000
                     and velocity_rising
                     and self.quad_z_accel >= self.LANDING_Z_TOUCHDOWN_ACCEL_THRESHOLD
+                    and -self.landing_pad_relative_position[LP_State.PZ]
+                    <= self.LANDING_Z_TOUCHDOWN_MAX_HEIGHT
                 ):
                     self._z_touchdown_trigger = True
                     self._z_touchdown_trigger_accel = self.quad_z_accel
@@ -777,6 +858,16 @@ class Orchestrator(Node):
 
         if getattr(res, "success", False):
             self.get_logger().info("Takeoff command accepted (monitoring altitude).")
+        elif self.quad_pose[QUAD_State.Z] > 2.0:
+            # Pilot took off manually before selecting GUIDED: ArduCopter refuses a
+            # takeoff when already flying, so skip it rather than retrying forever.
+            self.get_logger().warn(
+                f"Takeoff rejected but already airborne at {self.quad_pose[QUAD_State.Z]:.1f} m "
+                "- skipping takeoff."
+            )
+            if not self._tko_reached:
+                self._tko_reached = True
+                self._tko_complete_time = self.get_clock().now().nanoseconds / 1e9
         else:
             self.get_logger().error("Takeoff rejected by FCU.")
             self._tko_requested = False
@@ -789,6 +880,14 @@ class Orchestrator(Node):
         """
 
         if self._rtl_initiated:
+            return
+
+        # TODO: Never override a pilot (or FCU failsafe) that has taken the vehicle out of GUIDED
+        if self._pilot_override or self.fcu_state.mode != self._mode:
+            self.get_logger().warn(
+                f"RTL ({reason}) skipped: FCU in {self.fcu_state.mode or 'unknown'}, not {self._mode}",
+                throttle_duration_sec=5.0,
+            )
             return
 
         self._rtl_initiated = True
@@ -945,7 +1044,8 @@ class Orchestrator(Node):
         # Pixel-space box noise, with the same close-range inflation
         R_yolo_box = np.eye(4) * self.UKF_YOLO_BOX_PIXEL_SIGMA**2 * yolo_car_scale
 
-        # Gather measurements as (type, stamp, z, R, cam, pipeline_timing)
+        # Gather measurements as (type, stamp, z, R, cam, checkpoints). checkpoints are
+        # the detector's end-of-stage timestamps (see LATENCY_STAGES), or None.
         measurements = []
 
         # AprilTag (optional): full pose from TF
@@ -957,10 +1057,12 @@ class Orchestrator(Node):
                 t, q = tf_msg.transform.translation, tf_msg.transform.rotation
                 _, _, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
                 key = (tf_msg.header.stamp.sec, tf_msg.header.stamp.nanosec)
+                timing = (self._pipeline_timing_buffer.pop(key, None)
+                          if self.DIAGNOSTICS_ENABLED else None)
                 measurements.append((
                     "apriltag", key[0] + key[1] * 1e-9, np.array([t.x, t.y, t.z, yaw]),
                     R_apriltag, None,
-                    self._pipeline_timing_buffer.pop(key, None) if self.DIAGNOSTICS_ENABLED else None,
+                    None if timing is None else (timing.vector.x, timing.vector.y),
                 ))
             except tf2_ros.TransformException: #type: ignore
                 pass
@@ -973,30 +1075,55 @@ class Orchestrator(Node):
             stamp = key[0] + key[1] * 1e-9
             K = np.array([[d[8], 0.0, d[10]], [0.0, d[9], d[11]], [0.0, 0.0, 1.0]])
             cam = (d[15:24].reshape(3, 3), d[12:15], K, d[7])
-            timing = self._yolo_pipeline_timing_buffer.pop(key, None) if self.DIAGNOSTICS_ENABLED else None
+            # Pipeline timestamps ride in the message itself (older yolo.py: absent)
+            checkpoints = d[24:28] if d.size >= 28 else None
 
             sigma_yaw = np.sqrt(max(self._UKF_filter.P[LP_State.YAW, LP_State.YAW], 0.0))
             if self._UKF_filter.seed_pending or sigma_yaw >= self.UKF_YOLO_BOX_YAW_SIGMA_MAX:
-                # Yaw too poor for the pixel model: yaw-agnostic box fit -> position only
-                pos = self._UKF_filter.fit_car_box(d[2:6], cam)
-                if pos is not None:
-                    measurements.append(("yolo", stamp, np.append(pos, 0.0), R_yolo_car, None, timing))
+                # Yaw too poor for the pixel model: box fit -> position, plus the box yaw
+                # when the filter's heading can tell front/back (< 45 deg, car clearly
+                # moving forward) and the car is slow enough for the box to beat motion
+                v_lo, v_hi = self.UKF_YOLO_FIT_YAW_SPEED_WINDOW
+                use_yaw = (self.UKF_YOLO_FIT_YAW_ENABLED and not self._UKF_filter.seed_pending
+                           and sigma_yaw < np.pi / 4
+                           and v_lo < self._UKF_filter.x[LP_State.V] < v_hi)
+                yaw_ref = ((self._UKF_filter.x[LP_State.YAW], sigma_yaw, self.UKF_YOLO_FIT_YAW_PIXEL_SIGMA)
+                           if use_yaw else None)
+                fit = self._UKF_filter.fit_car_box(d[2:6], cam, yaw_ref=yaw_ref)
+                if fit is not None:
+                    pos, fit_yaw, fit_yaw_sigma = fit
+                    z, R = np.append(pos, 0.0), R_yolo_car
+                    # Skip box yaw no tighter than the filter's own: its frame-to-frame
+                    # errors are correlated, so weak repeats add bias, not information
+                    if fit_yaw is not None and fit_yaw_sigma < sigma_yaw:
+                        z[LP_Meas.YAW] = fit_yaw
+                        R = R_yolo_car.copy()
+                        R[LP_Meas.YAW, LP_Meas.YAW] = max(fit_yaw_sigma, self.UKF_YOLO_FIT_YAW_SIGMA_FLOOR) ** 2 #type: ignore
+                        self._yolo_fit_yaw = (stamp, fit_yaw, np.sqrt(R[LP_Meas.YAW, LP_Meas.YAW]))
+                    measurements.append(("yolo", stamp, z, R, None, checkpoints))
             else:
-                measurements.append(("yolo", stamp, d[2:6], R_yolo_box, cam, timing))
+                measurements.append(("yolo", stamp, d[2:6], R_yolo_box, cam, checkpoints))
                 # Shadow fit: logged as the raw baseline, never fed to the filter
                 if self.YOLO_SHADOW_FIT_ENABLED:
-                    self._yolo_shadow_fit = self._UKF_filter.fit_car_box(d[2:6], cam, learn=False)
+                    fit = self._UKF_filter.fit_car_box(d[2:6], cam, learn=False)
+                    self._yolo_shadow_fit = None if fit is None else fit[0]
                     self._yolo_shadow_stamp = stamp
 
         # Update each measurement stream through the same UKF path. The drone velocity
         # rides along so a seed can turn relative motion back into the car's own.
-        for measurement_type, stamp, z, R, cam, timing in measurements:
-            if not self._UKF_filter.update(measurement_type, stamp, z, R, now_sec, cam, timing,
+        for measurement_type, stamp, z, R, cam, checkpoints in measurements:
+            if not self._UKF_filter.update(measurement_type, stamp, z, R, now_sec, cam=cam,
                                            quad_vel=self.quad_vel):
                 self.get_logger().warn(
                     f"UKF {measurement_type} update failed!",
                     throttle_duration_sec=2.0,
                 )
+            # One latency sample per new image (the AprilTag TF lookup returns the same
+            # transform every tick until a new one arrives)
+            if self.DIAGNOSTICS_ENABLED and stamp != self._latency_last_stamp[measurement_type]:
+                self._latency_last_stamp[measurement_type] = stamp
+                t_done = self.get_clock().now().nanoseconds * 1e-9
+                self._record_latency(measurement_type, stamp, checkpoints, now_sec, t_done)
 
         # Divergence guard: the gate rejecting every frame means the filter has lost the
         # car (e.g. a bad seed). Re-seed rather than coast; the control loop aborts any
@@ -1034,9 +1161,12 @@ class Orchestrator(Node):
         self._lead_time = min(fall_t, self.LANDING_LEAD_TIME_MAX)
         t = self._lead_time
 
-        # Also compensate for the drag on the drone
+        # Also compensate for the drag on the drone while it coasts level after the cut.
+        # cD is a force coefficient (F = cD v|v|, as in the PID), so the deceleration is
+        # (cD / m) v^2: v(t) = v0 / (1 + k v0 t), distance = ln(1 + k v0 t) / k, k = cD / m.
         quad_vel_eff = np.array(self.quad_vel, dtype=float)
-        k = self.PID_DRAG_COEFFICIENT * np.hypot(quad_vel_eff[QUAD_State.X], quad_vel_eff[QUAD_State.Y]) * t
+        k = (self.PID_DRAG_COEFFICIENT / self.PID_MASS) \
+            * np.hypot(quad_vel_eff[QUAD_State.X], quad_vel_eff[QUAD_State.Y]) * t
         if k < 1e-6:
             scale = 1.0
         else:
@@ -1077,6 +1207,7 @@ class Orchestrator(Node):
         rel_vy = pv[1] - self.quad_vel[1]
         rel_vz = -self.quad_vel[2]
         self.landing_pad_relative_velocity = np.array([rel_vx, rel_vy, rel_vz])
+        self.landing_pad_acceleration = self._pad_acceleration(x)
 
         self.landing_pad_relative_odometry.header.stamp = (
             self.get_clock().now().to_msg()
@@ -1105,6 +1236,41 @@ class Orchestrator(Node):
             self.get_logger().warn(f"UKF loop took {elapsed:.2f} ms!")
 
 
+    def _record_latency(self, stream, stamp, checkpoints, t_tick, t_done) -> None:
+        """ Turn one measurement's timestamps into per-stage latencies (ms) and queue
+            them for the next CSV row.
+
+            Detector stages are the gaps between consecutive checkpoints, starting from
+            the image stamp. Then:
+                wait  = last checkpoint -> UKF tick start (polling + transport)
+                apply = UKF tick start  -> this update done
+                total = image stamp     -> this update done (always available)
+            Stages are NaN when the detector sent no (or non-finite) checkpoints.
+
+        :param stream:      "apriltag" or "yolo"
+        :param stamp:       Image timestamp (s)
+        :param checkpoints: Detector end-of-stage timestamps (s), in LATENCY_STAGES
+                            order, or None
+        :param t_tick:      Start of the UKF tick that consumed the measurement (s)
+        :param t_done:      Time the update call returned (s)
+        """
+        stages = LATENCY_STAGES[stream]
+        lags = dict.fromkeys(stages + ("wait",), np.nan)
+
+        if checkpoints is not None:
+            cp = np.asarray(checkpoints, dtype=float)
+            if cp.size == len(stages) and np.all(np.isfinite(cp)):
+                prev = stamp
+                for name, t in zip(stages, cp):
+                    lags[name] = (t - prev) * 1000.0
+                    prev = t
+                lags["wait"] = (t_tick - prev) * 1000.0
+
+        lags["apply"] = (t_done - t_tick) * 1000.0
+        lags["total"] = (t_done - stamp) * 1000.0
+        self._latency_pending[stream] = lags
+
+
     def _pad_velocity(self, state):
         """ Pad velocity in the level frame: rear-axle velocity along the heading plus
             the pad's rotation about the axle (omega x r). """
@@ -1113,6 +1279,20 @@ class Orchestrator(Node):
         dx, dy = self._UKF_filter.axle_to_pad
         rx, ry = c * dx - s * dy, s * dx + c * dy
         return np.array([v * c - om * ry, v * s + om * rx])
+
+
+    def _pad_acceleration(self, state):
+        """ Pad acceleration in the level frame: rear-axle acceleration along the heading
+            (a), centripetal acceleration of the axle (v * omega, to the left for omega > 0),
+            and the pad's rotation about the axle (-omega^2 r). Yaw acceleration is not
+            a state, so its (omega_dot x r) term is omitted. Derivative of _pad_velocity. """
+        yaw, om = state[LP_State.YAW], state[LP_State.YAW_RATE]
+        v, a = state[LP_State.V], state[LP_State.A]
+        c, s = np.cos(yaw), np.sin(yaw)
+        dx, dy = self._UKF_filter.axle_to_pad
+        rx, ry = c * dx - s * dy, s * dx + c * dy
+        return np.array([a * c - v * om * s - om**2 * rx,
+                         a * s + v * om * c - om**2 * ry])
 
 
     # region ---- CTRL LOOP ----
@@ -1126,6 +1306,7 @@ class Orchestrator(Node):
 
         # Reset logging
         self._pid_controller.reset_outputs()
+        self._pad_acc_ff = np.full(2, np.nan)
 
         # Horizontal error to the forward-predicted pad
         err = np.hypot(*self.landing_pad_relative_position_forward_predict[:2]) #type: ignore
@@ -1134,15 +1315,47 @@ class Orchestrator(Node):
         diverged, self._ukf_diverged = self._ukf_diverged, False
 
         # ---- State 0000 (Pre-arm)
-        # Below conditions need to be met ALWAYS so we check regardless of state
+        # Below conditions need to be met ALWAYS so we check regardless of state.
+        # A link dropout mid-flight must not wipe the mission state: hold where we are
+        # (MAVROS can't forward setpoints anyway) and resume on reconnection.
         if not self.fcu_state.connected:
-            self.controller_state = 0
+            if not self._armed_confirmed:
+                self.controller_state = 0
             return
 
         if not self._mode_confirmed:
-            if not self._mode_requested:
+            if not self._mode_requested and not self.WAIT_FOR_PILOT_GUIDED:
                 self._request_mode()
+            elif self.WAIT_FOR_PILOT_GUIDED:
+                self.get_logger().info(
+                    f"Waiting for the pilot to select {self._mode} "
+                    f"(FCU in {self.fcu_state.mode or 'unknown'})...",
+                    throttle_duration_sec=5.0,
+                )
             self.controller_state = 0
+            return
+
+        # Left GUIDED again before arming (e.g. a pre-flight mode-switch check): just go
+        # back to waiting for GUIDED, nothing has started yet
+        if self.fcu_state.mode != self._mode and not self._armed_confirmed:
+            self._mode_confirmed = False
+            self._mode_requested = False
+            self.controller_state = 0
+            return
+
+        # ---- State 8000 (Pilot override - passive)
+        # Once armed, the FCU leaving GUIDED without us requesting RTL means the pilot (or
+        # an FCU failsafe) has the vehicle. Stop commanding it for good, but keep logging.
+        if not self._rtl_initiated and (self._pilot_override or self.fcu_state.mode != self._mode):
+            if not self._pilot_override:
+                self._pilot_override = True
+                self.get_logger().warn(
+                    f"FCU left {self._mode} (now {self.fcu_state.mode}) - pilot override, "
+                    "controller passive for the rest of this run"
+                )
+            self.controller_state = 8000
+            if self.DIAGNOSTICS_ENABLED:
+                self.log_diagnostics()
             return
 
         if not self._armed_confirmed:
@@ -1191,8 +1404,17 @@ class Orchestrator(Node):
             if self._global_position is not None:
                 d_north = (self.gps_target["lat"] - self._global_position.latitude) * 111132.0
                 d_east = (self.gps_target["lon"] - self._global_position.longitude) * 111320.0 * np.cos(np.radians(self.gps_target["lat"]))
+                d_wait = np.hypot(d_north, d_east)
 
-                if np.hypot(d_north, d_east) <= self.GPS_LOC_BUFFER:
+                # A waiting point outside the boundary box is a config error (e.g. the
+                # SITL coordinates left in the launch file): refuse to fly there.
+                if d_wait > self.BOUNDARY_LIMIT:
+                    self.get_logger().error(
+                        f"GPS waiting point is {d_wait:.0f} m away (> boundary_limit "
+                        f"{self.BOUNDARY_LIMIT:.0f} m) - check gps_lat / gps_lon"
+                    )
+                    self.controller_state = 7000
+                elif d_wait <= self.GPS_LOC_BUFFER:
                     self.get_logger().info(f"At designated wait position...")
                     self.controller_state = 2000
 
@@ -1227,10 +1449,22 @@ class Orchestrator(Node):
                 self.controller_state = 2000
 
         # ---- State 2100 (Maintain Landing Pad Visual Lock - Yaw to match target)
+        # Also hold until the car is in front of the drone (relative bearing within
+        # +-LANDING_ACQUIRE_BEARING_MAX of its heading), so the chase never starts by
+        # accelerating backwards and then forwards again. Needs a seeded UKF: before that
+        # the relative position is a placeholder (0, 0).
+        rel = self.landing_pad_relative_position_forward_predict
+        pad_in_front = (
+            self._UKF_start
+            and not self._UKF_filter.seed_pending
+            and abs(self._UKF_filter._wrap(np.arctan2(rel[1], rel[0]) - self.quad_yaw))
+            < self.LANDING_ACQUIRE_BEARING_MAX
+        )
         if (
             self.controller_state == 2100
             and self._landing_pad_found
             and t_now - self._landing_pad_first_seen_time > self.LANDING_TIME_VISUAL_TIME_SP
+            and pad_in_front
         ):
             self.get_logger().info(
                 f"Landing Pad visual hold ok, starting {self.LANDING_PAD_LOCK_TIME_SP} sec timer..."
@@ -1251,7 +1485,9 @@ class Orchestrator(Node):
             arm = float(np.hypot(*self._UKF_filter.axle_to_pad))
             vel_sigma = float(np.sqrt(d["sigma_v"]**2 + (pad_speed * d["sigma_yaw"])**2
                                       + (arm * d["sigma_yaw_rate"])**2))
-            rel_speed = np.hypot(*self.landing_pad_relative_velocity_forward_predict[:2]) #type: ignore
+            # Current (not forward-predicted) relative speed: the forward one compares the
+            # pad's velocity T s ahead with the drone's now, so it never reaches zero in a turn
+            rel_speed = np.hypot(*self.landing_pad_relative_velocity[:2]) #type: ignore
             centred = self._landing_pad_found and err < self.LANDING_CENTERED_ERROR_THRESHOLD
 
             confident_now = (
@@ -1387,6 +1623,16 @@ class Orchestrator(Node):
                     and -self.landing_pad_relative_position[LP_State.PZ] <= 2.0
                 )
                 self.target_alt_rate = self.DESCENT_RATE_CLOSE_SP if close else self.DESCENT_RATE_FAR_SP
+            # Pad acceleration feedforward. Its direction comes from the yaw estimate, so it
+            # is only applied once the heading is trusted (same gate as marker_yaw).
+            if marker_yaw is not None:
+                self._pad_acc_ff = self.PID_ACCEL_FF_GAIN * self.landing_pad_acceleration
+            else:
+                self._pad_acc_ff = np.zeros(2)
+            # Position target = forecast cut point (forward-predicted). Velocity = CURRENT
+            # relative velocity: that is the rate of change of the forecast error in steady
+            # tracking, whereas the forward-predicted velocity carries a T * a_pad bias
+            # (inward in turns) that the D term would act on.
             msg = self._pid_controller.update(
                 dt=control_dt,
                 target_altitude=self.target_alt,
@@ -1397,7 +1643,8 @@ class Orchestrator(Node):
                 quad_yaw=self.quad_yaw,
                 quad_vel=self.quad_vel,
                 landing_pad_relative_position=self.landing_pad_relative_position_forward_predict,
-                landing_pad_relative_velocity=self.landing_pad_relative_velocity_forward_predict,
+                landing_pad_relative_velocity=self.landing_pad_relative_velocity,
+                landing_pad_acceleration=self._pad_acc_ff,
             )
             self.att_pub.publish(msg)
 
@@ -1415,7 +1662,7 @@ class Orchestrator(Node):
     # region --- SAFETY LOOP ----
     def _safety_loop(self):
         """Check safety conditions and initiate RTL if necessary"""
-        if self._rtl_initiated or not self._tko_reached or self._disarmed:
+        if self._rtl_initiated or self._pilot_override or not self._tko_reached or self._disarmed:
             return
 
         current_time = self.get_clock().now().nanoseconds / 1e9
@@ -1561,21 +1808,14 @@ class Orchestrator(Node):
 
 
     def _pipeline_timing_callback(self, msg: Vector3Stamped) -> None:
-        """ Log latency across vision pipeline into .csv
+        """ Buffer AprilTag pipeline timestamps, keyed by image stamp, until the UKF
+            loop picks up the matching transform. (YOLO carries its timestamps inside
+            the measurement instead.)
         """
         key = (msg.header.stamp.sec, msg.header.stamp.nanosec)
         self._pipeline_timing_buffer[key] = msg
         if len(self._pipeline_timing_buffer) > 50:
             self._pipeline_timing_buffer.pop(next(iter(self._pipeline_timing_buffer)))
-
-
-    def _yolo_pipeline_timing_callback(self, msg: Vector3Stamped) -> None:
-        """ Log latency across YOLO vision pipeline into .csv
-        """
-        key = (msg.header.stamp.sec, msg.header.stamp.nanosec)
-        self._yolo_pipeline_timing_buffer[key] = msg
-        if len(self._yolo_pipeline_timing_buffer) > 50:
-            self._yolo_pipeline_timing_buffer.pop(next(iter(self._yolo_pipeline_timing_buffer)))
 
 
     def start_diagnostics(self):
@@ -1603,20 +1843,21 @@ class Orchestrator(Node):
                 _odom_qos,
             )
 
+        # AprilTag pipeline timestamps (side topic). Reliable with some depth, so a busy
+        # executor doesn't silently drop the timing for a measurement it then consumes.
+        _timing_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
         self._pipeline_timing_sub = self.create_subscription(
             Vector3Stamped,
             "/landing_pad/pipeline_timing",
             self._pipeline_timing_callback,
-            _odom_qos
+            _timing_qos
         )
         self._pipeline_timing_buffer: dict[tuple[int, int], Vector3Stamped] = {}
-        self._yolo_pipeline_timing_sub = self.create_subscription(
-            Vector3Stamped,
-            "/landing_pad/yolo_pipeline_timing",
-            self._yolo_pipeline_timing_callback,
-            _odom_qos
-        )
-        self._yolo_pipeline_timing_buffer: dict[tuple[int, int], Vector3Stamped] = {}
 
         self.landing_pad_relative_odometry_pub = self.create_publisher(
             Odometry, "/landing_pad/rel_odom", 10
@@ -1680,7 +1921,8 @@ class Orchestrator(Node):
                 "landing_pad_rel_true_vz",
                 "landing_pad_rel_true_yaw",
 
-                # Landing pad global data
+                # Landing pad global data (drone reference = ground truth in SITL, FCU
+                # estimate when ground_truth_available is False)
                 "landing_pad_april_glob_x_raw",
                 "landing_pad_april_glob_y_raw",
                 "landing_pad_april_glob_z_raw",
@@ -1729,14 +1971,11 @@ class Orchestrator(Node):
                 "slew_roll", "slew_pitch", "slew_yaw",
                 "marker_yaw_valid", "cutoff_active",
 
-                # Latency through pipeline
-                "cam_to_image_lag",
-                "image_to_transform_lag",
-                "transform_to_UKF_lag",
-                "yolo_cam_to_image_lag",
-                "yolo_image_to_transform_lag",
-                "yolo_transform_to_UKF_lag",
-                "total_lag",
+                # Latency through pipeline (ms), one sample per measurement: filled on
+                # the first row after a new measurement is applied, NaN on all other
+                # rows. apriltag_/yolo_ {detector stages..., wait, apply, total}, see
+                # LATENCY_STAGES and _record_latency.
+                *LATENCY_COLUMNS,
 
                 # Orchestrator state / outcome
                 "controller_state", "pad_found", "pad_lost_for", "cutoff",
@@ -1764,6 +2003,18 @@ class Orchestrator(Node):
 
                 # Early-acquisition (confidence) gate inputs, state 3000 only
                 "gate_pos_sigma", "gate_vel_sigma", "gate_rel_speed", "gate_confident",
+
+                # Box-derived yaw fed to the UKF (global/local frame, rad) and its 1-sigma,
+                # NaN when not used on that frame
+                "landing_pad_yolo_car_glob_yaw_raw", "landing_pad_yolo_car_yaw_sigma_raw",
+
+                # Pad acceleration feedforward applied to the PD (m/s^2, level frame),
+                # NaN when the PD isn't running, 0 while the heading isn't trusted
+                "pad_acc_ff_x", "pad_acc_ff_y",
+
+                # Drone vertical acceleration (m/s^2, up +), differentiated from the
+                # odometry vz exactly as the touchdown fallback sees it
+                "quad_z_accel",
             ]
         )
         self.get_logger().info(f"CSV logging initialized: {self._csv_filename}")
@@ -1778,7 +2029,12 @@ class Orchestrator(Node):
         m = self._UKF_filter.get_measurement_diagnostics()
         apr = m["apriltag"]
         yolo = m["yolo"]
-        latest = m["latest"]
+
+        # Pipeline latency: popped, so each measurement's sample lands on exactly one row
+        latency = []
+        for stream, stages in LATENCY_STAGES.items():
+            lags = self._latency_pending.pop(stream, {})
+            latency += [lags.get(k, np.nan) for k in stages + LATENCY_TAIL]
 
         # YOLO raw is a fitted position (fallback) or box edges in pixels (box mode)
         if yolo["box"]:
@@ -1788,6 +2044,15 @@ class Orchestrator(Node):
         else:
             yolo_pos = yolo["raw"][:3]
         yolo_box = yolo["raw"] if yolo["box"] else np.full(4, np.nan)
+
+        # Box-derived yaw actually fed to the UKF on this frame (NaN when the yaw slot was
+        # unused: box mode, seeding, gates closed or hypotheses unresolved). Stamp-matched,
+        # so it is only logged against its own image.
+        fy = self._yolo_fit_yaw
+        if fy is not None and fy[0] == yolo["raw_stamp"]:
+            yolo_fit_yaw, yolo_fit_yaw_sigma = fy[1], fy[2]
+        else:
+            yolo_fit_yaw = yolo_fit_yaw_sigma = np.nan
 
         # Filtered position at the YOLO image stamp (needs the matching ukf.py change)
         yolo_post = yolo.get("post_x", np.full(3, np.nan))
@@ -1848,6 +2113,9 @@ class Orchestrator(Node):
             *yolo_post,
             self._gate_pos_sigma, self._gate_vel_sigma,
             self._gate_rel_speed, self._gate_confident,
+            yolo_fit_yaw, yolo_fit_yaw_sigma,
+            *self._pad_acc_ff,
+            self.quad_z_accel,
         ]
 
         # ---- Ground truth (NaN when unavailable, e.g. real flights) ----
@@ -1875,6 +2143,11 @@ class Orchestrator(Node):
             q_pos = q_vel = p_pos = p_vel = np.full(3, np.nan)
             quad_true_yaw = pad_true_yaw = nees = np.nan
 
+        # Reference drone pose for the *_glob_* columns: ground truth in SITL, the FCU's
+        # own estimate in real flight (so the global pad track is still logged)
+        q_ref_pos = q_pos if self.GROUND_TRUTH_AVAILABLE else self.quad_pose
+        q_ref_vel = q_vel if self.GROUND_TRUTH_AVAILABLE else self.quad_vel
+
         # ---- Estimate (relative pose and relative velocity) ----
         o = self.landing_pad_relative_odometry
         est_pos = np.array([o.pose.pose.position.x, o.pose.pose.position.y, o.pose.pose.position.z])
@@ -1895,9 +2168,9 @@ class Orchestrator(Node):
                 *(p_pos - q_pos), *(p_vel - q_vel), pad_true_yaw - quad_true_yaw,
 
                 # Landing pad global data
-                *(apr["raw"][:3] + q_pos), apr["raw"][LP_Meas.YAW],
-                *(yolo_pos + q_pos),
-                *(est_pos + q_pos), *(est_vel + q_vel),
+                *(apr["raw"][:3] + q_ref_pos), apr["raw"][LP_Meas.YAW],
+                *(yolo_pos + q_ref_pos), #type: ignore
+                *(est_pos + q_ref_pos), *(est_vel + q_ref_vel),
                 x[LP_State.A], self.landing_pad_yaw, x[LP_State.YAW_RATE],
                 *p_pos, *p_vel, pad_true_yaw,
 
@@ -1912,16 +2185,16 @@ class Orchestrator(Node):
                 # PID diagnostics (same order as the header)
                 *[p[k] for k in CONTROL_OUTPUT_KEYS],
 
-                # Latency through pipeline
-                apr["cam_to_image_lag"],
-                apr["image_to_transform_lag"],
-                apr["transform_to_UKF_lag"],
-                yolo["cam_to_image_lag"],
-                yolo["image_to_transform_lag"],
-                yolo["transform_to_UKF_lag"],
-                latest["total_lag"],
+                # Latency through pipeline (same order as LATENCY_COLUMNS)
+                *latency,
             ] + extra
         )
+
+        # Flush about once a second so a flat battery or a killed process costs at most
+        # ~1 s of log, not the whole write buffer
+        if current_time - self._csv_last_flush >= 1.0:
+            self._csv_file.flush()
+            self._csv_last_flush = current_time
 
 
     def destroy_node(self):

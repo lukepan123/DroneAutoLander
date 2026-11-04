@@ -13,7 +13,8 @@ from .state_definitions import LP_Meas
 
     Two measurement models are supported:
       - "pose" (cam is None): z = (px, py, pz, yaw), measured directly. Used by AprilTag
-        and by the YOLO fallback (fitted position, yaw unmeasured).
+        and by the YOLO fallback (fitted position, plus the box-derived yaw once it
+        can be resolved against the filter's heading, see fit_car_box).
       - "box"  (cam given):   z = (u_min, u_max, v_min, v_max), the YOLO bounding box
         edges in pixels. h(x) projects the car's shape (a union of boxes, at the sigma
         point's pad position AND yaw) through the image-time camera pose. The UKF therefore uses the current
@@ -52,7 +53,8 @@ class UKF:
                  init_pos, init_vel, init_yaw,
                  seed_window_n, seed_window_min_dt,
                  car_boxes, pad_position,
-                 car_fit_max_rel_rms, car_roof_gain, rear_axle=None) -> None:
+                 car_fit_max_rel_rms, car_roof_gain, rear_axle=None,
+                 yaw_seed_var_max=None, buffer_window=0.5) -> None:
 
         """ Initialise the UKF. Preprocesses and computes the required sigma weights and
             stores them to reduce run-time computation.
@@ -65,6 +67,13 @@ class UKF:
                                     pad height above home altitude.
         :param car_fit_max_rel_rms: Max fallback box-fit residual, as a fraction of box size
         :param car_roof_gain:       Low-pass gain for the learned pad height (0 = fixed)
+        :param yaw_seed_var_max:    Cap on the seeded yaw variance (rad^2), also used as
+                                    the yaw variance when seeding can't find a heading.
+                                    Keeps the yaw sigma points inside +/- pi (1.0 is
+                                    safe here). None = original behaviour.
+        :param buffer_window:       OOSM history length (s). Must comfortably exceed the
+                                    worst-case image -> UKF latency, or late measurements
+                                    are dropped as older than the buffer.
         """
         # ---- UKF PARAMETERS ----
         # Dimensions
@@ -86,7 +95,11 @@ class UKF:
         # Length of UKF Historical Buffer. Must comfortably exceed the WORST
         # CASE end-to-end latency of the slowest measurement stream feeding
         # this filter
-        self._buffer_window = 0.500
+        self._buffer_window = float(buffer_window)
+
+        # OOSM rewind/replay. False = late measurements applied to the current state as
+        # if fresh (the uncompensated baseline)
+        self._oosm_enabled = True
 
         # Number of sigma points
         self.num_sigma = 2 * self.dim_x + 1
@@ -132,6 +145,7 @@ class UKF:
                                   # persists across reset()
         self._car_fit_max_rel_rms = car_fit_max_rel_rms
         self._car_roof_gain = car_roof_gain
+        self._yaw_seed_var_max = yaw_seed_var_max
 
         # Ackermann kinematics: only the rear axle moves along the heading. CTRA is run
         # at the axle; this is the pad's offset from it in the car frame (x fwd, y left).
@@ -345,25 +359,31 @@ class UKF:
             if cam is not None:
                 return False
             buf = self._seed_buffers[measurement_type]
+            # Restart the window after a detection gap: an isolated early detection
+            # (e.g. a partial box at the image edge) shouldn't anchor the velocity fit
+            if buf and stamp - buf[-1][0] > 0.3:
+                buf.clear()
             qv = None if quad_vel is None else np.asarray(quad_vel, dtype=float)[:2].copy()
             buf.append((stamp, meas.z, meas.R, qv))
             span = buf[-1][0] - buf[0][0]
-            if len(buf) >= self._seed_window_n or span >= self._seed_window_min_dt:
+            if len(buf) >= self._seed_window_n or (len(buf) >= 3 and span >= self._seed_window_min_dt):
                 self.seed_from_window(list(buf))
                 self._seed_pending = False
                 for b in self._seed_buffers.values():
                     b.clear()
             return True
 
-        # In-order path: this is the newest thing we've seen, no rewind needed. Bring the
-        # state up to the measurement's stamp first so it's applied at the right time.
-        if self._last_update_time is None or stamp >= self._last_update_time:
-            self.predict(self._last_quad_vel, stamp)
+        # In-order path. With OOSM off, late measurements are applied to the current
+        # state as if fresh (the uncompensated baseline), without rewinding the clock.
+        if (not self._oosm_enabled or self._last_update_time is None
+                or stamp >= self._last_update_time):
+            self.predict(self._last_quad_vel, stamp)   # no-op if stamp is in the past
             accepted = self._update_apply(meas)
             if accepted:
                 self._record_post_update(measurement_type)
-                self._last_update_time = stamp
-                self._push_update_event(stamp, meas)
+                if self._last_update_time is None or stamp > self._last_update_time:
+                    self._last_update_time = stamp       # never move the clock backwards
+                self._push_update_event(self._last_update_time, meas)
             return accepted
 
         # ---- OOSM path ----
@@ -439,10 +459,10 @@ class UKF:
         return True
 
 
-    def fit_car_box(self, box, cam, learn: bool = True) -> np.ndarray | None:
-        """ Yaw-agnostic fallback for a YOLO box, used while the yaw estimate is too
-            poor for the pixel-space update (e.g. during seeding). Returns a drone-
-            relative pad position to feed through the "pose" model with yaw unmeasured.
+    def fit_car_box(self, box, cam, learn: bool = True, yaw_ref=None):
+        """ Fallback for a YOLO box, used while the yaw estimate is too poor for the
+            pixel-space update (e.g. during seeding). Returns a drone-relative pad
+            position to feed through the "pose" model, plus (optionally) a car yaw.
 
             Intersect the box-centre ray with the plane at the car's mid-height, then
             refine by fitting the car shape (union of boxes) so that its projected
@@ -452,10 +472,22 @@ class UKF:
             reveals if the pad is higher or lower than the learned pad height (car on a
             slope, altitude drift); that offset is low-passed into self._roof_agl.
 
-        :param box: (u_min, u_max, v_min, v_max) in pixels
-        :param cam: (R_level_cam, t_level_cam, K, altitude) at the image stamp
-        :return: np.ndarray [px, py, pz] (pad top-centre) in the local-level frame, or
-                 None if the camera isn't looking toward the ground
+            Yaw: a box only reveals |car yaw - camera heading| (delta). The candidates
+            psi_cam +/- delta (mirror) and the same + pi (front/back) all give the same
+            box, so they are resolved against the filter's current heading (yaw_ref).
+            Front/back needs only the rough direction of travel. The mirror pair is
+            hardest to separate when delta is small, which is exactly when choosing
+            wrong costs least: if it can't be separated, the camera axis is returned
+            with delta folded into the sigma.
+
+        :param box:     (u_min, u_max, v_min, v_max) in pixels
+        :param cam:     (R_level_cam, t_level_cam, K, altitude) at the image stamp
+        :param yaw_ref: Optional (yaw, sigma_yaw, px_sigma): the filter's heading, its
+                        1-sigma (rad), and the YOLO edge noise (px) used for the fitted
+                        yaw's sigma. None skips the yaw extraction.
+        :return: (pos, yaw, sigma_yaw), or None if the camera isn't looking toward the
+                 ground. pos = [px, py, pz] (pad top-centre) in the local-level frame.
+                 yaw/sigma_yaw are None when not requested or not resolvable.
         """
         R_lc, t_lc, K, altitude = cam
         box = np.asarray(box, dtype=float)
@@ -478,7 +510,7 @@ class UKF:
         # assumed (weakly) to have its length along this.
         u_w = R_lc[:2, 0]
         if np.linalg.norm(u_w) < 0.2:  # camera x-axis ~vertical: heading undefined
-            return centre - np.array([0.0, 0.0, dz_c])   # xy pad offset ignored
+            return centre - np.array([0.0, 0.0, dz_c]), None, None   # xy pad offset ignored
         psi_cam = np.arctan2(u_w[0], -u_w[1])
 
         # Initial pad position, assuming the car points along psi_cam
@@ -487,12 +519,13 @@ class UKF:
         pad0 = centre - np.array([c * dx - s * dy, s * dx + c * dy, dz_c])
 
         k_dz = 3.0  # height prior (px per metre): weak in pass 1, ~pinned in pass 2
+        yaw_prior_deg = 5.0  # yaw offset costing 1 px of residual (prior towards aligned)
 
         def residual(p):  # p = [pad x, pad y, yaw offset, height offset]
             edges = self._box_edges(
                 np.array([[p[0], p[1], pad0[2] + p[3]]]), np.array([psi_cam + p[2]]), cam
             )[0]
-            return np.r_[edges - box, np.degrees(p[2]) / 5.0, k_dz * p[3]]
+            return np.r_[edges - box, np.degrees(p[2]) / yaw_prior_deg, k_dz * p[3]]
 
         def fit():
             # Fit from a few yaw guesses (one start gets stuck at "aligned"). The sign of
@@ -502,23 +535,57 @@ class UKF:
                                   max_nfev=25, ftol=1e-3, xtol=1e-3)
                     for yaw0 in (-0.3, 0.3)]
             cost = np.array([f.cost for f in fits])
+            best = fits[cost.argmin()]
             w = np.exp(-(cost - cost.min()) / 4.0)
-            rms = np.sqrt(np.mean(fits[cost.argmin()].fun[:4] ** 2))
-            return w @ np.array([f.x for f in fits]) / w.sum(), rms
+            rms = np.sqrt(np.mean(best.fun[:4] ** 2))
+            return w @ np.array([f.x for f in fits]) / w.sum(), rms, best
 
         # Pass 1: let the height float to learn where the pad really is
-        (x, y, _, dz), rms = fit()
+        (x, y, _, dz), rms, _ = fit()
         if rms > max(self._car_fit_max_rel_rms * 0.5 * (bw + bh), 3.0):
-            return pad0  # box doesn't fit the car model (bad yaw / bad detection)
+            return pad0, None, None  # box doesn't fit the car model (bad yaw / bad detection)
         if learn:
             self._roof_agl += self._car_roof_gain * dz
         pad0 = np.array([x, y, pad0[2] + self._car_roof_gain * dz])
 
         # Pass 2: fit x, y with that height ~fixed (height and range are coupled in
-        # oblique views, so a free height adds noise to x, y)
+        # oblique views, so a free height adds noise to x, y). When extracting yaw, the
+        # prior is weakened so the fitted |yaw| isn't shrunk towards "aligned".
         k_dz = 100.0
-        (x, y, _, _), _ = fit()
-        return np.array([x, y, self._roof_agl - altitude])
+        if yaw_ref is not None:
+            yaw_prior_deg = 30.0
+        (x, y, _, _), _, best = fit()
+        pos = np.array([x, y, self._roof_agl - altitude])
+        if yaw_ref is None:
+            return pos, None, None
+
+        # ---- Box yaw: |yaw offset| from the best single fit (the +/- blend above
+        # collapses it to ~0), folded into [0, pi/2] since the car is ~symmetric ----
+        yaw_f, sigma_f, px_sigma = yaw_ref
+        delta = abs(self._wrap(best.x[2]))
+        delta = min(delta, np.pi - delta)
+
+        # 1-sigma of delta from Gauss-Newton on the pixel rows (x, y, yaw columns)
+        J = best.jac[:4, :3]
+        try:
+            sigma_delta = px_sigma * np.sqrt(np.linalg.inv(J.T @ J)[2, 2])
+        except np.linalg.LinAlgError:
+            return pos, None, None
+        if not np.isfinite(sigma_delta):
+            return pos, None, None
+
+        # Front/back: flip the camera axis if the car faces back along it
+        k = 2.0  # sigmas of separation needed to commit to a hypothesis
+        e = self._wrap(yaw_f - psi_cam)
+        if abs(e) > np.pi / 2:
+            psi_cam, e = self._wrap(psi_cam + np.pi), self._wrap(e - np.pi)
+        if np.pi - 2 * abs(e) < k * sigma_f:
+            return pos, None, None  # front/back unresolved
+
+        # Mirror pair psi_cam +/- delta sits 2 * min(delta, |e|) apart as seen from yaw_f
+        if 2 * min(delta, abs(e)) > k * sigma_f:
+            return pos, self._wrap(psi_cam + np.sign(e) * delta), sigma_delta
+        return pos, psi_cam, np.hypot(sigma_delta, delta)  # ambiguous: axis, honest sigma
 
 
     def reset(self) -> None:
@@ -778,10 +845,21 @@ class UKF:
                     # correctly blows up as speed -> 0.
                     var_yaw = var_v / max(speed_mag**2, 1e-6)
                     self.P[LP_State.YAW, LP_State.YAW] = max(4.0 * var_yaw, 1e-3)
+                    # Optional cap (yaw_seed_var_max): the yaw sigma points sit at
+                    # +/- gamma*sigma (gamma = sqrt(7) here), and beyond ~1.2 rad they wrap
+                    # past +/- pi, so the next predict COLLAPSES P_yaw (e.g. 2.5 -> 0.15
+                    # rad) and the filter claims confidence in an arbitrary heading.
+                    if self._yaw_seed_var_max is not None:
+                        self.P[LP_State.YAW, LP_State.YAW] = min(
+                            self.P[LP_State.YAW, LP_State.YAW], self._yaw_seed_var_max)
                     self.P[LP_State.V, LP_State.V] = max(4.0 * var_v, 1e-3)
-                # else: leave x[V]/x[YAW]/P at reset() defaults - can't distinguish
-                # "barely moving" from "stationary" given this stream's noise floor,
-                # so don't force a heading out of it.
+                elif self._yaw_seed_var_max is not None:
+                    # Can't distinguish "barely moving" from "stationary" given this
+                    # stream's noise floor, so don't force a heading out of it. Leave
+                    # x[V]/x[YAW] at reset() defaults, but make the yaw variance honest:
+                    # yaw = 0 is arbitrary, not a 0.45 rad (P_init) estimate.
+                    self.P[LP_State.YAW, LP_State.YAW] = self._yaw_seed_var_max
+                # else: leave x[V]/x[YAW]/P at reset() defaults (original behaviour)
 
         if not seeded_any:
             return

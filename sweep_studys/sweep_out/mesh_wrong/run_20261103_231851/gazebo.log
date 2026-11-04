@@ -1,0 +1,102 @@
+[1;32m[Msg] [0m[1;32mGazebo Sim Server v[0m[1;32m8.10.0[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mLoading SDF world file[[0m[1;32m/home/luke/ardupilot_gazebo/worlds/iris_runway_new.sdf[0m[1;32m].[0m
+[1;33mWarning [Utils.cc:132][0m [/sdf/model[@name="gimbal_small_1d"]/link[@name="tilt_link"]/sensor[@name="camera"]/gz_frame_id:/home/luke/ardupilot_gazebo/models/gimbal_small_1d/model.sdf:L111]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].
+[1;32m[Msg] [0m[1;32mServing entity system service on [[0m[1;32m/[0m[1;32mentity/system/add[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mCreate[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/create_multiple[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mCreate[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/create_multiple/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mRemove[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/remove[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mRemove[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/remove/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPose[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/set_pose[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPose[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/set_pose/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPose[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/set_pose_vector[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPose[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/set_pose_vector/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mLight configuration[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/light_config[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mLight configuration[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/light_config/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPhysics[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/set_physics[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPhysics[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/set_physics/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mSphericalCoordinates[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/set_spherical_coordinates[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mSphericalCoordinates[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/set_spherical_coordinates/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mEnable collision[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/enable_collision[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mEnable collision[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/enable_collision/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mDisable collision[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/disable_collision[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mDisable collision[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/disable_collision/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mMaterial[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/visual_config[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mMaterial[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/visual_config/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mMaterial[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/wheel_slip[0m[1;32m] (async)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mMaterial[0m[1;32m service on [[0m[1;32m/world/iris_runway_new/wheel_slip/blocking[0m[1;32m] (blocking)[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mApplyJointForce subscribing to Double messages on [[0m[1;32m/model/iris_with_gimbal/joint/iris_with_standoffs::rotor_0_joint/cmd_force[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mApplyJointForce subscribing to Double messages on [[0m[1;32m/model/iris_with_gimbal/joint/iris_with_standoffs::rotor_1_joint/cmd_force[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mApplyJointForce subscribing to Double messages on [[0m[1;32m/model/iris_with_gimbal/joint/iris_with_standoffs::rotor_2_joint/cmd_force[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mApplyJointForce subscribing to Double messages on [[0m[1;32m/model/iris_with_gimbal/joint/iris_with_standoffs::rotor_3_joint/cmd_force[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32m[[0m[1;32miris_with_gimbal[0m[1;32m] [0m[1;32mAdvertising on [0m[1;32m/gimbal/cmd_pitch[0m[1;32m.[0m
+[1;32m[Msg] [0m[1;32mJointPositionController subscribing to Double messages on [[0m[1;32m/gimbal/cmd_pitch[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mOdometryPublisher publishing odometry on [[0m[1;32m/model/iris_with_gimbal/odometry[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mOdometryPublisher publishing odometry with covariance on [[0m[1;32m/model/iris_with_gimbal/odometry_with_covariance[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mOdometryPublisher publishing Pose_V (TF) on [[0m[1;32m/model/iris_with_gimbal/pose[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mGstCameraPlugin: attached to sensor [[0m[1;32mcamera[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mGstCameraPlugin: streaming video to [0m[1;32m127.0.0.1[0m[1;32m:[0m[1;32m5600[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mAckermannSteering subscribing to twist messages on [[0m[1;32m/cmd_rover_vel[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mOdometryPublisher publishing odometry on [[0m[1;32m/landing_pad/odom[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mOdometryPublisher publishing odometry with covariance on [[0m[1;32m/model/LandingVehicle/odometry_with_covariance[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mOdometryPublisher publishing Pose_V (TF) on [[0m[1;32m/landing_pad/tf_truth[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mLoaded level [[0m[1;32mdefault[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServing world controls on [[0m[1;32m/world/iris_runway_new[0m[1;32m/control], [[0m[1;32m/world/iris_runway_new[0m[1;32m/control/state] and [[0m[1;32m/world/iris_runway_new[0m[1;32m/playback/control][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServing GUI information on [[0m[1;32m/world/iris_runway_new[0m[1;32m/[0m[1;32mgui/info[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mWorld [[0m[1;32miris_runway_new[0m[1;32m] initialized with [[0m[1;32m1ms[0m[1;32m] physics profile.[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServing world SDF generation service on [[0m[1;32m/world/iris_runway_new[0m[1;32m/[0m[1;32mgenerate_world_sdf[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServing world names on [[0m[1;32m/gazebo/worlds[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mResource path add service on [[0m[1;32m/gazebo/resource_paths/add[0m[1;32m].[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mResource path get service on [[0m[1;32m/gazebo/resource_paths/get[0m[1;32m].[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mResource path resolve service on [[0m[1;32m/gazebo/resource_paths/resolve[0m[1;32m].[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mResource paths published on [[0m[1;32m/gazebo/resource_paths[0m[1;32m].[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServer control service on [[0m[1;32m/server_control[0m[1;32m].[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mFound no publishers on /stats, adding root stats topic[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mFound no publishers on /clock, adding root clock topic[0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mFound IMU sensor with name [[0m[1;32miris_with_standoffs::imu_link::imu_sensor[0m[1;32m][0m
+[1;32m[Msg] [0m[1;32mGstCameraPlugin: camera name [[0m[1;32miris_with_gimbal::gimbal::tilt_link::camera[0m[1;32m][0m[1;32m[0m
+[1;32mMsg[0m [NameManager::issueNewName] (Skeleton::BodyNode | iris_with_gimbal::iris_with_standoffs) The name [base_link] is a duplicate, so it has been renamed to [base_link(1)]
+[1;32m[Msg] [0m[1;32mLoading plugin [[0m[1;32mgz-rendering-ogre2[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServing scene information on [[0m[1;32m/world/iris_runway_new[0m[1;32m/[0m[1;32mscene/info[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServing graph information on [[0m[1;32m/world/iris_runway_new[0m[1;32m/[0m[1;32mscene/graph[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServing full state on [[0m[1;32m/worldlibEGL warning: egl: failed to create dri2 screen
+libEGL warning: egl: failed to create dri2 screen
+[1;33m[Wrn] [OBJLoader.cc:91] [0m[1;33mBoth `d` and `Tr` parameters defined for "Hybrid". Use the value of `d` for dissolve (line 8 in .mtl.)
+Both `d` and `Tr` parameters defined for "Wheels3". Use the value of `d` for dissolve (line 22 in .mtl.)
+Both `d` and `Tr` parameters defined for "Hybrid_Interior". Use the value of `d` for dissolve (line 36 in .mtl.)
+Both `d` and `Tr` parameters defined for "Windows". Use the value of `d` for dissolve (line 50 in .mtl.)[0m
+[1;33m[0m
+[1;33m[Wrn] [Ogre2Camera.cc:423] [0m[1;33mOgre2Camera::SetVisibilityMask: Mask bits [0m[1;33mc0000000[0m[1;33m are set but will be ignored as they conflict with the [0m[1;33mreserved bits used internally by the ogre2 backend.[0m[1;33m[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+/iris_runway_new[0m[1;32m/[0m[1;32mstate[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mServing full state (async) on [[0m[1;32m/world/iris_runway_new[0m[1;32m/[0m[1;32mstate_async[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPublishing scene information on [[0m[1;32m/world/iris_runway_new/scene/info[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPublishing entity deletions on [[0m[1;32m/world/iris_runway_new/scene/deletion[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPublishing state changes on [[0m[1;32m/world/iris_runway_new/state[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPublishing pose messages on [[0m[1;32m/world/iris_runway_new[0m[1;32m/[0m[1;32mpose/info[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mPublishing dynamic pose messages on [[0m[1;32m/world/iris_runway_new[0m[1;32m/[0m[1;32mdynamic_pose/info[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mGstCameraPlugin: image topic [[0m[1;32mworld/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image[0m[1;32m][0m[1;32m[0m
+[1;32m[Msg] [0m[1;32mGstCameraPlugin: enable topic [[0m[1;32mworld/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image/enable_streaming[0m[1;32m][0m[1;32m[0m
+NodeShared::RecvSrvRequest() error sending response: Host unreachable
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+NodeShared::RecvSrvRequest() error sending response: Host unreachable
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m
+NodeShared::RecvSrvRequest() error sending response: Host unreachable
+[1;33m[Wrn] [ArduPilotPlugin.cc:1592] [0m[1;33mArduPilot controller has reset[0m

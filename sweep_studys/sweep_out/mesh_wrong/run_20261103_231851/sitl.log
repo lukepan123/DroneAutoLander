@@ -1,0 +1,164 @@
+SIM_VEHICLE: Start
+WARNING: no config for frame (JSON)
+SIM_VEHICLE: Killing tasks
+SIM_VEHICLE: Starting up at SITL location
+SIM_VEHICLE: WAF build
+SIM_VEHICLE: Configure waf
+SIM_VEHICLE: "/home/luke/ardupilot/modules/waf/waf-light" "configure" "--board" "sitl"
+Setting top to                           : /home/luke/ardupilot 
+Setting out to                           : /home/luke/ardupilot/build 
+Autoconfiguration                        : enabled 
+Checking for program 'python'            : /usr/bin/python3 
+Checking for python version >= 3.8.0     : 3.10.12 
+Setting board to                         : sitl 
+Using toolchain                          : native 
+Checking for 'g++' (C++ compiler)        : /usr/lib/ccache/g++ 
+Checking for 'gcc' (C compiler)          : /usr/lib/ccache/gcc 
+Checking for c flags '-MMD'              : yes 
+Checking for cxx flags '-MMD'            : yes 
+CXX Compiler                             : g++ 11.4.0 
+Checking for need to link with librt     : not necessary 
+Checking for feenableexcept              : yes 
+Enabling -Werror                         : yes 
+Enabled OpenDroneID                      : no 
+Enabled firmware ID checking             : no 
+GPS Debug Logging                        : no 
+Enabled custom controller                : yes 
+Checking for HAVE_CMATH_ISFINITE         : yes 
+Checking for HAVE_CMATH_ISINF            : yes 
+Checking for HAVE_CMATH_ISNAN            : yes 
+Checking for NEED_CMATH_ISFINITE_STD_NAMESPACE : yes 
+Checking for NEED_CMATH_ISINF_STD_NAMESPACE    : yes 
+Checking for NEED_CMATH_ISNAN_STD_NAMESPACE    : yes 
+Checking for header endian.h                   : yes 
+Checking for header byteswap.h                 : yes 
+Checking for HAVE_MEMRCHR                      : yes 
+Configured VSCode Intellisense:                : no 
+DC_DSDL compiler in                            : /home/luke/ardupilot/modules/DroneCAN/dronecan_dsdlc 
+Source is git repository                       : yes 
+Update submodules                              : yes 
+Checking for program 'git'                     : /usr/bin/git 
+Littlefs                                       : disabled 
+Checking for program 'size'                    : /usr/bin/size 
+Benchmarks                                     : disabled 
+Unit tests                                     : enabled 
+Scripting                                      : maybe 
+Scripting runtime checks                       : enabled 
+Debug build                                    : disabled 
+Coverage build                                 : disabled 
+Consistent build                               : disabled 
+Force 32-bit build                             : disabled 
+Checking for program 'rsync'                   : /usr/bin/rsync 
+Removing target_list file /home/luke/ardupilot/build/sitl/target_list
+'configure' finished successfully (0.848s)
+{'model': 'JSON', 'sitl-port': True, 'waf_target': 'bin/arducopter'}
+SIM_VEHICLE: Building
+SIM_VEHICLE: "/home/luke/ardupilot/modules/waf/waf-light" "build" "--target" "bin/arducopter"
+Waf: Entering directory `/home/luke/ardupilot/build/sitl'
+Embedding file locations.txt:Tools/autotest/locations.txt
+Embedding file models/Callisto.json:Tools/autotest/models/Callisto.json
+Embedding file models/freestyle.json:Tools/autotest/models/freestyle.json
+Embedding file models/plane-3d.parm:Tools/autotest/models/plane-3d.parm
+Embedding file models/plane.parm:Tools/autotest/models/plane.parm
+Embedding file models/skywalker_2013.json:Tools/autotest/models/skywalker_2013.json
+Embedding file models/xplane_heli.json:Tools/autotest/models/xplane_heli.json
+Embedding file models/xplane_plane.json:Tools/autotest/models/xplane_plane.json
+No target_list file found, creating
+Generating compile_commands.json
+Build commands will be stored in build/sitl/compile_commands.json
+Generating compile_commands.json
+Build commands will be stored in build/sitl/compile_commands.json
+[1395/1396] Linking build/sitl/bin/arducopter
+[1396/1396] checking symbols build/sitl/bin/arducopter
+Waf: Leaving directory `/home/luke/ardupilot/build/sitl'
+
+BUILD SUMMARY
+Build directory: /home/luke/ardupilot/build/sitl
+Target          Text (B)  Data (B)  BSS (B)  Total Flash Used (B)  Free Flash (B)  External Flash Used (B)
+----------------------------------------------------------------------------------------------------------
+bin/arducopter   4324327    203013   289120               4527340  Not Applicable  Not Applicable         
+
+'build' finished successfully (1.930s)
+SIM_VEHICLE: Adding parameters from (/home/luke/ardupilot_gazebo/config/gazebo-iris-gimbal_1d.parm)
+SIM_VEHICLE: Run ArduCopter
+SIM_VEHICLE: "/home/luke/ardupilot/Tools/autotest/run_in_terminal_window.sh" "ArduCopter" "/home/luke/ardupilot/build/sitl/bin/arducopter" "--model" "JSON" "--speedup" "1" "--slave" "0" "--defaults" "/home/luke/ardupilot_gazebo/config/gazebo-iris-gimbal_1d.parm" "--sim-address=127.0.0.1" "-I0"
+RiTW: Starting ArduCopter : /home/luke/ardupilot/build/sitl/bin/arducopter --model JSON --speedup 1 --slave 0 --defaults /home/luke/ardupilot_gazebo/config/gazebo-iris-gimbal_1d.parm --sim-address=127.0.0.1 -I0
+SIM_VEHICLE: Run MavProxy
+SIM_VEHICLE: "mavproxy.py" "--retries" "5" "--out" "127.0.0.1:14550" "--master" "tcp:127.0.0.1:5760" "--sitl" "127.0.0.1:5501" "--non-interactive" "--cmd" "set streamrate 40" "--out" "udp:127.0.0.1:14555" "--out" "udp:127.0.0.1:14556"
+Connect tcp:127.0.0.1:5760 source_system=255
+Log Directory: 
+Telemetry log: mav.tlog
+Waiting for heartbeat from tcp:127.0.0.1:5760
+Detected vehicle 1:1 on link 0
+online system 1
+STABILIZE> Mode STABILIZE
+AP: Calibrating barometer
+AP: ArduCopter V4.7.0-dev (ec07fdce)
+AP: cd97a29cd551486aa8a1e89272a93130
+AP: Frame: QUAD/X
+Received 1363 parameters (ftp)
+Saved 1363 parameters to mav.parm
+AP: Barometer 1 calibration complete
+AP: Barometer 2 calibration complete
+AP: ArduPilot Ready
+AP: AHRS: DCM active
+fence present
+AP: EKF3 IMU0 initialised
+AP: EKF3 IMU1 initialised
+AP: AHRS: EKF3 active
+AP: EKF3 IMU0 tilt alignment complete
+AP: EKF3 IMU1 tilt alignment complete
+AP: EKF3 IMU0 MAG0 initial yaw alignment complete
+AP: EKF3 IMU1 MAG0 initial yaw alignment complete
+Got COMMAND_ACK: REQUEST_AUTOPILOT_CAPABILITIES: ACCEPTED
+AP: GPS 1: probing for u-blox at 230400 baud
+AP: GPS 1: detected u-blox
+AP: ArduCopter V4.7.0-dev (ec07fdce)
+AP: cd97a29cd551486aa8a1e89272a93130
+AP: Frame: QUAD/X
+AP: EKF3 IMU1 origin set
+AP: Field Elevation Set: 584m
+AP: EKF3 IMU0 origin set
+Mission is stale
+AP: EKF3 IMU1 is using GPS
+AP: EKF3 IMU0 is using GPS
+Got COMMAND_ACK: SET_MESSAGE_INTERVAL: ACCEPTED
+Got COMMAND_ACK: DO_SET_MODE: ACCEPTED
+Got COMMAND_ACK: COMPONENT_ARM_DISARM: ACCEPTED
+ARMED
+GUIDED> Mode GUIDED
+Arming checks disabled
+AP: Arming motors
+Got COMMAND_ACK: NAV_TAKEOFF: ACCEPTED
+AP: EKF3 IMU1 MAG0 in-flight yaw alignment complete
+AP: EKF3 IMU0 MAG0 in-flight yaw alignment complete
+height 15
+height 25
+height 15
+Got COMMAND_ACK: DO_SET_MODE: ACCEPTED
+LAND> Mode LAND
+height 5
+AP: Disarming motors
+DISARMED
+Unloading module link
+Unloading module signing
+Unloading module log
+Unloading module wp
+Unloading module rally
+Unloading module fence
+Unloading module ftp
+Unloading module param
+Unloading module relay
+Unloading module tuneopt
+Unloading module arm
+Unloading module mode
+Unloading module calibration
+Unloading module rc
+Unloading module auxopt
+Unloading module misc
+Unloading module cmdlong
+Unloading module battery
+Unloading module terrain
+Unloading module output
+Unloading module adsb
+Unloading module layout

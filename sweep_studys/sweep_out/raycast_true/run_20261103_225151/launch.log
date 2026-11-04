@@ -1,0 +1,1807 @@
+[INFO] [launch]: All log files can be found below /home/luke/.ros/log/2026-11-03-22-52-52-026120-luke-Vivobook-ASUSLaptop-K3605VU-K3605VU-40873
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [parameter_bridge-1]: process started with pid [40891]
+[INFO] [yolo-2]: process started with pid [40893]
+[INFO] [gimbal_controller-3]: process started with pid [40895]
+[INFO] [controller-4]: process started with pid [40897]
+[parameter_bridge-1] [INFO] [1793706772.481304003] [gz_bridge]: Creating GZ->ROS Bridge: [/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image (gz.msgs.Image) -> /world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image (sensor_msgs/msg/Image)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793706772.483537163] [gz_bridge]: Creating GZ->ROS Bridge: [/landing_pad/odom (gz.msgs.Odometry) -> /landing_pad/odom (nav_msgs/msg/Odometry)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793706772.484757228] [gz_bridge]: Creating GZ->ROS Bridge: [/model/iris_with_gimbal/odometry (gz.msgs.Odometry) -> /model/iris_with_gimbal/odometry (nav_msgs/msg/Odometry)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793706772.485164641] [gz_bridge]: Creating ROS->GZ Bridge: [/cmd_rover_vel (geometry_msgs/msg/Twist) -> /cmd_rover_vel (gz.msgs.Twist)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793706772.486093570] [gz_bridge]: Creating GZ->ROS Bridge: [/clock (gz.msgs.Clock) -> /clock (rosgraph_msgs/msg/Clock)] (Lazy 0)
+[controller-4] SWEEP-TEMP mode=raycast roof_agl=1.525
+[gimbal_controller-3] [INFO] [1793706772.662007730] [gimbal_controller_node]: Gimbal controller rate: 20.0 Hz
+[gimbal_controller-3] [INFO] [1793706772.662540492] [gimbal_controller_node]: Gimbal target ages: apriltag=0.15s, yolo=0.5s
+[controller-4] [INFO] [1793706772.734289023] [controller_node]: CSV logging initialized: controller_20261103_225252.csv
+[controller-4] [INFO] [1793706772.734818583] [controller_node]: Auto Lander (callbacks) started
+[yolo-2] [INFO] [1793706775.047836109] [yolo_node]: YOLO processing rate: 10.0 Hz
+[yolo-2] [INFO] [1793706775.048162630] [yolo_node]: YOLO parameters: model=ugv_yolo11n_openvino_model, conf=0.50, input=640x360, car_id=0
+[yolo-2] [INFO] [1793706775.048402095] [yolo_node]: Video recording parameters: save_frames=False, create_video=True, video_fps=10.0
+[yolo-2] [INFO] [1793706775.048938469] [yolo_node]: Loading YOLO model: ugv_yolo11n_openvino_model
+[yolo-2] [INFO] [1793706775.573126355] [yolo_node]: YOLO model loaded successfully. Classes: {0: 'Car'}
+[yolo-2] [INFO] [1793706775.585403970] [yolo_node]: YOLO node started, waiting for /camera/image_raw (published directly, or republished by apriltag.py when it's running in webcam mode)...
+[yolo-2] [INFO] [1793706775.605087061] [yolo_node]: [yolo] Frame saving ENABLED - Directory: /home/luke/ros2_ws/yolo_frames_20261103_225255
+[yolo-2] [INFO] [1793706775.605328858] [yolo_node]: [yolo] Video will be saved as: /home/luke/ros2_ws/yolo_detection_video_20261103_225255.mp4
+[yolo-2] [WARN] [1793706775.679976633] [yolo_node]: No odometry buffered yet - skipping frame
+[controller-4] [INFO] [1793706782.848594080] [controller_node]: GUIDED confirmed by FCU.
+[yolo-2] [INFO] [1793706788.697851341] [yolo_node]: [yolo] Saved 100 frames so far...
+[INFO] [agv_controller-5]: process started with pid [41117]
+[agv_controller-5] [INFO] [1793706797.482195502] [agv_controller]: Turn shape: {'circle_yaw_rate': 0.2, 'sin_peak_yaw_rate': 0.2, 'sin_period': 12.0, 'sin_phase_deg': 0.0, 'mbzirc_radius_m': 16.0, 'mbzirc_centre_distance_m': 54.0, 'mbzirc_duration_s': 1200.0}
+[agv_controller-5] [INFO] [1793706797.482905292] [agv_controller]: Trajectory 'none' at 0.0 km/h (turns after +20 m past the cruise line), duration: 1.00s, loop=False, noise=False
+[agv_controller-5] [INFO] [1793706797.484270629] [agv_controller]: t= 0.00s  v=  0.00 m/s  w= 0.000 rad/s
+[parameter_bridge-1] [INFO] [1793706797.484243745] [gz_bridge]: Passing message from ROS geometry_msgs/msg/Twist to Gazebo gz.msgs.Twist (showing msg only once per type)
+[agv_controller-5] [INFO] [1793706798.545874792] [agv_controller]: t= 0.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706799.574744406] [agv_controller]: t= 1.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706800.610279224] [agv_controller]: t= 2.55s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706801.237043215] [yolo_node]: [yolo] Saved 200 frames so far...
+[agv_controller-5] [INFO] [1793706801.638701122] [agv_controller]: t= 3.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706802.675998660] [agv_controller]: t= 4.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706803.703439893] [agv_controller]: t= 5.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706804.744848736] [agv_controller]: t= 6.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706805.778022753] [agv_controller]: t= 7.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706806.813455280] [agv_controller]: t= 8.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706807.854365995] [agv_controller]: t= 9.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706808.890935447] [agv_controller]: t=10.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706809.923490897] [agv_controller]: t=11.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706810.972047563] [agv_controller]: t=11.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706811.997446030] [agv_controller]: t=12.90s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706812.229618432] [yolo_node]: [yolo] Saved 300 frames so far...
+[agv_controller-5] [INFO] [1793706813.027223017] [agv_controller]: t=13.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706814.041491913] [agv_controller]: t=14.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706815.064411590] [agv_controller]: t=15.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706816.078710664] [agv_controller]: t=16.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706817.107026725] [agv_controller]: t=17.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706818.123582414] [agv_controller]: t=18.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706819.172518865] [agv_controller]: t=19.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706820.210369539] [agv_controller]: t=20.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706821.250335796] [agv_controller]: t=21.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706822.296873269] [agv_controller]: t=22.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706823.197115512] [yolo_node]: [yolo] Saved 400 frames so far...
+[agv_controller-5] [INFO] [1793706823.337918765] [agv_controller]: t=23.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706824.361069913] [agv_controller]: t=24.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706825.403004570] [agv_controller]: t=25.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706826.444232698] [agv_controller]: t=26.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706827.489553817] [agv_controller]: t=27.05s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [INFO] [1793706827.734400028] [controller_node]: Takeoff complete at 8.01 m - Starting 200.0s safety timer
+[agv_controller-5] [INFO] [1793706828.531437053] [agv_controller]: t=28.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706829.581899438] [agv_controller]: t=28.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706830.616414601] [agv_controller]: t=29.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706831.649188298] [agv_controller]: t=30.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706832.683623999] [agv_controller]: t=31.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706833.715052092] [agv_controller]: t=32.65s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706834.239213551] [yolo_node]: [yolo] Saved 500 frames so far...
+[agv_controller-5] [INFO] [1793706834.757764145] [agv_controller]: t=33.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706835.791759820] [agv_controller]: t=34.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706836.821785336] [agv_controller]: t=35.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706837.853817864] [agv_controller]: t=36.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706838.879086658] [agv_controller]: t=37.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706839.920916676] [agv_controller]: t=38.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706840.962578086] [agv_controller]: t=39.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706842.005475363] [agv_controller]: t=40.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706843.024123489] [agv_controller]: t=41.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706844.053880132] [agv_controller]: t=42.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706845.081945575] [agv_controller]: t=43.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706845.213805635] [yolo_node]: [yolo] Saved 600 frames so far...
+[agv_controller-5] [INFO] [1793706846.097687309] [agv_controller]: t=43.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706847.109570352] [agv_controller]: t=44.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706848.120069966] [agv_controller]: t=45.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706849.130393012] [agv_controller]: t=46.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706850.172706108] [agv_controller]: t=47.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706851.208314610] [agv_controller]: t=48.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706852.244156326] [agv_controller]: t=49.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706853.276959134] [agv_controller]: t=50.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706854.330765649] [agv_controller]: t=51.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706855.364192062] [agv_controller]: t=52.40s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706856.271961362] [yolo_node]: [yolo] Saved 700 frames so far...
+[agv_controller-5] [INFO] [1793706856.406453739] [agv_controller]: t=53.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706857.453758500] [agv_controller]: t=54.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706858.495071420] [agv_controller]: t=55.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706859.539650790] [agv_controller]: t=56.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706860.578169721] [agv_controller]: t=57.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706861.582477047] [agv_controller]: t=58.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706862.605040288] [agv_controller]: t=59.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706863.655675571] [agv_controller]: t=59.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706864.688887275] [agv_controller]: t=60.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706865.726736904] [agv_controller]: t=61.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706866.756057503] [agv_controller]: t=62.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706867.316482584] [yolo_node]: [yolo] Saved 800 frames so far...
+[agv_controller-5] [INFO] [1793706867.781939340] [agv_controller]: t=63.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706868.801983196] [agv_controller]: t=64.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706869.845592902] [agv_controller]: t=65.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706870.873298339] [agv_controller]: t=66.40s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793706871.438570530] [controller_node]: UKF yolo update failed!
+[agv_controller-5] [INFO] [1793706871.884036358] [agv_controller]: t=67.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706872.892387136] [agv_controller]: t=68.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706873.919276471] [agv_controller]: t=69.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706874.928557671] [agv_controller]: t=70.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706875.938968451] [agv_controller]: t=71.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706876.941647210] [agv_controller]: t=72.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706878.005902606] [agv_controller]: t=73.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706878.505723465] [yolo_node]: [yolo] Saved 900 frames so far...
+[agv_controller-5] [INFO] [1793706879.022628249] [agv_controller]: t=73.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706880.051515117] [agv_controller]: t=74.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706881.080824408] [agv_controller]: t=75.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706882.130308425] [agv_controller]: t=76.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706883.172862231] [agv_controller]: t=77.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706884.206402894] [agv_controller]: t=78.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706885.241786349] [agv_controller]: t=79.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706886.286994567] [agv_controller]: t=80.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706887.326504668] [agv_controller]: t=81.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706888.355276611] [agv_controller]: t=82.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706889.393591855] [agv_controller]: t=83.40s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706889.539775857] [yolo_node]: [yolo] Saved 1000 frames so far...
+[agv_controller-5] [INFO] [1793706890.423705450] [agv_controller]: t=84.35s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793706891.203387528] [controller_node]: UKF yolo update failed!
+[agv_controller-5] [INFO] [1793706891.467197371] [agv_controller]: t=85.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706892.482304322] [agv_controller]: t=86.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706893.496867669] [agv_controller]: t=87.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706894.509734028] [agv_controller]: t=88.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706895.518145622] [agv_controller]: t=89.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706896.540221410] [agv_controller]: t=89.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706897.556062476] [agv_controller]: t=90.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706898.572059134] [agv_controller]: t=91.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706899.573033446] [agv_controller]: t=92.80s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706900.343992456] [yolo_node]: [yolo] Saved 1100 frames so far...
+[agv_controller-5] [INFO] [1793706900.575696920] [agv_controller]: t=93.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706901.598766691] [agv_controller]: t=94.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706902.617736473] [agv_controller]: t=95.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706903.633963651] [agv_controller]: t=96.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706904.676205735] [agv_controller]: t=97.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706905.697451295] [agv_controller]: t=98.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706906.732272578] [agv_controller]: t=99.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706907.762841820] [agv_controller]: t=100.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706908.794757262] [agv_controller]: t=101.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706909.836402017] [agv_controller]: t=102.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706910.885990863] [agv_controller]: t=103.10s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706911.467087460] [yolo_node]: [yolo] Saved 1200 frames so far...
+[agv_controller-5] [INFO] [1793706911.906222182] [agv_controller]: t=104.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706912.909136701] [agv_controller]: t=105.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706913.953745138] [agv_controller]: t=106.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706914.968666289] [agv_controller]: t=106.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706915.976733227] [agv_controller]: t=107.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706917.014329447] [agv_controller]: t=108.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706918.067615514] [agv_controller]: t=109.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706919.068073472] [agv_controller]: t=110.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706920.083160158] [agv_controller]: t=111.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706921.084376875] [agv_controller]: t=112.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706922.115080885] [agv_controller]: t=113.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706922.415481208] [yolo_node]: [yolo] Saved 1300 frames so far...
+[agv_controller-5] [INFO] [1793706923.149759506] [agv_controller]: t=114.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706924.203988421] [agv_controller]: t=115.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706925.231191664] [agv_controller]: t=116.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706926.275622552] [agv_controller]: t=117.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706927.315843011] [agv_controller]: t=118.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706928.369598198] [agv_controller]: t=119.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706929.400748430] [agv_controller]: t=120.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706930.448473905] [agv_controller]: t=120.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706931.472159269] [agv_controller]: t=121.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706932.525800483] [agv_controller]: t=122.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706933.475811849] [yolo_node]: [yolo] Saved 1400 frames so far...
+[agv_controller-5] [INFO] [1793706933.556346458] [agv_controller]: t=123.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706934.604766673] [agv_controller]: t=124.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706935.640855822] [agv_controller]: t=125.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706936.676598958] [agv_controller]: t=126.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706937.713997688] [agv_controller]: t=127.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706938.748429993] [agv_controller]: t=128.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706939.792662463] [agv_controller]: t=129.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706940.835441994] [agv_controller]: t=130.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706941.860011357] [agv_controller]: t=131.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706942.869789930] [agv_controller]: t=132.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706943.870136190] [agv_controller]: t=133.10s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706944.573363237] [yolo_node]: [yolo] Saved 1500 frames so far...
+[agv_controller-5] [INFO] [1793706944.871007303] [agv_controller]: t=134.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706945.916063124] [agv_controller]: t=135.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706946.924859506] [agv_controller]: t=135.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706947.940732943] [agv_controller]: t=136.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706948.985843153] [agv_controller]: t=137.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706950.012839682] [agv_controller]: t=138.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706951.021479693] [agv_controller]: t=139.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706952.047911366] [agv_controller]: t=140.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706953.092504157] [agv_controller]: t=141.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706954.154579797] [agv_controller]: t=142.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706955.193339838] [agv_controller]: t=143.50s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706955.558367339] [yolo_node]: [yolo] Saved 1600 frames so far...
+[agv_controller-5] [INFO] [1793706956.240160163] [agv_controller]: t=144.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706957.278424482] [agv_controller]: t=145.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706958.290677385] [agv_controller]: t=146.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706959.329933623] [agv_controller]: t=147.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706960.334321660] [agv_controller]: t=148.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706961.372991229] [agv_controller]: t=149.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706962.407613047] [agv_controller]: t=149.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706963.410530667] [agv_controller]: t=150.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706964.457955482] [agv_controller]: t=151.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706965.520937056] [agv_controller]: t=152.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706966.552873183] [agv_controller]: t=153.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706966.692319278] [yolo_node]: [yolo] Saved 1700 frames so far...
+[agv_controller-5] [INFO] [1793706967.606737506] [agv_controller]: t=154.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706968.654488465] [agv_controller]: t=155.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706969.658089886] [agv_controller]: t=156.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706970.672488577] [agv_controller]: t=157.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706971.703965087] [agv_controller]: t=158.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706972.747508619] [agv_controller]: t=159.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706973.786293167] [agv_controller]: t=160.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706974.824957348] [agv_controller]: t=161.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706975.829552620] [agv_controller]: t=162.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706976.847225479] [agv_controller]: t=163.10s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706977.668922315] [yolo_node]: [yolo] Saved 1800 frames so far...
+[agv_controller-5] [INFO] [1793706977.905185119] [agv_controller]: t=164.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706978.944721172] [agv_controller]: t=165.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706979.994793300] [agv_controller]: t=165.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706981.000423769] [agv_controller]: t=166.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706982.048755434] [agv_controller]: t=167.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706983.105031965] [agv_controller]: t=168.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706984.138551659] [agv_controller]: t=169.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706985.156255716] [agv_controller]: t=170.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706986.203509541] [agv_controller]: t=171.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706987.231367713] [agv_controller]: t=172.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706988.285733153] [agv_controller]: t=173.35s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793706988.928519761] [yolo_node]: [yolo] Saved 1900 frames so far...
+[agv_controller-5] [INFO] [1793706989.334260513] [agv_controller]: t=174.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706990.376056367] [agv_controller]: t=175.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706991.417894720] [agv_controller]: t=176.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706992.471403221] [agv_controller]: t=177.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706993.473849725] [agv_controller]: t=177.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706994.483349325] [agv_controller]: t=178.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706995.486461417] [agv_controller]: t=179.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706996.518934955] [agv_controller]: t=180.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706997.578520515] [agv_controller]: t=181.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706998.611249639] [agv_controller]: t=182.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793706999.655719215] [agv_controller]: t=183.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707000.173172938] [yolo_node]: [yolo] Saved 2000 frames so far...
+[agv_controller-5] [INFO] [1793707000.691059754] [agv_controller]: t=184.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707001.741747943] [agv_controller]: t=185.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707002.778307381] [agv_controller]: t=186.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707003.823337571] [agv_controller]: t=187.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707004.861217786] [agv_controller]: t=188.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707005.916519949] [agv_controller]: t=189.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707006.952179073] [agv_controller]: t=190.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707008.008100854] [agv_controller]: t=190.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707009.055868802] [agv_controller]: t=191.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707010.115891462] [agv_controller]: t=192.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707011.116525911] [agv_controller]: t=193.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707011.320594028] [yolo_node]: [yolo] Saved 2100 frames so far...
+[agv_controller-5] [INFO] [1793707012.157722610] [agv_controller]: t=194.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707013.201745220] [agv_controller]: t=195.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707014.241590615] [agv_controller]: t=196.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707015.300911122] [agv_controller]: t=197.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707016.301606761] [agv_controller]: t=198.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707017.334634840] [agv_controller]: t=199.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707018.382420334] [agv_controller]: t=200.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707019.428275789] [agv_controller]: t=201.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707020.475513127] [agv_controller]: t=202.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707021.517165361] [agv_controller]: t=203.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707022.517228299] [agv_controller]: t=203.90s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707022.545512364] [yolo_node]: [yolo] Saved 2200 frames so far...
+[agv_controller-5] [INFO] [1793707023.518618912] [agv_controller]: t=204.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707024.561258320] [agv_controller]: t=205.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707025.565169530] [agv_controller]: t=206.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707026.613830974] [agv_controller]: t=207.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707027.668645593] [agv_controller]: t=208.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707028.705293997] [agv_controller]: t=209.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707029.753229191] [agv_controller]: t=210.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707030.755080403] [agv_controller]: t=211.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707031.763691592] [agv_controller]: t=212.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707032.810897729] [agv_controller]: t=213.10s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707033.720373084] [yolo_node]: [yolo] Saved 2300 frames so far...
+[agv_controller-5] [INFO] [1793707033.862599571] [agv_controller]: t=214.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707034.907881053] [agv_controller]: t=215.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707035.966075508] [agv_controller]: t=215.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707037.018389703] [agv_controller]: t=216.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707038.066196071] [agv_controller]: t=217.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707039.109074750] [agv_controller]: t=218.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707040.154697095] [agv_controller]: t=219.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707041.201553323] [agv_controller]: t=220.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707042.242691035] [agv_controller]: t=221.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707043.291387442] [agv_controller]: t=222.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707044.344359564] [agv_controller]: t=223.55s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707044.971918851] [yolo_node]: [yolo] Saved 2400 frames so far...
+[agv_controller-5] [INFO] [1793707045.370630695] [agv_controller]: t=224.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707046.409509703] [agv_controller]: t=225.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707047.453201472] [agv_controller]: t=226.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707048.454756993] [agv_controller]: t=227.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707049.494775753] [agv_controller]: t=228.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707050.541563479] [agv_controller]: t=229.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707051.545604521] [agv_controller]: t=230.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707052.606838034] [agv_controller]: t=230.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707053.652046587] [agv_controller]: t=231.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707054.695104602] [agv_controller]: t=232.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707055.732108884] [agv_controller]: t=233.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707056.100083407] [yolo_node]: [yolo] Saved 2500 frames so far...
+[agv_controller-5] [INFO] [1793707056.774843859] [agv_controller]: t=234.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707057.813689264] [agv_controller]: t=235.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707058.829822854] [agv_controller]: t=236.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707059.871668495] [agv_controller]: t=237.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707060.949687345] [agv_controller]: t=238.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707061.959810350] [agv_controller]: t=238.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707063.009993765] [agv_controller]: t=239.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707064.051012876] [agv_controller]: t=240.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707065.074199140] [agv_controller]: t=241.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707066.094414447] [agv_controller]: t=242.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707067.103682758] [agv_controller]: t=243.40s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707067.924734013] [yolo_node]: [yolo] Saved 2600 frames so far...
+[agv_controller-5] [INFO] [1793707068.125608613] [agv_controller]: t=244.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707069.155805901] [agv_controller]: t=245.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707070.198575037] [agv_controller]: t=246.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707071.200126248] [agv_controller]: t=246.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707072.233578719] [agv_controller]: t=247.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707073.269046558] [agv_controller]: t=248.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707074.308357653] [agv_controller]: t=249.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707075.361701883] [agv_controller]: t=250.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707076.407406919] [agv_controller]: t=251.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707077.464605491] [agv_controller]: t=252.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707078.506003084] [agv_controller]: t=253.50s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707079.200870696] [yolo_node]: [yolo] Saved 2700 frames so far...
+[agv_controller-5] [INFO] [1793707079.557226845] [agv_controller]: t=254.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707080.592440724] [agv_controller]: t=255.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707081.599463420] [agv_controller]: t=256.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707082.638665402] [agv_controller]: t=257.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707083.680683915] [agv_controller]: t=258.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707084.722508706] [agv_controller]: t=259.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707085.761511283] [agv_controller]: t=260.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707086.804416707] [agv_controller]: t=260.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707087.826723631] [agv_controller]: t=261.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707088.827308197] [agv_controller]: t=262.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707089.828950879] [agv_controller]: t=263.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707090.308257693] [yolo_node]: [yolo] Saved 2800 frames so far...
+[agv_controller-5] [INFO] [1793707090.880584035] [agv_controller]: t=264.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707091.924941627] [agv_controller]: t=265.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707092.962748795] [agv_controller]: t=266.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707093.989690585] [agv_controller]: t=267.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707095.043518547] [agv_controller]: t=268.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707096.077621162] [agv_controller]: t=269.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707097.129820719] [agv_controller]: t=270.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707098.167573114] [agv_controller]: t=271.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707099.214408322] [agv_controller]: t=272.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707100.260132796] [agv_controller]: t=273.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707101.309780135] [agv_controller]: t=274.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707101.404620669] [yolo_node]: [yolo] Saved 2900 frames so far...
+[agv_controller-5] [INFO] [1793707102.360455711] [agv_controller]: t=275.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707103.408422023] [agv_controller]: t=275.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707104.437227651] [agv_controller]: t=276.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707105.479950515] [agv_controller]: t=277.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707106.485275076] [agv_controller]: t=278.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707107.535560559] [agv_controller]: t=279.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707108.569219402] [agv_controller]: t=280.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707109.582735765] [agv_controller]: t=281.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707110.640768053] [agv_controller]: t=282.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707111.687057882] [agv_controller]: t=283.40s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707112.482971415] [yolo_node]: [yolo] Saved 3000 frames so far...
+[agv_controller-5] [INFO] [1793707112.728156924] [agv_controller]: t=284.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707113.775093619] [agv_controller]: t=285.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707114.783077081] [agv_controller]: t=286.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707115.932792278] [agv_controller]: t=287.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707116.972024181] [agv_controller]: t=288.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707118.013555790] [agv_controller]: t=289.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707119.025468376] [agv_controller]: t=289.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707120.059724745] [agv_controller]: t=290.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707121.095903773] [agv_controller]: t=291.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707122.131703171] [agv_controller]: t=292.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707123.165160488] [agv_controller]: t=293.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707123.586332125] [yolo_node]: [yolo] Saved 3100 frames so far...
+[agv_controller-5] [INFO] [1793707124.202721996] [agv_controller]: t=294.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707125.247229203] [agv_controller]: t=295.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707126.278802536] [agv_controller]: t=296.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707127.326045982] [agv_controller]: t=297.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707128.344686480] [agv_controller]: t=298.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707129.384024724] [agv_controller]: t=299.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707130.414455189] [agv_controller]: t=300.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707131.460588268] [agv_controller]: t=301.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707132.467063699] [agv_controller]: t=302.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707133.513781176] [agv_controller]: t=303.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707134.558997627] [agv_controller]: t=303.95s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707134.749589506] [yolo_node]: [yolo] Saved 3200 frames so far...
+[agv_controller-5] [INFO] [1793707135.589727099] [agv_controller]: t=304.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707136.636368748] [agv_controller]: t=305.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707137.677828531] [agv_controller]: t=306.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707138.714309055] [agv_controller]: t=307.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707139.761577649] [agv_controller]: t=308.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707140.782715735] [agv_controller]: t=309.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707141.824657026] [agv_controller]: t=310.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707142.864852938] [agv_controller]: t=311.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707143.910289018] [agv_controller]: t=312.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707144.944090468] [agv_controller]: t=313.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707145.849416767] [yolo_node]: [yolo] Saved 3300 frames so far...
+[agv_controller-5] [INFO] [1793707145.986834484] [agv_controller]: t=314.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707147.036465114] [agv_controller]: t=315.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707148.080793414] [agv_controller]: t=316.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707149.118671352] [agv_controller]: t=317.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707150.143792270] [agv_controller]: t=317.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707151.189414897] [agv_controller]: t=318.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707152.222246532] [agv_controller]: t=319.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707153.257730644] [agv_controller]: t=320.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707154.302895414] [agv_controller]: t=321.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707155.320835496] [agv_controller]: t=322.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707156.357263132] [agv_controller]: t=323.55s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707156.992484900] [yolo_node]: [yolo] Saved 3400 frames so far...
+[agv_controller-5] [INFO] [1793707157.390638377] [agv_controller]: t=324.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707158.414968622] [agv_controller]: t=325.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707159.441101241] [agv_controller]: t=326.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707160.481591215] [agv_controller]: t=327.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707161.527421501] [agv_controller]: t=328.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707162.562292471] [agv_controller]: t=329.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707163.603970841] [agv_controller]: t=330.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707164.652195308] [agv_controller]: t=331.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707165.674549108] [agv_controller]: t=332.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707166.715450590] [agv_controller]: t=333.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707167.752003884] [agv_controller]: t=334.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707167.890346207] [yolo_node]: [yolo] Saved 3500 frames so far...
+[agv_controller-5] [INFO] [1793707168.802356040] [agv_controller]: t=334.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707169.837305271] [agv_controller]: t=335.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707170.844853585] [agv_controller]: t=336.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707171.873629169] [agv_controller]: t=337.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707172.904544117] [agv_controller]: t=338.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707173.950922307] [agv_controller]: t=339.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707174.990213528] [agv_controller]: t=340.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707176.021620538] [agv_controller]: t=341.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707177.061154558] [agv_controller]: t=342.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707178.094800467] [agv_controller]: t=343.25s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707179.059460767] [yolo_node]: [yolo] Saved 3600 frames so far...
+[agv_controller-5] [INFO] [1793707179.137274838] [agv_controller]: t=344.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707180.179157502] [agv_controller]: t=345.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707181.204025219] [agv_controller]: t=346.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707182.253109690] [agv_controller]: t=347.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707183.294863449] [agv_controller]: t=348.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707184.335301424] [agv_controller]: t=348.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707185.360960728] [agv_controller]: t=349.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707186.398155555] [agv_controller]: t=350.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707187.426172719] [agv_controller]: t=351.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707188.471602721] [agv_controller]: t=352.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707189.475342037] [agv_controller]: t=353.55s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707190.112385300] [yolo_node]: [yolo] Saved 3700 frames so far...
+[agv_controller-5] [INFO] [1793707190.512517269] [agv_controller]: t=354.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707191.543559965] [agv_controller]: t=355.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707192.618357314] [agv_controller]: t=356.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707193.651199590] [agv_controller]: t=357.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707194.688214576] [agv_controller]: t=358.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707195.727235340] [agv_controller]: t=359.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707196.772518521] [agv_controller]: t=360.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707197.806590018] [agv_controller]: t=361.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707198.845458909] [agv_controller]: t=362.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707199.868987119] [agv_controller]: t=363.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707200.922450977] [agv_controller]: t=363.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707201.218638568] [yolo_node]: [yolo] Saved 3800 frames so far...
+[agv_controller-5] [INFO] [1793707201.946542755] [agv_controller]: t=364.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707202.991148984] [agv_controller]: t=365.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707204.032598433] [agv_controller]: t=366.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707205.068754748] [agv_controller]: t=367.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707206.097465309] [agv_controller]: t=368.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707207.119232581] [agv_controller]: t=369.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707208.166119770] [agv_controller]: t=370.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707209.205656670] [agv_controller]: t=371.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707210.232620940] [agv_controller]: t=372.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707211.283518261] [agv_controller]: t=373.25s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707212.241916118] [yolo_node]: [yolo] Saved 3900 frames so far...
+[agv_controller-5] [INFO] [1793707212.309281924] [agv_controller]: t=374.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707213.367639206] [agv_controller]: t=375.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707214.405659278] [agv_controller]: t=376.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707215.435726469] [agv_controller]: t=377.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707216.581829832] [agv_controller]: t=378.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707217.637047055] [agv_controller]: t=378.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707218.661072089] [agv_controller]: t=379.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707219.694357476] [agv_controller]: t=380.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707220.736072394] [agv_controller]: t=381.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707221.793236946] [agv_controller]: t=382.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707222.831197305] [agv_controller]: t=383.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707223.307939371] [yolo_node]: [yolo] Saved 4000 frames so far...
+[agv_controller-5] [INFO] [1793707223.869426485] [agv_controller]: t=384.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707224.914946005] [agv_controller]: t=385.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707225.971318203] [agv_controller]: t=386.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707227.000342842] [agv_controller]: t=387.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707228.033246850] [agv_controller]: t=388.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707229.064258266] [agv_controller]: t=389.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707230.098741205] [agv_controller]: t=390.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707231.139691557] [agv_controller]: t=391.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707232.193051214] [agv_controller]: t=392.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707233.232348760] [agv_controller]: t=393.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707234.282332067] [agv_controller]: t=394.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707234.366107653] [yolo_node]: [yolo] Saved 4100 frames so far...
+[agv_controller-5] [INFO] [1793707235.323433440] [agv_controller]: t=394.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707236.371500101] [agv_controller]: t=395.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707237.397858895] [agv_controller]: t=396.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707238.431217011] [agv_controller]: t=397.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707239.468822513] [agv_controller]: t=398.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707240.506133879] [agv_controller]: t=399.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707241.537877796] [agv_controller]: t=400.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707242.563716942] [agv_controller]: t=401.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707243.607576191] [agv_controller]: t=402.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707244.652127025] [agv_controller]: t=403.35s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707245.490428862] [yolo_node]: [yolo] Saved 4200 frames so far...
+[agv_controller-5] [INFO] [1793707245.673872417] [agv_controller]: t=404.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707246.704351224] [agv_controller]: t=405.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707247.722044708] [agv_controller]: t=406.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707248.767331513] [agv_controller]: t=407.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707249.798972170] [agv_controller]: t=408.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707250.850899981] [agv_controller]: t=408.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707251.869949457] [agv_controller]: t=409.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707252.919816785] [agv_controller]: t=410.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707253.955825840] [agv_controller]: t=411.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707255.006433861] [agv_controller]: t=412.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707256.038530826] [agv_controller]: t=413.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707256.505746488] [yolo_node]: [yolo] Saved 4300 frames so far...
+[agv_controller-5] [INFO] [1793707257.074434732] [agv_controller]: t=414.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707258.078383242] [agv_controller]: t=415.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707259.116646418] [agv_controller]: t=416.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707260.117588612] [agv_controller]: t=417.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707261.143863238] [agv_controller]: t=418.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707262.173703975] [agv_controller]: t=419.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707263.213723215] [agv_controller]: t=420.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707264.242355981] [agv_controller]: t=421.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707265.280804771] [agv_controller]: t=422.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707266.313608632] [agv_controller]: t=423.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707267.370516067] [agv_controller]: t=423.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707267.672426765] [yolo_node]: [yolo] Saved 4400 frames so far...
+[agv_controller-5] [INFO] [1793707268.411992269] [agv_controller]: t=424.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707269.465546263] [agv_controller]: t=425.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707270.506755349] [agv_controller]: t=426.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707271.545526100] [agv_controller]: t=427.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707272.578396758] [agv_controller]: t=428.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707273.638273776] [agv_controller]: t=429.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707274.676926033] [agv_controller]: t=430.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707275.719743642] [agv_controller]: t=431.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707276.750692047] [agv_controller]: t=432.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707277.785242621] [agv_controller]: t=433.25s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707278.741978416] [yolo_node]: [yolo] Saved 4500 frames so far...
+[agv_controller-5] [INFO] [1793707278.819153434] [agv_controller]: t=434.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707279.842765994] [agv_controller]: t=435.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707280.863258808] [agv_controller]: t=436.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707281.906147116] [agv_controller]: t=437.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707282.948650338] [agv_controller]: t=438.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707283.988558334] [agv_controller]: t=438.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707285.018234293] [agv_controller]: t=439.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707286.065846465] [agv_controller]: t=440.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707287.108437053] [agv_controller]: t=441.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707288.160314558] [agv_controller]: t=442.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707289.196834578] [agv_controller]: t=443.60s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707289.783118617] [yolo_node]: [yolo] Saved 4600 frames so far...
+[agv_controller-5] [INFO] [1793707290.234597083] [agv_controller]: t=444.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707291.260469979] [agv_controller]: t=445.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707292.303317494] [agv_controller]: t=446.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707293.336440178] [agv_controller]: t=447.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707294.376822527] [agv_controller]: t=448.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707295.405813999] [agv_controller]: t=449.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707296.455390151] [agv_controller]: t=450.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707297.478059893] [agv_controller]: t=451.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707298.504125733] [agv_controller]: t=452.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707299.554009824] [agv_controller]: t=453.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707300.587496403] [agv_controller]: t=453.95s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707300.779403182] [yolo_node]: [yolo] Saved 4700 frames so far...
+[agv_controller-5] [INFO] [1793707301.624671702] [agv_controller]: t=454.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707302.665701130] [agv_controller]: t=455.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707303.697194044] [agv_controller]: t=456.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707304.731700922] [agv_controller]: t=457.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707305.753208191] [agv_controller]: t=458.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707306.803204811] [agv_controller]: t=459.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707307.843571945] [agv_controller]: t=460.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707308.886692250] [agv_controller]: t=461.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707309.920823432] [agv_controller]: t=462.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707310.959627504] [agv_controller]: t=463.35s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707311.934508054] [yolo_node]: [yolo] Saved 4800 frames so far...
+[agv_controller-5] [INFO] [1793707311.963658749] [agv_controller]: t=464.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707312.990631250] [agv_controller]: t=465.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707314.043953718] [agv_controller]: t=466.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707315.073045197] [agv_controller]: t=467.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707316.116796701] [agv_controller]: t=467.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707317.155938852] [agv_controller]: t=468.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707318.195796392] [agv_controller]: t=469.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707319.334335200] [agv_controller]: t=470.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707320.386196055] [agv_controller]: t=471.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707321.411090358] [agv_controller]: t=472.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707322.464386228] [agv_controller]: t=473.65s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707322.994014754] [yolo_node]: [yolo] Saved 4900 frames so far...
+[agv_controller-5] [INFO] [1793707323.497550718] [agv_controller]: t=474.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707324.538135091] [agv_controller]: t=475.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707325.575502839] [agv_controller]: t=476.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707326.605161896] [agv_controller]: t=477.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707327.639987491] [agv_controller]: t=478.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707328.689390926] [agv_controller]: t=479.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707329.725290399] [agv_controller]: t=480.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707330.754170904] [agv_controller]: t=481.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707331.783885037] [agv_controller]: t=482.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707332.821731257] [agv_controller]: t=483.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707333.855746515] [agv_controller]: t=484.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707333.994918019] [yolo_node]: [yolo] Saved 5000 frames so far...
+[agv_controller-5] [INFO] [1793707334.899251789] [agv_controller]: t=484.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707335.938351605] [agv_controller]: t=485.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707336.971465634] [agv_controller]: t=486.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707337.973124377] [agv_controller]: t=487.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707339.009868171] [agv_controller]: t=488.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707340.057738489] [agv_controller]: t=489.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707341.085408463] [agv_controller]: t=490.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707342.150807327] [agv_controller]: t=491.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707343.193430772] [agv_controller]: t=492.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707344.225127780] [agv_controller]: t=493.35s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707345.070112900] [yolo_node]: [yolo] Saved 5100 frames so far...
+[agv_controller-5] [INFO] [1793707345.247961836] [agv_controller]: t=494.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707346.297637414] [agv_controller]: t=495.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707347.336426466] [agv_controller]: t=496.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707348.374516272] [agv_controller]: t=497.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707349.420467004] [agv_controller]: t=498.00s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793707349.571998753] [controller_node]: UKF yolo update failed!
+[agv_controller-5] [INFO] [1793707350.465789796] [agv_controller]: t=498.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707351.494714970] [agv_controller]: t=499.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707352.531105546] [agv_controller]: t=500.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707353.571674942] [agv_controller]: t=501.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707354.601428023] [agv_controller]: t=502.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707355.642721071] [agv_controller]: t=503.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707356.104818248] [yolo_node]: [yolo] Saved 5200 frames so far...
+[agv_controller-5] [INFO] [1793707356.677441151] [agv_controller]: t=504.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707357.718795754] [agv_controller]: t=505.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707358.760238741] [agv_controller]: t=506.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707359.792413100] [agv_controller]: t=507.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707360.835894605] [agv_controller]: t=508.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707361.868186599] [agv_controller]: t=509.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707362.914146220] [agv_controller]: t=510.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707363.947279180] [agv_controller]: t=511.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707364.992231250] [agv_controller]: t=512.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707366.020332555] [agv_controller]: t=513.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707367.055420648] [agv_controller]: t=513.95s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707367.246187039] [yolo_node]: [yolo] Saved 5300 frames so far...
+[agv_controller-5] [INFO] [1793707368.080561420] [agv_controller]: t=514.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707369.121682207] [agv_controller]: t=515.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707370.154278747] [agv_controller]: t=516.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707371.187128055] [agv_controller]: t=517.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707372.219277490] [agv_controller]: t=518.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707373.374763117] [agv_controller]: t=519.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707374.406213554] [agv_controller]: t=520.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707375.457435515] [agv_controller]: t=521.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707376.486262756] [agv_controller]: t=522.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707377.546576777] [agv_controller]: t=523.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707378.274013370] [yolo_node]: [yolo] Saved 5400 frames so far...
+[agv_controller-5] [INFO] [1793707378.565572638] [agv_controller]: t=524.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707379.568295082] [agv_controller]: t=525.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707380.614255885] [agv_controller]: t=526.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707381.661973547] [agv_controller]: t=527.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707382.703859987] [agv_controller]: t=528.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707383.733436792] [agv_controller]: t=529.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707384.775148170] [agv_controller]: t=529.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707385.812957343] [agv_controller]: t=530.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707386.866024115] [agv_controller]: t=531.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707387.899529988] [agv_controller]: t=532.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707388.946149369] [agv_controller]: t=533.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707389.480243023] [yolo_node]: [yolo] Saved 5500 frames so far...
+[agv_controller-5] [INFO] [1793707389.991927405] [agv_controller]: t=534.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707391.031028741] [agv_controller]: t=535.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707392.068238715] [agv_controller]: t=536.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707393.106914721] [agv_controller]: t=537.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707394.118584123] [agv_controller]: t=538.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707395.162234152] [agv_controller]: t=539.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707396.194272866] [agv_controller]: t=540.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707397.232193551] [agv_controller]: t=541.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707398.262076614] [agv_controller]: t=542.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707399.292923728] [agv_controller]: t=543.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707400.336074066] [agv_controller]: t=544.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707400.586228395] [yolo_node]: [yolo] Saved 5600 frames so far...
+[agv_controller-5] [INFO] [1793707401.386326089] [agv_controller]: t=544.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707402.406603710] [agv_controller]: t=545.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707403.407260991] [agv_controller]: t=546.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707404.445317504] [agv_controller]: t=547.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707405.477155461] [agv_controller]: t=548.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707406.520205528] [agv_controller]: t=549.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707407.560624011] [agv_controller]: t=550.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707408.593021668] [agv_controller]: t=551.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707409.626115480] [agv_controller]: t=552.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707410.675866380] [agv_controller]: t=553.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707411.638207382] [yolo_node]: [yolo] Saved 5700 frames so far...
+[agv_controller-5] [INFO] [1793707411.712335450] [agv_controller]: t=554.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707412.747764311] [agv_controller]: t=555.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707413.783642773] [agv_controller]: t=556.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707414.826165856] [agv_controller]: t=557.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707415.863370966] [agv_controller]: t=558.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707416.905194487] [agv_controller]: t=559.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707417.934874780] [agv_controller]: t=560.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707418.968044287] [agv_controller]: t=560.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707420.003243041] [agv_controller]: t=561.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707421.055448189] [agv_controller]: t=562.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707422.085704626] [agv_controller]: t=563.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707422.665363360] [yolo_node]: [yolo] Saved 5800 frames so far...
+[agv_controller-5] [INFO] [1793707423.122927769] [agv_controller]: t=564.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707424.143638368] [agv_controller]: t=565.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707425.185223011] [agv_controller]: t=566.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707426.221259006] [agv_controller]: t=567.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707427.260914504] [agv_controller]: t=568.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707428.305919080] [agv_controller]: t=569.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707429.308137682] [agv_controller]: t=570.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707430.346755684] [agv_controller]: t=571.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707431.375938476] [agv_controller]: t=572.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707432.417368632] [agv_controller]: t=573.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707433.446667385] [agv_controller]: t=574.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707433.691329460] [yolo_node]: [yolo] Saved 5900 frames so far...
+[agv_controller-5] [INFO] [1793707434.474724844] [agv_controller]: t=574.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707435.501621824] [agv_controller]: t=575.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707436.539224096] [agv_controller]: t=576.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707437.571761601] [agv_controller]: t=577.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707438.616395795] [agv_controller]: t=578.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707439.653495320] [agv_controller]: t=579.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707440.706656951] [agv_controller]: t=580.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707441.732993316] [agv_controller]: t=581.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707442.775215021] [agv_controller]: t=582.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707443.807515240] [agv_controller]: t=583.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707444.823455576] [yolo_node]: [yolo] Saved 6000 frames so far...
+[agv_controller-5] [INFO] [1793707444.835035840] [agv_controller]: t=584.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707445.872687317] [agv_controller]: t=585.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707446.922180867] [agv_controller]: t=586.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707447.962232023] [agv_controller]: t=587.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707449.008077991] [agv_controller]: t=588.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707450.039448151] [agv_controller]: t=589.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707451.074706242] [agv_controller]: t=589.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707452.114603425] [agv_controller]: t=590.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707453.120539457] [agv_controller]: t=591.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707454.171910562] [agv_controller]: t=592.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707455.197581715] [agv_controller]: t=593.60s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707455.885999514] [yolo_node]: [yolo] Saved 6100 frames so far...
+[agv_controller-5] [INFO] [1793707456.241660051] [agv_controller]: t=594.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707457.275253792] [agv_controller]: t=595.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707458.329862147] [agv_controller]: t=596.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707459.469641865] [agv_controller]: t=597.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707460.519769425] [agv_controller]: t=598.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707461.554541644] [agv_controller]: t=599.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707462.600656041] [agv_controller]: t=600.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707463.640281006] [agv_controller]: t=601.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707464.691410472] [agv_controller]: t=602.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707465.736207846] [agv_controller]: t=603.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707466.778996837] [agv_controller]: t=604.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707466.970421987] [yolo_node]: [yolo] Saved 6200 frames so far...
+[agv_controller-5] [INFO] [1793707467.805746696] [agv_controller]: t=605.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707468.835034692] [agv_controller]: t=605.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707469.880250789] [agv_controller]: t=606.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707470.929228354] [agv_controller]: t=607.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707471.947302861] [agv_controller]: t=608.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707472.983121133] [agv_controller]: t=609.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707474.031127583] [agv_controller]: t=610.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707475.054546827] [agv_controller]: t=611.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707476.067233458] [agv_controller]: t=612.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707477.095726612] [agv_controller]: t=613.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707477.940338578] [yolo_node]: [yolo] Saved 6300 frames so far...
+[agv_controller-5] [INFO] [1793707478.135189019] [agv_controller]: t=614.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707479.155488793] [agv_controller]: t=615.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707480.169387587] [agv_controller]: t=616.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707481.213080914] [agv_controller]: t=617.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707482.223346859] [agv_controller]: t=618.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707483.258594529] [agv_controller]: t=619.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707484.285767217] [agv_controller]: t=619.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707485.321843510] [agv_controller]: t=620.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707486.348323272] [agv_controller]: t=621.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707487.387568456] [agv_controller]: t=622.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707488.426944182] [agv_controller]: t=623.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707488.947285242] [yolo_node]: [yolo] Saved 6400 frames so far...
+[agv_controller-5] [INFO] [1793707489.466515589] [agv_controller]: t=624.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707490.507722023] [agv_controller]: t=625.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707491.545840863] [agv_controller]: t=626.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707492.577402093] [agv_controller]: t=627.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707493.608180851] [agv_controller]: t=628.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707494.638365377] [agv_controller]: t=629.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707495.661457609] [agv_controller]: t=630.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707496.708125858] [agv_controller]: t=631.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707497.749417347] [agv_controller]: t=632.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707498.781376483] [agv_controller]: t=633.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707499.800580934] [agv_controller]: t=634.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707500.046225843] [yolo_node]: [yolo] Saved 6500 frames so far...
+[agv_controller-5] [INFO] [1793707500.803462986] [agv_controller]: t=634.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707501.839981856] [agv_controller]: t=635.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707502.868676413] [agv_controller]: t=636.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707503.912009932] [agv_controller]: t=637.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707504.937528537] [agv_controller]: t=638.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707505.955145627] [agv_controller]: t=639.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707507.003575985] [agv_controller]: t=640.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707508.023931630] [agv_controller]: t=641.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707509.052837438] [agv_controller]: t=642.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707510.077858448] [agv_controller]: t=643.40s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707511.082309084] [yolo_node]: [yolo] Saved 6600 frames so far...
+[agv_controller-5] [INFO] [1793707511.109263994] [agv_controller]: t=644.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707512.130299132] [agv_controller]: t=645.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707513.218665549] [agv_controller]: t=646.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707514.255686253] [agv_controller]: t=647.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707515.292860893] [agv_controller]: t=648.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707516.342886975] [agv_controller]: t=649.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707517.375935223] [agv_controller]: t=650.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707518.419142419] [agv_controller]: t=650.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707519.453696799] [agv_controller]: t=651.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707520.504716788] [agv_controller]: t=652.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707521.506685809] [agv_controller]: t=653.65s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707522.246290866] [yolo_node]: [yolo] Saved 6700 frames so far...
+[agv_controller-5] [INFO] [1793707522.542871878] [agv_controller]: t=654.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707523.573089000] [agv_controller]: t=655.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707524.611692294] [agv_controller]: t=656.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707525.644755344] [agv_controller]: t=657.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707526.686318421] [agv_controller]: t=658.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707527.717031023] [agv_controller]: t=659.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707528.727329080] [agv_controller]: t=660.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707529.732714730] [agv_controller]: t=661.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707530.773501500] [agv_controller]: t=662.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707531.810862613] [agv_controller]: t=663.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707532.849460032] [agv_controller]: t=664.10s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707533.206072072] [yolo_node]: [yolo] Saved 6800 frames so far...
+[agv_controller-5] [INFO] [1793707533.879294642] [agv_controller]: t=665.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707534.918619323] [agv_controller]: t=665.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707535.964452578] [agv_controller]: t=666.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707536.966637614] [agv_controller]: t=667.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707537.978498383] [agv_controller]: t=668.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707539.019689644] [agv_controller]: t=669.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707540.026928236] [agv_controller]: t=670.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707541.035273685] [agv_controller]: t=671.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707542.091302629] [agv_controller]: t=672.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707543.120090301] [agv_controller]: t=673.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707544.153008423] [agv_controller]: t=674.35s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707544.230633044] [yolo_node]: [yolo] Saved 6900 frames so far...
+[agv_controller-5] [INFO] [1793707545.192686844] [agv_controller]: t=675.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707546.219520625] [agv_controller]: t=676.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707547.262919177] [agv_controller]: t=677.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707548.305842411] [agv_controller]: t=678.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707549.344001464] [agv_controller]: t=679.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707550.382251939] [agv_controller]: t=679.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707551.429208414] [agv_controller]: t=680.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707552.480454739] [agv_controller]: t=681.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707553.482115823] [agv_controller]: t=682.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707554.508912572] [agv_controller]: t=683.60s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707555.389469833] [yolo_node]: [yolo] Saved 7000 frames so far...
+[agv_controller-5] [INFO] [1793707555.523652011] [agv_controller]: t=684.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707556.561368261] [agv_controller]: t=685.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707557.577217183] [agv_controller]: t=686.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707558.603182124] [agv_controller]: t=687.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707559.616719604] [agv_controller]: t=688.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707560.649339315] [agv_controller]: t=689.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707561.698046948] [agv_controller]: t=690.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707562.738316633] [agv_controller]: t=691.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707563.773726844] [agv_controller]: t=692.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707564.778697117] [agv_controller]: t=693.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707565.781748758] [agv_controller]: t=693.95s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707566.392150335] [yolo_node]: [yolo] Saved 7100 frames so far...
+[agv_controller-5] [INFO] [1793707566.799938671] [agv_controller]: t=694.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707567.835564800] [agv_controller]: t=695.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707568.869618509] [agv_controller]: t=696.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707569.918091490] [agv_controller]: t=697.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707570.954567148] [agv_controller]: t=698.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707572.001624645] [agv_controller]: t=699.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707573.002866289] [agv_controller]: t=700.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707574.053502772] [agv_controller]: t=701.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707575.101384476] [agv_controller]: t=702.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707576.141230816] [agv_controller]: t=703.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707577.195167645] [agv_controller]: t=704.15s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707577.604611547] [yolo_node]: [yolo] Saved 7200 frames so far...
+[agv_controller-5] [INFO] [1793707578.222691396] [agv_controller]: t=705.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707579.224015351] [agv_controller]: t=706.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707580.269663254] [agv_controller]: t=706.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707581.299702724] [agv_controller]: t=707.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707582.388499405] [agv_controller]: t=708.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707583.417943427] [agv_controller]: t=709.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707584.421617569] [agv_controller]: t=710.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707585.433449827] [agv_controller]: t=711.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707586.437329242] [agv_controller]: t=712.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707587.441918284] [agv_controller]: t=713.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707588.462660680] [agv_controller]: t=714.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707588.543517730] [yolo_node]: [yolo] Saved 7300 frames so far...
+[agv_controller-5] [INFO] [1793707589.465639318] [agv_controller]: t=715.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707590.499362611] [agv_controller]: t=716.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707591.522265573] [agv_controller]: t=717.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707592.558408217] [agv_controller]: t=718.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707593.590674046] [agv_controller]: t=719.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707594.625869230] [agv_controller]: t=720.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707595.668300376] [agv_controller]: t=721.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707596.701336934] [agv_controller]: t=721.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707597.739410386] [agv_controller]: t=722.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707598.789842276] [agv_controller]: t=723.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707599.543975067] [yolo_node]: [yolo] Saved 7400 frames so far...
+[agv_controller-5] [INFO] [1793707599.858101260] [agv_controller]: t=724.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707600.899079403] [agv_controller]: t=725.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707601.950516226] [agv_controller]: t=725.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707602.994410006] [agv_controller]: t=726.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707604.046513072] [agv_controller]: t=727.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707605.057678852] [agv_controller]: t=727.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707606.109330635] [agv_controller]: t=728.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707607.158348524] [agv_controller]: t=729.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707608.190414632] [agv_controller]: t=730.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707609.241491746] [agv_controller]: t=730.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707610.285762842] [agv_controller]: t=731.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707611.342120154] [agv_controller]: t=732.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707612.386077369] [agv_controller]: t=732.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707613.399253071] [agv_controller]: t=733.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707614.432135909] [agv_controller]: t=734.40s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707614.950381654] [yolo_node]: [yolo] Saved 7500 frames so far...
+[agv_controller-5] [INFO] [1793707615.452556434] [agv_controller]: t=735.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707616.470108759] [agv_controller]: t=735.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707617.515101608] [agv_controller]: t=736.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707618.565750582] [agv_controller]: t=737.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707619.576903315] [agv_controller]: t=738.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707620.630831031] [agv_controller]: t=739.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707621.632068534] [agv_controller]: t=739.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707622.660838900] [agv_controller]: t=740.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707623.700175563] [agv_controller]: t=741.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707624.800818627] [agv_controller]: t=742.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707625.872021418] [agv_controller]: t=742.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707626.927608166] [agv_controller]: t=743.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707627.934704789] [agv_controller]: t=744.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707628.724952095] [yolo_node]: [yolo] Saved 7600 frames so far...
+[agv_controller-5] [INFO] [1793707628.974941166] [agv_controller]: t=745.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707630.013871775] [agv_controller]: t=745.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707631.042782851] [agv_controller]: t=746.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707632.074799058] [agv_controller]: t=747.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707633.131697983] [agv_controller]: t=747.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707634.170270488] [agv_controller]: t=748.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707635.176185449] [agv_controller]: t=749.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707636.185235189] [agv_controller]: t=750.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707637.203775371] [agv_controller]: t=751.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707638.228954523] [agv_controller]: t=751.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707639.315740387] [agv_controller]: t=752.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707640.348843327] [agv_controller]: t=753.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707641.367501921] [agv_controller]: t=754.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707642.376272931] [agv_controller]: t=754.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707643.111198666] [yolo_node]: [yolo] Saved 7700 frames so far...
+[agv_controller-5] [INFO] [1793707643.411365176] [agv_controller]: t=755.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707644.453147775] [agv_controller]: t=756.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707645.534548028] [agv_controller]: t=757.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707646.565898976] [agv_controller]: t=758.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707647.582653316] [agv_controller]: t=758.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707648.602306913] [agv_controller]: t=759.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707649.609076297] [agv_controller]: t=760.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707650.630345505] [agv_controller]: t=761.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707651.637555763] [agv_controller]: t=762.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707652.698645070] [agv_controller]: t=763.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707653.714803307] [agv_controller]: t=764.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707654.798525561] [agv_controller]: t=764.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707655.606568514] [yolo_node]: [yolo] Saved 7800 frames so far...
+[agv_controller-5] [INFO] [1793707655.860351253] [agv_controller]: t=765.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707656.875096145] [agv_controller]: t=766.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707657.926714766] [agv_controller]: t=767.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707658.963435014] [agv_controller]: t=768.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707659.991777508] [agv_controller]: t=768.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707661.042332589] [agv_controller]: t=769.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707662.094627425] [agv_controller]: t=770.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707663.138206714] [agv_controller]: t=771.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707664.184581360] [agv_controller]: t=772.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707665.220750042] [agv_controller]: t=773.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707666.247528711] [agv_controller]: t=774.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707667.317015621] [agv_controller]: t=774.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707668.356146566] [agv_controller]: t=775.55s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707668.518683480] [yolo_node]: [yolo] Saved 7900 frames so far...
+[agv_controller-5] [INFO] [1793707669.398294586] [agv_controller]: t=776.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707670.466866725] [agv_controller]: t=776.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707671.500913063] [agv_controller]: t=777.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707672.501727457] [agv_controller]: t=778.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707673.554774675] [agv_controller]: t=779.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707674.607734481] [agv_controller]: t=780.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707675.631641259] [agv_controller]: t=780.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707676.687815295] [agv_controller]: t=781.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707677.737043459] [agv_controller]: t=782.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707678.775360117] [agv_controller]: t=782.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707679.894100602] [agv_controller]: t=783.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707680.946512978] [agv_controller]: t=784.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707681.953269529] [agv_controller]: t=785.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707682.953595213] [agv_controller]: t=785.95s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707683.451645747] [yolo_node]: [yolo] Saved 8000 frames so far...
+[agv_controller-5] [INFO] [1793707683.970037272] [agv_controller]: t=786.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707684.988199741] [agv_controller]: t=787.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707686.006971239] [agv_controller]: t=788.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707687.023616443] [agv_controller]: t=789.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707688.056611784] [agv_controller]: t=790.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707689.098604106] [agv_controller]: t=791.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707690.100495641] [agv_controller]: t=791.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707691.153610226] [agv_controller]: t=792.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707692.202828420] [agv_controller]: t=793.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707693.251077494] [agv_controller]: t=794.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707694.261366143] [agv_controller]: t=795.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707695.282949633] [agv_controller]: t=796.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707695.912959202] [yolo_node]: [yolo] Saved 8100 frames so far...
+[agv_controller-5] [INFO] [1793707696.325919403] [agv_controller]: t=796.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707697.327411360] [agv_controller]: t=797.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707698.374163954] [agv_controller]: t=798.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707699.407299318] [agv_controller]: t=799.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707700.440192672] [agv_controller]: t=800.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707701.441847228] [agv_controller]: t=800.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707702.507277325] [agv_controller]: t=801.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707703.517297012] [agv_controller]: t=802.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707704.530912172] [agv_controller]: t=802.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707705.586357147] [agv_controller]: t=803.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707706.596613627] [agv_controller]: t=804.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707707.626551784] [agv_controller]: t=805.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707708.631898076] [agv_controller]: t=805.80s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707709.455089022] [yolo_node]: [yolo] Saved 8200 frames so far...
+[agv_controller-5] [INFO] [1793707709.635312562] [agv_controller]: t=806.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707710.672622416] [agv_controller]: t=807.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707711.688805999] [agv_controller]: t=808.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707712.730392058] [agv_controller]: t=809.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707713.786347144] [agv_controller]: t=810.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707714.801209605] [agv_controller]: t=810.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707715.870362313] [agv_controller]: t=811.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707716.980878465] [agv_controller]: t=812.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707718.031957663] [agv_controller]: t=812.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707719.140285233] [agv_controller]: t=813.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707720.186386210] [agv_controller]: t=814.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707721.193810534] [agv_controller]: t=815.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707722.231938336] [agv_controller]: t=816.10s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707723.030716433] [yolo_node]: [yolo] Saved 8300 frames so far...
+[agv_controller-5] [INFO] [1793707723.290062936] [agv_controller]: t=817.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707724.339047093] [agv_controller]: t=818.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707725.396184858] [agv_controller]: t=818.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707726.462256359] [agv_controller]: t=819.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707727.481360424] [agv_controller]: t=820.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707728.552155349] [agv_controller]: t=820.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707729.565728300] [agv_controller]: t=821.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707730.582295238] [agv_controller]: t=822.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707731.624827538] [agv_controller]: t=823.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707732.675467906] [agv_controller]: t=824.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707733.677341468] [agv_controller]: t=825.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707734.705512821] [agv_controller]: t=826.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707735.744030426] [agv_controller]: t=826.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707735.824470728] [yolo_node]: [yolo] Saved 8400 frames so far...
+[agv_controller-5] [INFO] [1793707736.788577255] [agv_controller]: t=827.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707737.792300413] [agv_controller]: t=828.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707738.831955789] [agv_controller]: t=829.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707739.862638490] [agv_controller]: t=830.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707740.932958306] [agv_controller]: t=831.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707741.962428544] [agv_controller]: t=831.95s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793707742.758588324] [controller_node]: UKF yolo update failed!
+[agv_controller-5] [INFO] [1793707742.984782446] [agv_controller]: t=832.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707744.037343001] [agv_controller]: t=833.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707745.054034393] [agv_controller]: t=834.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707746.073151082] [agv_controller]: t=835.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707747.086437038] [agv_controller]: t=835.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707748.090836852] [agv_controller]: t=836.80s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707748.452321052] [yolo_node]: [yolo] Saved 8500 frames so far...
+[agv_controller-5] [INFO] [1793707749.091119306] [agv_controller]: t=837.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707750.141788266] [agv_controller]: t=838.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707751.153882850] [agv_controller]: t=839.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707752.167429113] [agv_controller]: t=840.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707753.215417571] [agv_controller]: t=841.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707754.230546779] [agv_controller]: t=842.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707755.280650215] [agv_controller]: t=843.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707756.331518211] [agv_controller]: t=844.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707757.342053169] [agv_controller]: t=845.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707758.404178958] [agv_controller]: t=845.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707759.410950387] [agv_controller]: t=846.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707759.822461287] [yolo_node]: [yolo] Saved 8600 frames so far...
+[agv_controller-5] [INFO] [1793707760.458527527] [agv_controller]: t=847.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707761.513174475] [agv_controller]: t=848.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707762.563251116] [agv_controller]: t=849.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707763.606569268] [agv_controller]: t=850.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707764.621528090] [agv_controller]: t=851.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707765.671653998] [agv_controller]: t=852.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707766.671709282] [agv_controller]: t=853.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707767.675929836] [agv_controller]: t=854.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707768.678685759] [agv_controller]: t=855.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707769.697161303] [agv_controller]: t=855.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707770.699868854] [agv_controller]: t=856.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707771.714447997] [agv_controller]: t=857.20s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707771.854927917] [yolo_node]: [yolo] Saved 8700 frames so far...
+[agv_controller-5] [INFO] [1793707772.723659888] [agv_controller]: t=858.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707773.771139487] [agv_controller]: t=859.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707774.774698430] [agv_controller]: t=859.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707775.778639590] [agv_controller]: t=860.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707776.792484873] [agv_controller]: t=861.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707777.798334625] [agv_controller]: t=862.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707778.846269830] [agv_controller]: t=863.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707779.893765986] [agv_controller]: t=864.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707780.942080508] [agv_controller]: t=865.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707781.995771642] [agv_controller]: t=866.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707782.998441179] [agv_controller]: t=867.25s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707783.079476772] [yolo_node]: [yolo] Saved 8800 frames so far...
+[agv_controller-5] [INFO] [1793707784.038684694] [agv_controller]: t=868.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707785.091321348] [agv_controller]: t=869.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707786.099443150] [agv_controller]: t=869.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707787.102873801] [agv_controller]: t=870.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707788.156677171] [agv_controller]: t=871.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707789.159729648] [agv_controller]: t=872.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707790.165413466] [agv_controller]: t=873.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707791.174413584] [agv_controller]: t=874.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707792.176965480] [agv_controller]: t=875.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707793.229971540] [agv_controller]: t=876.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707794.236043892] [agv_controller]: t=877.15s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707794.429057418] [yolo_node]: [yolo] Saved 8900 frames so far...
+[agv_controller-5] [INFO] [1793707795.276717618] [agv_controller]: t=878.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707796.336881610] [agv_controller]: t=879.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707797.384699062] [agv_controller]: t=880.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707798.395093157] [agv_controller]: t=880.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707799.404003179] [agv_controller]: t=881.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707800.429864623] [agv_controller]: t=882.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707801.446129975] [agv_controller]: t=883.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707802.485996279] [agv_controller]: t=884.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707803.528387444] [agv_controller]: t=885.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707804.567048866] [agv_controller]: t=886.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707805.572214643] [agv_controller]: t=887.25s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707805.671742244] [yolo_node]: [yolo] Saved 9000 frames so far...
+[agv_controller-5] [INFO] [1793707806.574954344] [agv_controller]: t=888.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707807.624439742] [agv_controller]: t=889.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707808.676846953] [agv_controller]: t=890.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707809.719916437] [agv_controller]: t=891.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707810.722179053] [agv_controller]: t=891.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707811.773782733] [agv_controller]: t=892.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707812.811384333] [agv_controller]: t=893.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707813.860292713] [agv_controller]: t=894.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707814.861686534] [agv_controller]: t=895.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707815.869417591] [agv_controller]: t=896.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707816.831726282] [yolo_node]: [yolo] Saved 9100 frames so far...
+[agv_controller-5] [INFO] [1793707816.913656868] [agv_controller]: t=897.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707817.921321212] [agv_controller]: t=898.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707818.925473428] [agv_controller]: t=899.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707819.968978598] [agv_controller]: t=900.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707820.980575249] [agv_controller]: t=900.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707822.023660250] [agv_controller]: t=901.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707823.026640344] [agv_controller]: t=902.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707824.080411722] [agv_controller]: t=903.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707825.097699787] [agv_controller]: t=904.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707826.139372075] [agv_controller]: t=905.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707827.195283579] [agv_controller]: t=906.55s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707828.041884948] [yolo_node]: [yolo] Saved 9200 frames so far...
+[agv_controller-5] [INFO] [1793707828.232212487] [agv_controller]: t=907.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707829.238207644] [agv_controller]: t=908.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707830.244770315] [agv_controller]: t=909.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707831.300376240] [agv_controller]: t=910.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707832.346712889] [agv_controller]: t=911.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707833.397333718] [agv_controller]: t=912.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707834.430850269] [agv_controller]: t=913.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707835.476321104] [agv_controller]: t=913.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707836.488931713] [agv_controller]: t=914.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707837.530861272] [agv_controller]: t=915.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707838.584439084] [agv_controller]: t=916.65s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707839.327652479] [yolo_node]: [yolo] Saved 9300 frames so far...
+[agv_controller-5] [INFO] [1793707839.621317805] [agv_controller]: t=917.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707840.673034042] [agv_controller]: t=918.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707841.684693251] [agv_controller]: t=919.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707842.725325312] [agv_controller]: t=920.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707843.774490932] [agv_controller]: t=921.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707844.883143204] [agv_controller]: t=922.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707845.897223317] [agv_controller]: t=923.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707846.944798663] [agv_controller]: t=924.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707848.007249161] [agv_controller]: t=925.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707849.044320081] [agv_controller]: t=926.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707850.048717970] [agv_controller]: t=926.90s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707850.633428022] [yolo_node]: [yolo] Saved 9400 frames so far...
+[agv_controller-5] [INFO] [1793707851.094556401] [agv_controller]: t=927.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707852.144863540] [agv_controller]: t=928.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707853.197469680] [agv_controller]: t=929.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707854.240088272] [agv_controller]: t=930.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707855.295131151] [agv_controller]: t=931.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707856.295791355] [agv_controller]: t=932.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707857.350937303] [agv_controller]: t=933.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707858.396790767] [agv_controller]: t=934.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707859.405956156] [agv_controller]: t=935.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707860.408924401] [agv_controller]: t=936.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707861.409759324] [agv_controller]: t=937.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707861.817382765] [yolo_node]: [yolo] Saved 9500 frames so far...
+[agv_controller-5] [INFO] [1793707862.454688933] [agv_controller]: t=938.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707863.509071670] [agv_controller]: t=938.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707864.559037420] [agv_controller]: t=939.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707865.604931532] [agv_controller]: t=940.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707866.649457444] [agv_controller]: t=941.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707867.705708351] [agv_controller]: t=942.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707868.750228898] [agv_controller]: t=943.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707869.803388071] [agv_controller]: t=944.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707870.850324471] [agv_controller]: t=945.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707871.907198656] [agv_controller]: t=946.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707872.941668289] [agv_controller]: t=947.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707873.079344239] [yolo_node]: [yolo] Saved 9600 frames so far...
+[agv_controller-5] [INFO] [1793707873.980448567] [agv_controller]: t=948.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707875.026446733] [agv_controller]: t=949.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707876.077748255] [agv_controller]: t=950.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707877.127342878] [agv_controller]: t=951.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707878.128810443] [agv_controller]: t=952.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707879.134432669] [agv_controller]: t=952.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707880.298244666] [agv_controller]: t=953.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707881.346664987] [agv_controller]: t=954.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707882.399008583] [agv_controller]: t=955.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707883.438912711] [agv_controller]: t=956.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707884.259542209] [yolo_node]: [yolo] Saved 9700 frames so far...
+[agv_controller-5] [INFO] [1793707884.449786083] [agv_controller]: t=957.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707885.462471839] [agv_controller]: t=958.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707886.520975528] [agv_controller]: t=959.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707887.571695561] [agv_controller]: t=960.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707888.582190106] [agv_controller]: t=961.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707889.638493506] [agv_controller]: t=962.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707890.678907026] [agv_controller]: t=963.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707891.721445985] [agv_controller]: t=964.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707892.722380718] [agv_controller]: t=964.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707893.725340832] [agv_controller]: t=965.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707894.761672566] [agv_controller]: t=966.80s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707895.450155849] [yolo_node]: [yolo] Saved 9800 frames so far...
+[agv_controller-5] [INFO] [1793707895.813934590] [agv_controller]: t=967.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707896.823719606] [agv_controller]: t=968.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707897.864329380] [agv_controller]: t=969.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707898.916097308] [agv_controller]: t=970.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707899.948833065] [agv_controller]: t=971.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707900.955557736] [agv_controller]: t=972.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707902.014286092] [agv_controller]: t=973.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707903.026962397] [agv_controller]: t=974.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707904.073662842] [agv_controller]: t=975.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707905.133342850] [agv_controller]: t=975.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707906.138232123] [agv_controller]: t=976.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707906.767645956] [yolo_node]: [yolo] Saved 9900 frames so far...
+[agv_controller-5] [INFO] [1793707907.173858282] [agv_controller]: t=977.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707908.220810627] [agv_controller]: t=978.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707909.264323709] [agv_controller]: t=979.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707910.313711758] [agv_controller]: t=980.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707911.321849728] [agv_controller]: t=981.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707912.371561416] [agv_controller]: t=982.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707913.385713534] [agv_controller]: t=983.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707914.438882096] [agv_controller]: t=984.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707915.479189328] [agv_controller]: t=985.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707916.535924246] [agv_controller]: t=986.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707917.576459944] [agv_controller]: t=987.10s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707917.942224375] [yolo_node]: [yolo] Saved 10000 frames so far...
+[agv_controller-5] [INFO] [1793707918.582484578] [agv_controller]: t=988.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707919.628645261] [agv_controller]: t=988.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707920.677259520] [agv_controller]: t=989.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707921.723843847] [agv_controller]: t=990.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707922.767378832] [agv_controller]: t=991.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707923.806258549] [agv_controller]: t=992.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707924.840294742] [agv_controller]: t=993.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707925.882995704] [agv_controller]: t=994.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707926.926338210] [agv_controller]: t=995.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707927.938393644] [agv_controller]: t=996.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707928.947325254] [agv_controller]: t=997.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707929.092379894] [yolo_node]: [yolo] Saved 10100 frames so far...
+[agv_controller-5] [INFO] [1793707930.002070858] [agv_controller]: t=998.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707931.008214881] [agv_controller]: t=999.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707932.049795977] [agv_controller]: t=1000.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707933.102304571] [agv_controller]: t=1001.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707934.104301787] [agv_controller]: t=1001.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707935.144871957] [agv_controller]: t=1002.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707936.205920855] [agv_controller]: t=1003.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707937.245178523] [agv_controller]: t=1004.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707938.246674235] [agv_controller]: t=1005.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707939.292938902] [agv_controller]: t=1006.55s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707940.256363224] [yolo_node]: [yolo] Saved 10200 frames so far...
+[agv_controller-5] [INFO] [1793707940.335233524] [agv_controller]: t=1007.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707941.383424464] [agv_controller]: t=1008.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707942.398812495] [agv_controller]: t=1009.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707943.440469570] [agv_controller]: t=1010.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707944.497294463] [agv_controller]: t=1011.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707945.500724198] [agv_controller]: t=1012.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707946.545308165] [agv_controller]: t=1013.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707947.598551207] [agv_controller]: t=1013.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707948.605321411] [agv_controller]: t=1014.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707949.611728124] [agv_controller]: t=1015.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707950.613302698] [agv_controller]: t=1016.55s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707951.583296664] [yolo_node]: [yolo] Saved 10300 frames so far...
+[agv_controller-5] [INFO] [1793707951.657462533] [agv_controller]: t=1017.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707952.664678228] [agv_controller]: t=1018.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707953.716073356] [agv_controller]: t=1019.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707954.766376573] [agv_controller]: t=1020.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707955.814309176] [agv_controller]: t=1021.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707956.853637117] [agv_controller]: t=1022.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707957.863224561] [agv_controller]: t=1023.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707958.863565531] [agv_controller]: t=1023.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707959.864118534] [agv_controller]: t=1024.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707960.913080157] [agv_controller]: t=1025.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707961.916463909] [agv_controller]: t=1026.65s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707962.893985541] [yolo_node]: [yolo] Saved 10400 frames so far...
+[agv_controller-5] [INFO] [1793707962.921611636] [agv_controller]: t=1027.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707963.963351013] [agv_controller]: t=1028.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707965.012746046] [agv_controller]: t=1029.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707966.121645224] [agv_controller]: t=1030.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707967.127743698] [agv_controller]: t=1031.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707968.167980825] [agv_controller]: t=1032.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707969.174691793] [agv_controller]: t=1033.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707970.221356945] [agv_controller]: t=1034.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707971.266922491] [agv_controller]: t=1035.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707972.311707066] [agv_controller]: t=1035.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707973.355809772] [agv_controller]: t=1036.90s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707974.053157311] [yolo_node]: [yolo] Saved 10500 frames so far...
+[agv_controller-5] [INFO] [1793707974.355970439] [agv_controller]: t=1037.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707975.359944735] [agv_controller]: t=1038.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707976.410703046] [agv_controller]: t=1039.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707977.412474599] [agv_controller]: t=1040.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707978.455325377] [agv_controller]: t=1041.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707979.457790573] [agv_controller]: t=1042.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707980.511555947] [agv_controller]: t=1043.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707981.511622880] [agv_controller]: t=1044.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707982.553804955] [agv_controller]: t=1045.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707983.560267629] [agv_controller]: t=1046.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707984.602815015] [agv_controller]: t=1046.95s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707985.247472062] [yolo_node]: [yolo] Saved 10600 frames so far...
+[agv_controller-5] [INFO] [1793707985.605918071] [agv_controller]: t=1047.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707986.608818993] [agv_controller]: t=1048.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707987.639876615] [agv_controller]: t=1049.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707988.646226364] [agv_controller]: t=1050.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707989.685574201] [agv_controller]: t=1051.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707990.689202297] [agv_controller]: t=1052.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707991.733308222] [agv_controller]: t=1053.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707992.775615453] [agv_controller]: t=1054.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707993.818433379] [agv_controller]: t=1055.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707994.878942735] [agv_controller]: t=1056.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707995.883077666] [agv_controller]: t=1056.95s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793707996.524420640] [yolo_node]: [yolo] Saved 10700 frames so far...
+[agv_controller-5] [INFO] [1793707996.883266982] [agv_controller]: t=1057.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707997.930745236] [agv_controller]: t=1058.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793707998.989436285] [agv_controller]: t=1059.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708000.027741114] [agv_controller]: t=1060.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708001.080461345] [agv_controller]: t=1061.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708002.119729907] [agv_controller]: t=1062.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708003.263591894] [agv_controller]: t=1063.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708004.311066281] [agv_controller]: t=1064.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708005.311093720] [agv_controller]: t=1065.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708006.368021421] [agv_controller]: t=1066.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708007.412063371] [agv_controller]: t=1067.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708007.662143936] [yolo_node]: [yolo] Saved 10800 frames so far...
+[agv_controller-5] [INFO] [1793708008.449792752] [agv_controller]: t=1068.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708009.500412843] [agv_controller]: t=1069.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708010.549235456] [agv_controller]: t=1070.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708011.594570166] [agv_controller]: t=1071.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708012.641299838] [agv_controller]: t=1071.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708013.690671559] [agv_controller]: t=1072.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708014.739844427] [agv_controller]: t=1073.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708015.779005820] [agv_controller]: t=1074.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708016.828728980] [agv_controller]: t=1075.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708017.837195640] [agv_controller]: t=1076.65s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708018.806743456] [yolo_node]: [yolo] Saved 10900 frames so far...
+[agv_controller-5] [INFO] [1793708018.878171266] [agv_controller]: t=1077.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708019.932237598] [agv_controller]: t=1078.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708020.980168690] [agv_controller]: t=1079.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708022.034981964] [agv_controller]: t=1080.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708023.077877717] [agv_controller]: t=1081.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708024.127551948] [agv_controller]: t=1082.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708025.177340071] [agv_controller]: t=1083.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708026.179231533] [agv_controller]: t=1084.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708027.188441646] [agv_controller]: t=1085.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708028.210795469] [agv_controller]: t=1085.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708029.249810836] [agv_controller]: t=1086.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708030.123959178] [yolo_node]: [yolo] Saved 11000 frames so far...
+[agv_controller-5] [INFO] [1793708030.296985636] [agv_controller]: t=1087.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708031.348684025] [agv_controller]: t=1088.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708032.389670401] [agv_controller]: t=1089.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708033.440747824] [agv_controller]: t=1090.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708034.448265116] [agv_controller]: t=1091.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708035.494540825] [agv_controller]: t=1092.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708036.546975605] [agv_controller]: t=1093.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708037.554591929] [agv_controller]: t=1094.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708038.601944523] [agv_controller]: t=1095.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708039.643151325] [agv_controller]: t=1096.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708040.684798868] [agv_controller]: t=1097.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708041.274963015] [yolo_node]: [yolo] Saved 11100 frames so far...
+[agv_controller-5] [INFO] [1793708041.687414688] [agv_controller]: t=1097.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708042.742143953] [agv_controller]: t=1098.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708043.743716742] [agv_controller]: t=1099.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708044.788157756] [agv_controller]: t=1100.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708045.843395492] [agv_controller]: t=1101.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708046.877685409] [agv_controller]: t=1102.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708047.926076119] [agv_controller]: t=1103.55s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793708048.704088526] [controller_node]: UKF yolo update failed!
+[agv_controller-5] [INFO] [1793708048.962520950] [agv_controller]: t=1104.40s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793708049.098502521] [controller_node]: UKF: 5 consecutive rejections - re-seeding
+[agv_controller-5] [INFO] [1793708049.972435122] [agv_controller]: t=1105.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708050.976077259] [agv_controller]: t=1106.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708052.015488474] [agv_controller]: t=1106.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708053.044095677] [agv_controller]: t=1107.65s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708053.156062462] [yolo_node]: [yolo] Saved 11200 frames so far...
+[agv_controller-5] [INFO] [1793708054.054622797] [agv_controller]: t=1108.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708055.106483808] [agv_controller]: t=1109.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708056.112227373] [agv_controller]: t=1110.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708057.133715327] [agv_controller]: t=1110.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708058.194656837] [agv_controller]: t=1111.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708059.214389135] [agv_controller]: t=1112.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708060.246912836] [agv_controller]: t=1113.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708061.286997580] [agv_controller]: t=1114.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708062.335795496] [agv_controller]: t=1115.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708063.360277393] [agv_controller]: t=1116.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708064.418571343] [agv_controller]: t=1117.15s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708065.168378492] [yolo_node]: [yolo] Saved 11300 frames so far...
+[agv_controller-5] [INFO] [1793708065.459974181] [agv_controller]: t=1118.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708066.486172679] [agv_controller]: t=1118.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708067.496300287] [agv_controller]: t=1119.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708068.519052613] [agv_controller]: t=1120.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708069.536620082] [agv_controller]: t=1121.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708070.578234962] [agv_controller]: t=1122.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708071.595607682] [agv_controller]: t=1123.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708072.634239152] [agv_controller]: t=1124.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708073.640874231] [agv_controller]: t=1125.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708074.668278672] [agv_controller]: t=1126.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708075.708233367] [agv_controller]: t=1127.20s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708076.495096314] [yolo_node]: [yolo] Saved 11400 frames so far...
+[agv_controller-5] [INFO] [1793708076.734270617] [agv_controller]: t=1128.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708077.746521415] [agv_controller]: t=1129.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708078.795854700] [agv_controller]: t=1130.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708079.848412652] [agv_controller]: t=1131.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708080.878680398] [agv_controller]: t=1132.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708081.992171722] [agv_controller]: t=1132.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708083.024672537] [agv_controller]: t=1133.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708084.077525145] [agv_controller]: t=1134.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708085.123572433] [agv_controller]: t=1135.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708086.181565992] [agv_controller]: t=1136.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708087.219560435] [agv_controller]: t=1137.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708087.586045423] [yolo_node]: [yolo] Saved 11500 frames so far...
+[agv_controller-5] [INFO] [1793708088.265698697] [agv_controller]: t=1138.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708089.290375301] [agv_controller]: t=1139.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708090.343265097] [agv_controller]: t=1140.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708091.384644385] [agv_controller]: t=1141.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708092.427548039] [agv_controller]: t=1142.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708093.468935954] [agv_controller]: t=1143.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708094.523254753] [agv_controller]: t=1144.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708095.563156860] [agv_controller]: t=1145.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708096.611076445] [agv_controller]: t=1146.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708097.647505077] [agv_controller]: t=1147.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708098.649285427] [agv_controller]: t=1147.90s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708098.779906797] [yolo_node]: [yolo] Saved 11600 frames so far...
+[agv_controller-5] [INFO] [1793708099.672873975] [agv_controller]: t=1148.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708100.719411963] [agv_controller]: t=1149.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708101.724314881] [agv_controller]: t=1150.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708102.767247010] [agv_controller]: t=1151.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708103.798542506] [agv_controller]: t=1152.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708104.840052704] [agv_controller]: t=1153.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708105.853167646] [agv_controller]: t=1154.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708106.878567367] [agv_controller]: t=1155.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708107.916119872] [agv_controller]: t=1156.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708108.964745581] [agv_controller]: t=1157.35s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708109.829989396] [yolo_node]: [yolo] Saved 11700 frames so far...
+[agv_controller-5] [INFO] [1793708109.969359512] [agv_controller]: t=1158.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708111.007913577] [agv_controller]: t=1159.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708112.062114167] [agv_controller]: t=1160.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708113.073751224] [agv_controller]: t=1161.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708114.108923450] [agv_controller]: t=1161.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708115.150688904] [agv_controller]: t=1162.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708116.152138672] [agv_controller]: t=1163.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708117.177270754] [agv_controller]: t=1164.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708118.193765724] [agv_controller]: t=1165.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708119.202317118] [agv_controller]: t=1166.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708120.306622465] [agv_controller]: t=1167.60s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708120.887053724] [yolo_node]: [yolo] Saved 11800 frames so far...
+[agv_controller-5] [INFO] [1793708121.350660472] [agv_controller]: t=1168.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708122.394147077] [agv_controller]: t=1169.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708123.422552410] [agv_controller]: t=1170.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708124.448797632] [agv_controller]: t=1171.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708125.495296064] [agv_controller]: t=1172.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708126.498879178] [agv_controller]: t=1173.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708127.516099387] [agv_controller]: t=1174.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708128.569433516] [agv_controller]: t=1175.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708129.582486984] [agv_controller]: t=1176.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708130.608635311] [agv_controller]: t=1177.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708131.611469071] [agv_controller]: t=1178.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708131.741905442] [yolo_node]: [yolo] Saved 11900 frames so far...
+[agv_controller-5] [INFO] [1793708132.630870425] [agv_controller]: t=1178.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708133.680929659] [agv_controller]: t=1179.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708134.703223837] [agv_controller]: t=1180.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708135.764698916] [agv_controller]: t=1181.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708136.772804857] [agv_controller]: t=1182.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708137.822916895] [agv_controller]: t=1183.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708138.836379977] [agv_controller]: t=1184.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708139.848715548] [agv_controller]: t=1185.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708140.857590063] [agv_controller]: t=1186.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708141.894844568] [agv_controller]: t=1187.50s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708142.550944277] [yolo_node]: [yolo] Saved 12000 frames so far...
+[agv_controller-5] [INFO] [1793708142.902628895] [agv_controller]: t=1188.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708143.969110083] [agv_controller]: t=1189.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708144.971913231] [agv_controller]: t=1190.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708145.997402666] [agv_controller]: t=1191.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708147.016967503] [agv_controller]: t=1192.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708148.020375333] [agv_controller]: t=1193.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708149.060127142] [agv_controller]: t=1194.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708150.112450645] [agv_controller]: t=1195.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708151.135009332] [agv_controller]: t=1196.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708152.182456548] [agv_controller]: t=1196.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708153.193011818] [agv_controller]: t=1197.90s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708153.543515398] [yolo_node]: [yolo] Saved 12100 frames so far...
+[agv_controller-5] [INFO] [1793708154.237343790] [agv_controller]: t=1198.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708155.267108859] [agv_controller]: t=1199.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708156.297440958] [agv_controller]: t=1200.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708157.360144166] [agv_controller]: t=1201.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708158.403189328] [agv_controller]: t=1202.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708159.409663135] [agv_controller]: t=1203.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708160.452043592] [agv_controller]: t=1204.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708161.466816062] [agv_controller]: t=1205.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708162.483462698] [agv_controller]: t=1206.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708163.501670547] [agv_controller]: t=1207.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708164.514227079] [agv_controller]: t=1208.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708164.641744998] [yolo_node]: [yolo] Saved 12200 frames so far...
+[agv_controller-5] [INFO] [1793708165.531992381] [agv_controller]: t=1209.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708166.534083179] [agv_controller]: t=1210.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708167.556964611] [agv_controller]: t=1211.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708168.572241583] [agv_controller]: t=1212.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708169.593490321] [agv_controller]: t=1213.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708170.615600098] [agv_controller]: t=1214.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708171.669395359] [agv_controller]: t=1214.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708172.701728210] [agv_controller]: t=1215.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708173.748645737] [agv_controller]: t=1216.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708174.797683861] [agv_controller]: t=1217.70s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708175.590992251] [yolo_node]: [yolo] Saved 12300 frames so far...
+[agv_controller-5] [INFO] [1793708175.840725975] [agv_controller]: t=1218.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708176.846597723] [agv_controller]: t=1219.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708177.892692301] [agv_controller]: t=1220.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708178.944854611] [agv_controller]: t=1221.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708179.978379838] [agv_controller]: t=1222.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708181.035981485] [agv_controller]: t=1223.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708182.076703638] [agv_controller]: t=1224.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708183.124969880] [agv_controller]: t=1225.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708184.161080521] [agv_controller]: t=1226.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708185.220915029] [agv_controller]: t=1227.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708186.241381692] [agv_controller]: t=1228.00s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708186.704163320] [yolo_node]: [yolo] Saved 12400 frames so far...
+[agv_controller-5] [INFO] [1793708187.262865801] [agv_controller]: t=1228.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708188.292448121] [agv_controller]: t=1229.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708189.326968089] [agv_controller]: t=1230.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708190.349439413] [agv_controller]: t=1231.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708191.371167011] [agv_controller]: t=1232.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708192.399595683] [agv_controller]: t=1233.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708193.413249788] [agv_controller]: t=1234.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708194.437726028] [agv_controller]: t=1235.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708195.456648336] [agv_controller]: t=1236.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708196.465468631] [agv_controller]: t=1237.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708197.489738563] [agv_controller]: t=1238.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708197.742414054] [yolo_node]: [yolo] Saved 12500 frames so far...
+[agv_controller-5] [INFO] [1793708198.514294143] [agv_controller]: t=1239.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708199.548642131] [agv_controller]: t=1240.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708200.599599846] [agv_controller]: t=1241.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708201.648658176] [agv_controller]: t=1242.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708202.700672790] [agv_controller]: t=1242.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708203.747815143] [agv_controller]: t=1243.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708204.792515204] [agv_controller]: t=1244.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708205.825074095] [agv_controller]: t=1245.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708206.830232742] [agv_controller]: t=1246.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708207.876007734] [agv_controller]: t=1247.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708208.909405080] [agv_controller]: t=1248.50s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708208.938770834] [yolo_node]: [yolo] Saved 12600 frames so far...
+[agv_controller-5] [INFO] [1793708209.962731108] [agv_controller]: t=1249.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708210.990461630] [agv_controller]: t=1250.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708212.031911379] [agv_controller]: t=1251.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708213.068336228] [agv_controller]: t=1252.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708214.077919728] [agv_controller]: t=1253.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708215.128737881] [agv_controller]: t=1254.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708216.172236010] [agv_controller]: t=1255.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708217.219522106] [agv_controller]: t=1255.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708218.264382893] [agv_controller]: t=1256.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708219.304002791] [agv_controller]: t=1257.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708220.057960676] [yolo_node]: [yolo] Saved 12700 frames so far...
+[agv_controller-5] [INFO] [1793708220.352726131] [agv_controller]: t=1258.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708221.411769150] [agv_controller]: t=1259.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708222.455660026] [agv_controller]: t=1260.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708223.508462734] [agv_controller]: t=1261.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708224.554136184] [agv_controller]: t=1262.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708225.605905732] [agv_controller]: t=1263.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708226.640713182] [agv_controller]: t=1264.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708227.694269767] [agv_controller]: t=1265.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708228.741602999] [agv_controller]: t=1266.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708229.744977823] [agv_controller]: t=1267.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708230.786419729] [agv_controller]: t=1268.15s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708231.190017252] [yolo_node]: [yolo] Saved 12800 frames so far...
+[agv_controller-5] [INFO] [1793708231.817389565] [agv_controller]: t=1269.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708232.859689285] [agv_controller]: t=1270.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708233.909537968] [agv_controller]: t=1271.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708234.947471585] [agv_controller]: t=1271.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708236.001731026] [agv_controller]: t=1272.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708237.008195009] [agv_controller]: t=1273.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708238.050374884] [agv_controller]: t=1274.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708239.093194360] [agv_controller]: t=1275.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708240.137138523] [agv_controller]: t=1276.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708241.140161141] [agv_controller]: t=1277.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708242.175447979] [agv_controller]: t=1278.30s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708242.443325191] [yolo_node]: [yolo] Saved 12900 frames so far...
+[agv_controller-5] [INFO] [1793708243.233162465] [agv_controller]: t=1279.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708244.280653387] [agv_controller]: t=1280.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708245.327294442] [agv_controller]: t=1281.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708246.377936162] [agv_controller]: t=1282.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708247.436633840] [agv_controller]: t=1283.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708248.476046306] [agv_controller]: t=1284.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708249.519209503] [agv_controller]: t=1284.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708250.521414273] [agv_controller]: t=1285.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708251.528904800] [agv_controller]: t=1286.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708252.568982972] [agv_controller]: t=1287.60s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708253.594787466] [yolo_node]: [yolo] Saved 13000 frames so far...
+[agv_controller-5] [INFO] [1793708253.621509457] [agv_controller]: t=1288.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708254.657587671] [agv_controller]: t=1289.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708255.706943590] [agv_controller]: t=1290.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708256.714112020] [agv_controller]: t=1291.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708257.748947743] [agv_controller]: t=1292.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708258.781726069] [agv_controller]: t=1293.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708259.816093183] [agv_controller]: t=1294.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708260.855410315] [agv_controller]: t=1295.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708261.906692022] [agv_controller]: t=1296.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708262.914675010] [agv_controller]: t=1296.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708263.965824622] [agv_controller]: t=1297.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708264.828237553] [yolo_node]: [yolo] Saved 13100 frames so far...
+[agv_controller-5] [INFO] [1793708265.014181448] [agv_controller]: t=1298.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708266.059735897] [agv_controller]: t=1299.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708267.104159391] [agv_controller]: t=1300.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708268.161284572] [agv_controller]: t=1301.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708269.207495468] [agv_controller]: t=1302.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708270.261912831] [agv_controller]: t=1303.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708271.303885334] [agv_controller]: t=1304.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708272.348799509] [agv_controller]: t=1305.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708273.399038971] [agv_controller]: t=1306.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708274.491150145] [agv_controller]: t=1307.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708275.537354324] [agv_controller]: t=1308.15s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708276.065744414] [yolo_node]: [yolo] Saved 13200 frames so far...
+[agv_controller-5] [INFO] [1793708276.543177055] [agv_controller]: t=1309.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708277.586413977] [agv_controller]: t=1310.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708278.629908240] [agv_controller]: t=1310.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708279.672409916] [agv_controller]: t=1311.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708280.723914884] [agv_controller]: t=1312.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793708281.771686328] [agv_controller]: t=1313.80s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708282.292257571] [yolo_node]: Interrupt received, creating video before shutdown (press Ctrl+C again to force quit)...
+[yolo-2] [INFO] [1793708282.292578771] [yolo_node]: Shutting down gracefully...
+[yolo-2] [INFO] [1793708282.293017218] [yolo_node]: [yolo] Creating video from 13256 frames (estimated duration: 1325.6s at 10.0fps)...
+[yolo-2] [INFO] [1793708282.553815528] [yolo_node]: [yolo] Writing frame 100/13256 to video...
+[agv_controller-5] [INFO] [1793708282.792597756] [agv_controller]: t=1314.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708282.917714893] [yolo_node]: [yolo] Writing frame 200/13256 to video...
+[yolo-2] [INFO] [1793708283.258286436] [yolo_node]: [yolo] Writing frame 300/13256 to video...
+[yolo-2] [INFO] [1793708283.586546278] [yolo_node]: [yolo] Writing frame 400/13256 to video...
+[agv_controller-5] [INFO] [1793708283.813261733] [agv_controller]: t=1315.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708283.911813704] [yolo_node]: [yolo] Writing frame 500/13256 to video...
+[yolo-2] [INFO] [1793708284.195038873] [yolo_node]: [yolo] Writing frame 600/13256 to video...
+[yolo-2] [INFO] [1793708284.515046932] [yolo_node]: [yolo] Writing frame 700/13256 to video...
+[yolo-2] [INFO] [1793708284.793492865] [yolo_node]: [yolo] Writing frame 800/13256 to video...
+[agv_controller-5] [INFO] [1793708284.834959931] [agv_controller]: t=1316.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708285.047090913] [yolo_node]: [yolo] Writing frame 900/13256 to video...
+[yolo-2] [INFO] [1793708285.298698458] [yolo_node]: [yolo] Writing frame 1000/13256 to video...
+[yolo-2] [INFO] [1793708285.543353183] [yolo_node]: [yolo] Writing frame 1100/13256 to video...
+[yolo-2] [INFO] [1793708285.777161629] [yolo_node]: [yolo] Writing frame 1200/13256 to video...
+[agv_controller-5] [INFO] [1793708285.856531780] [agv_controller]: t=1317.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708286.017815810] [yolo_node]: [yolo] Writing frame 1300/13256 to video...
+[yolo-2] [INFO] [1793708286.258728382] [yolo_node]: [yolo] Writing frame 1400/13256 to video...
+[yolo-2] [INFO] [1793708286.486503762] [yolo_node]: [yolo] Writing frame 1500/13256 to video...
+[yolo-2] [INFO] [1793708286.709748501] [yolo_node]: [yolo] Writing frame 1600/13256 to video...
+[agv_controller-5] [INFO] [1793708286.877827979] [agv_controller]: t=1318.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708286.935755638] [yolo_node]: [yolo] Writing frame 1700/13256 to video...
+[yolo-2] [INFO] [1793708287.182521887] [yolo_node]: [yolo] Writing frame 1800/13256 to video...
+[yolo-2] [INFO] [1793708287.436611098] [yolo_node]: [yolo] Writing frame 1900/13256 to video...
+[yolo-2] [INFO] [1793708287.673833922] [yolo_node]: [yolo] Writing frame 2000/13256 to video...
+[agv_controller-5] [INFO] [1793708287.898828606] [agv_controller]: t=1319.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708287.905321090] [yolo_node]: [yolo] Writing frame 2100/13256 to video...
+[yolo-2] [INFO] [1793708288.137385069] [yolo_node]: [yolo] Writing frame 2200/13256 to video...
+[yolo-2] [INFO] [1793708288.395828184] [yolo_node]: [yolo] Writing frame 2300/13256 to video...
+[yolo-2] [INFO] [1793708288.643744213] [yolo_node]: [yolo] Writing frame 2400/13256 to video...
+[yolo-2] [INFO] [1793708288.903895858] [yolo_node]: [yolo] Writing frame 2500/13256 to video...
+[agv_controller-5] [INFO] [1793708288.919878864] [agv_controller]: t=1320.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708289.157508481] [yolo_node]: [yolo] Writing frame 2600/13256 to video...
+[yolo-2] [INFO] [1793708289.424723130] [yolo_node]: [yolo] Writing frame 2700/13256 to video...
+[yolo-2] [INFO] [1793708289.699675914] [yolo_node]: [yolo] Writing frame 2800/13256 to video...
+[agv_controller-5] [INFO] [1793708289.942647244] [agv_controller]: t=1321.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708290.002201706] [yolo_node]: [yolo] Writing frame 2900/13256 to video...
+[yolo-2] [INFO] [1793708290.329124599] [yolo_node]: [yolo] Writing frame 3000/13256 to video...
+[yolo-2] [INFO] [1793708290.640690635] [yolo_node]: [yolo] Writing frame 3100/13256 to video...
+[yolo-2] [INFO] [1793708290.962387777] [yolo_node]: [yolo] Writing frame 3200/13256 to video...
+[agv_controller-5] [INFO] [1793708290.964243319] [agv_controller]: t=1322.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708291.262561654] [yolo_node]: [yolo] Writing frame 3300/13256 to video...
+[yolo-2] [INFO] [1793708291.535956345] [yolo_node]: [yolo] Writing frame 3400/13256 to video...
+[yolo-2] [INFO] [1793708291.856749962] [yolo_node]: [yolo] Writing frame 3500/13256 to video...
+[agv_controller-5] [INFO] [1793708291.985580080] [agv_controller]: t=1323.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708292.164591684] [yolo_node]: [yolo] Writing frame 3600/13256 to video...
+[yolo-2] [INFO] [1793708292.470722082] [yolo_node]: [yolo] Writing frame 3700/13256 to video...
+[yolo-2] [INFO] [1793708292.805203868] [yolo_node]: [yolo] Writing frame 3800/13256 to video...
+[agv_controller-5] [INFO] [1793708293.006743178] [agv_controller]: t=1324.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708293.148476056] [yolo_node]: [yolo] Writing frame 3900/13256 to video...
+[yolo-2] [INFO] [1793708293.482902126] [yolo_node]: [yolo] Writing frame 4000/13256 to video...
+[yolo-2] [INFO] [1793708293.852309990] [yolo_node]: [yolo] Writing frame 4100/13256 to video...
+[agv_controller-5] [INFO] [1793708294.027126206] [agv_controller]: t=1325.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708294.172996067] [yolo_node]: [yolo] Writing frame 4200/13256 to video...
+[yolo-2] [INFO] [1793708294.461041318] [yolo_node]: [yolo] Writing frame 4300/13256 to video...
+[yolo-2] [INFO] [1793708294.746365461] [yolo_node]: [yolo] Writing frame 4400/13256 to video...
+[agv_controller-5] [INFO] [1793708295.047784988] [agv_controller]: t=1326.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708295.054806029] [yolo_node]: [yolo] Writing frame 4500/13256 to video...
+[yolo-2] [INFO] [1793708295.348035233] [yolo_node]: [yolo] Writing frame 4600/13256 to video...
+[yolo-2] [INFO] [1793708295.634521068] [yolo_node]: [yolo] Writing frame 4700/13256 to video...
+[yolo-2] [INFO] [1793708295.890647052] [yolo_node]: [yolo] Writing frame 4800/13256 to video...
+[agv_controller-5] [INFO] [1793708296.069212860] [agv_controller]: t=1327.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708296.138201248] [yolo_node]: [yolo] Writing frame 4900/13256 to video...
+[yolo-2] [INFO] [1793708296.389252737] [yolo_node]: [yolo] Writing frame 5000/13256 to video...
+[yolo-2] [INFO] [1793708296.668604909] [yolo_node]: [yolo] Writing frame 5100/13256 to video...
+[yolo-2] [INFO] [1793708296.936817438] [yolo_node]: [yolo] Writing frame 5200/13256 to video...
+[agv_controller-5] [INFO] [1793708297.091559337] [agv_controller]: t=1328.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708297.183051413] [yolo_node]: [yolo] Writing frame 5300/13256 to video...
+[yolo-2] [INFO] [1793708297.421149592] [yolo_node]: [yolo] Writing frame 5400/13256 to video...
+[yolo-2] [INFO] [1793708297.663828718] [yolo_node]: [yolo] Writing frame 5500/13256 to video...
+[yolo-2] [INFO] [1793708297.915350829] [yolo_node]: [yolo] Writing frame 5600/13256 to video...
+[agv_controller-5] [INFO] [1793708298.115702308] [agv_controller]: t=1329.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708298.182399870] [yolo_node]: [yolo] Writing frame 5700/13256 to video...
+[yolo-2] [INFO] [1793708298.417412173] [yolo_node]: [yolo] Writing frame 5800/13256 to video...
+[yolo-2] [INFO] [1793708298.644607724] [yolo_node]: [yolo] Writing frame 5900/13256 to video...
+[yolo-2] [INFO] [1793708298.873728970] [yolo_node]: [yolo] Writing frame 6000/13256 to video...
+[yolo-2] [INFO] [1793708299.099945760] [yolo_node]: [yolo] Writing frame 6100/13256 to video...
+[agv_controller-5] [INFO] [1793708299.135021157] [agv_controller]: t=1330.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708299.326956311] [yolo_node]: [yolo] Writing frame 6200/13256 to video...
+[yolo-2] [INFO] [1793708299.558470921] [yolo_node]: [yolo] Writing frame 6300/13256 to video...
+[yolo-2] [INFO] [1793708299.775256779] [yolo_node]: [yolo] Writing frame 6400/13256 to video...
+[yolo-2] [INFO] [1793708299.993303690] [yolo_node]: [yolo] Writing frame 6500/13256 to video...
+[agv_controller-5] [INFO] [1793708300.155841543] [agv_controller]: t=1331.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708300.221599504] [yolo_node]: [yolo] Writing frame 6600/13256 to video...
+[yolo-2] [INFO] [1793708300.438138525] [yolo_node]: [yolo] Writing frame 6700/13256 to video...
+[yolo-2] [INFO] [1793708300.663130299] [yolo_node]: [yolo] Writing frame 6800/13256 to video...
+[yolo-2] [INFO] [1793708300.919332316] [yolo_node]: [yolo] Writing frame 6900/13256 to video...
+[agv_controller-5] [INFO] [1793708301.177202702] [agv_controller]: t=1332.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708301.185434898] [yolo_node]: [yolo] Writing frame 7000/13256 to video...
+[yolo-2] [INFO] [1793708301.400241745] [yolo_node]: [yolo] Writing frame 7100/13256 to video...
+[yolo-2] [INFO] [1793708301.621936774] [yolo_node]: [yolo] Writing frame 7200/13256 to video...
+[yolo-2] [INFO] [1793708301.836479614] [yolo_node]: [yolo] Writing frame 7300/13256 to video...
+[yolo-2] [INFO] [1793708302.072599198] [yolo_node]: [yolo] Writing frame 7400/13256 to video...
+[agv_controller-5] [INFO] [1793708302.197959576] [agv_controller]: t=1333.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708302.304839837] [yolo_node]: [yolo] Writing frame 7500/13256 to video...
+[yolo-2] [INFO] [1793708302.539995036] [yolo_node]: [yolo] Writing frame 7600/13256 to video...
+[yolo-2] [INFO] [1793708302.773549945] [yolo_node]: [yolo] Writing frame 7700/13256 to video...
+[yolo-2] [INFO] [1793708302.999253438] [yolo_node]: [yolo] Writing frame 7800/13256 to video...
+[agv_controller-5] [INFO] [1793708303.223417083] [agv_controller]: t=1334.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708303.250352968] [yolo_node]: [yolo] Writing frame 7900/13256 to video...
+[yolo-2] [INFO] [1793708303.505476975] [yolo_node]: [yolo] Writing frame 8000/13256 to video...
+[yolo-2] [INFO] [1793708303.842143294] [yolo_node]: [yolo] Writing frame 8100/13256 to video...
+[yolo-2] [INFO] [1793708304.133914778] [yolo_node]: [yolo] Writing frame 8200/13256 to video...
+[agv_controller-5] [INFO] [1793708304.241451980] [agv_controller]: t=1335.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708304.423983730] [yolo_node]: [yolo] Writing frame 8300/13256 to video...
+[yolo-2] [INFO] [1793708304.661697462] [yolo_node]: [yolo] Writing frame 8400/13256 to video...
+[yolo-2] [INFO] [1793708304.949144979] [yolo_node]: [yolo] Writing frame 8500/13256 to video...
+[yolo-2] [INFO] [1793708305.206226166] [yolo_node]: [yolo] Writing frame 8600/13256 to video...
+[agv_controller-5] [INFO] [1793708305.262932765] [agv_controller]: t=1336.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708305.465311097] [yolo_node]: [yolo] Writing frame 8700/13256 to video...
+[yolo-2] [INFO] [1793708305.719278178] [yolo_node]: [yolo] Writing frame 8800/13256 to video...
+[yolo-2] [INFO] [1793708305.972438869] [yolo_node]: [yolo] Writing frame 8900/13256 to video...
+[yolo-2] [INFO] [1793708306.268389593] [yolo_node]: [yolo] Writing frame 9000/13256 to video...
+[agv_controller-5] [INFO] [1793708306.282973137] [agv_controller]: t=1337.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708306.586605223] [yolo_node]: [yolo] Writing frame 9100/13256 to video...
+[yolo-2] [INFO] [1793708306.905146115] [yolo_node]: [yolo] Writing frame 9200/13256 to video...
+[yolo-2] [INFO] [1793708307.176065154] [yolo_node]: [yolo] Writing frame 9300/13256 to video...
+[agv_controller-5] [INFO] [1793708307.305423750] [agv_controller]: t=1338.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708307.469022453] [yolo_node]: [yolo] Writing frame 9400/13256 to video...
+[yolo-2] [INFO] [1793708307.769878664] [yolo_node]: [yolo] Writing frame 9500/13256 to video...
+[yolo-2] [INFO] [1793708308.061092386] [yolo_node]: [yolo] Writing frame 9600/13256 to video...
+[agv_controller-5] [INFO] [1793708308.325500702] [agv_controller]: t=1339.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708308.331605989] [yolo_node]: [yolo] Writing frame 9700/13256 to video...
+[yolo-2] [INFO] [1793708308.604958431] [yolo_node]: [yolo] Writing frame 9800/13256 to video...
+[yolo-2] [INFO] [1793708308.873454924] [yolo_node]: [yolo] Writing frame 9900/13256 to video...
+[yolo-2] [INFO] [1793708309.135298035] [yolo_node]: [yolo] Writing frame 10000/13256 to video...
+[agv_controller-5] [INFO] [1793708309.348047910] [agv_controller]: t=1340.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708309.474446442] [yolo_node]: [yolo] Writing frame 10100/13256 to video...
+[yolo-2] [INFO] [1793708309.744568564] [yolo_node]: [yolo] Writing frame 10200/13256 to video...
+[yolo-2] [INFO] [1793708310.055653019] [yolo_node]: [yolo] Writing frame 10300/13256 to video...
+[yolo-2] [INFO] [1793708310.315340521] [yolo_node]: [yolo] Writing frame 10400/13256 to video...
+[agv_controller-5] [INFO] [1793708310.368373361] [agv_controller]: t=1341.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708310.573777469] [yolo_node]: [yolo] Writing frame 10500/13256 to video...
+[yolo-2] [INFO] [1793708310.841369875] [yolo_node]: [yolo] Writing frame 10600/13256 to video...
+[yolo-2] [INFO] [1793708311.107211759] [yolo_node]: [yolo] Writing frame 10700/13256 to video...
+[yolo-2] [INFO] [1793708311.369100151] [yolo_node]: [yolo] Writing frame 10800/13256 to video...
+[agv_controller-5] [INFO] [1793708311.390410808] [agv_controller]: t=1342.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708311.625884556] [yolo_node]: [yolo] Writing frame 10900/13256 to video...
+[yolo-2] [INFO] [1793708311.878988738] [yolo_node]: [yolo] Writing frame 11000/13256 to video...
+[yolo-2] [INFO] [1793708312.131610984] [yolo_node]: [yolo] Writing frame 11100/13256 to video...
+[yolo-2] [INFO] [1793708312.398040426] [yolo_node]: [yolo] Writing frame 11200/13256 to video...
+[agv_controller-5] [INFO] [1793708312.410852741] [agv_controller]: t=1343.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708312.649836737] [yolo_node]: [yolo] Writing frame 11300/13256 to video...
+[yolo-2] [INFO] [1793708312.900070871] [yolo_node]: [yolo] Writing frame 11400/13256 to video...
+[yolo-2] [INFO] [1793708313.153435184] [yolo_node]: [yolo] Writing frame 11500/13256 to video...
+[yolo-2] [INFO] [1793708313.413283351] [yolo_node]: [yolo] Writing frame 11600/13256 to video...
+[agv_controller-5] [INFO] [1793708313.433085515] [agv_controller]: t=1344.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708313.684281994] [yolo_node]: [yolo] Writing frame 11700/13256 to video...
+[yolo-2] [INFO] [1793708313.952707479] [yolo_node]: [yolo] Writing frame 11800/13256 to video...
+[yolo-2] [INFO] [1793708314.215224990] [yolo_node]: [yolo] Writing frame 11900/13256 to video...
+[agv_controller-5] [INFO] [1793708314.453934048] [agv_controller]: t=1345.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708314.474751280] [yolo_node]: [yolo] Writing frame 12000/13256 to video...
+[yolo-2] [INFO] [1793708314.734729763] [yolo_node]: [yolo] Writing frame 12100/13256 to video...
+[yolo-2] [INFO] [1793708315.021458635] [yolo_node]: [yolo] Writing frame 12200/13256 to video...
+[yolo-2] [INFO] [1793708315.285920525] [yolo_node]: [yolo] Writing frame 12300/13256 to video...
+[agv_controller-5] [INFO] [1793708315.475097381] [agv_controller]: t=1346.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708315.541320343] [yolo_node]: [yolo] Writing frame 12400/13256 to video...
+[yolo-2] [INFO] [1793708315.800596570] [yolo_node]: [yolo] Writing frame 12500/13256 to video...
+[yolo-2] [INFO] [1793708316.063863944] [yolo_node]: [yolo] Writing frame 12600/13256 to video...
+[yolo-2] [INFO] [1793708316.331390332] [yolo_node]: [yolo] Writing frame 12700/13256 to video...
+[agv_controller-5] [INFO] [1793708316.497004325] [agv_controller]: t=1347.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708316.610483791] [yolo_node]: [yolo] Writing frame 12800/13256 to video...
+[yolo-2] [INFO] [1793708316.870883019] [yolo_node]: [yolo] Writing frame 12900/13256 to video...
+[yolo-2] [INFO] [1793708317.138044383] [yolo_node]: [yolo] Writing frame 13000/13256 to video...
+[yolo-2] [INFO] [1793708317.410742171] [yolo_node]: [yolo] Writing frame 13100/13256 to video...
+[agv_controller-5] [INFO] [1793708317.516868781] [agv_controller]: t=1348.75s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793708317.674123724] [yolo_node]: [yolo] Writing frame 13200/13256 to video...
+[yolo-2] [INFO] [1793708317.822372489] [yolo_node]: [yolo] Video created successfully: /home/luke/ros2_ws/yolo_detection_video_20261103_225255.mp4
+[yolo-2] [INFO] [1793708317.822636524] [yolo_node]: [yolo] Final video stats: 13256 frames written, duration: 1325.6s
+[yolo-2] [INFO] [1793708317.822802890] [yolo_node]: [yolo] Cleaning up temporary frame files...
+[agv_controller-5] [INFO] [1793708318.541847049] [agv_controller]: t=1349.75s  v=  0.00 m/s  w= 0.000 rad/s
+[INFO] [yolo-2]: process has finished cleanly [pid 40893]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [agv_controller-5]: sending signal 'SIGINT' to process[agv_controller-5]
+[INFO] [controller-4]: sending signal 'SIGINT' to process[controller-4]
+[INFO] [gimbal_controller-3]: sending signal 'SIGINT' to process[gimbal_controller-3]
+[INFO] [parameter_bridge-1]: sending signal 'SIGINT' to process[parameter_bridge-1]
+[controller-4] [INFO] [1793708319.342003578] [controller_node]: Shutting down...
+[controller-4] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[gimbal_controller-3] [INFO] [1793708319.342270651] [gimbal_controller_node]: Interrupt received, shutting down...
+[gimbal_controller-3] [INFO] [1793708319.342546125] [gimbal_controller_node]: Shutting down gracefully...
+[controller-4] [INFO] [1793708319.342736628] [controller_node]: CSV file closed: controller_20261103_225252.csv
+[controller-4] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[parameter_bridge-1] [INFO] [1793708319.342649674] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[controller-4] Traceback (most recent call last):
+[controller-4]   File "/home/luke/ros2_ws/install/auto_lander/lib/auto_lander/controller", line 33, in <module>
+[controller-4]     sys.exit(load_entry_point('auto_lander==0.0.0', 'console_scripts', 'controller')())
+[controller-4]   File "/home/luke/ros2_ws/install/auto_lander/lib/python3.10/site-packages/auto_lander/controller.py", line 2131, in main
+[controller-4]     rclpy.shutdown()
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 130, in shutdown
+[controller-4]     _shutdown(context=context)
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/utilities.py", line 58, in shutdown
+[controller-4]     return context.shutdown()
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/context.py", line 102, in shutdown
+[controller-4]     self.__context.shutdown()
+[controller-4] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+[INFO] [parameter_bridge-1]: process has finished cleanly [pid 40891]
+[INFO] [agv_controller-5]: process has finished cleanly [pid 41117]
+[INFO] [gimbal_controller-3]: process has finished cleanly [pid 40895]
+[ERROR] [controller-4]: process has died [pid 40897, exit code 1, cmd '/home/luke/ros2_ws/install/auto_lander/lib/auto_lander/controller --ros-args -r __node:=controller_node --params-file /tmp/launch_params_7se03boo --params-file /tmp/launch_params_z8_zde6b --params-file /tmp/launch_params_p4ehvo3u --params-file /tmp/launch_params_5b5ce6r6 --params-file /tmp/launch_params_qy68oav1 --params-file /tmp/launch_params_tts9rl8w --params-file /tmp/launch_params_6fe6_lbt --params-file /tmp/launch_params_p_qxoz98 --params-file /tmp/launch_params_r8cl50xx --params-file /tmp/launch_params_t4xuaxsg --params-file /tmp/launch_params_6flpginy --params-file /tmp/launch_params_ncoepz7u --params-file /tmp/launch_params_3cj7haiw --params-file /tmp/launch_params_z406jqvu --params-file /tmp/launch_params_wv1y7k87 --params-file /tmp/launch_params_jh6_kihf --params-file /tmp/launch_params_x3c14fb6 --params-file /tmp/launch_params_mmlv3862 --params-file /tmp/launch_params_1q8rp8u4 --params-file /tmp/launch_params_luhvqm9q --params-file /tmp/launch_params_6lswsdcj --params-file /tmp/launch_params_s7wf3rlk --params-file /tmp/launch_params_4l0kizmn --params-file /tmp/launch_params_k7kjk8g0 --params-file /tmp/launch_params_d2_9arc4 --params-file /tmp/launch_params_rmy13k4t --params-file /tmp/launch_params_u7di3azv --params-file /tmp/launch_params_5r5lgvdi --params-file /tmp/launch_params_6fe195th --params-file /tmp/launch_params_wp7xw40a --params-file /tmp/launch_params_2dcjjfi6 --params-file /tmp/launch_params_lquz9gqi --params-file /tmp/launch_params_ila9tsv8 --params-file /tmp/launch_params_6gpmoi_8 --params-file /tmp/launch_params_r_6kr6is --params-file /tmp/launch_params_806zvybl --params-file /tmp/launch_params__syn3mt9 --params-file /tmp/launch_params_yfalw96o --params-file /tmp/launch_params_fowyks1p --params-file /tmp/launch_params_5hjad37z --params-file /tmp/launch_params_gchi2mlz --params-file /tmp/launch_params_oo6y0std --params-file /tmp/launch_params_kldwukd6 --params-file /tmp/launch_params_hwx87ywi --params-file /tmp/launch_params_c1_l5x6z --params-file /tmp/launch_params_y29bb2bl --params-file /tmp/launch_params_g8blc00w --params-file /tmp/launch_params_7_e7fzwg --params-file /tmp/launch_params_roaaornt --params-file /tmp/launch_params_wpatmt87 --params-file /tmp/launch_params_2_n0jjr7 --params-file /tmp/launch_params_31449yb3 --params-file /tmp/launch_params_kkosru0v --params-file /tmp/launch_params_sly0dcqy --params-file /tmp/launch_params_fk7y9ah4 --params-file /tmp/launch_params_xz9mevc6 --params-file /tmp/launch_params_l3x3hezr'].

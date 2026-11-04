@@ -1,0 +1,125 @@
+[INFO] [launch]: All log files can be found below /home/luke/.ros/log/2026-11-04-00-17-20-790287-luke-Vivobook-ASUSLaptop-K3605VU-K3605VU-51472
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [parameter_bridge-1]: process started with pid [51489]
+[INFO] [yolo-2]: process started with pid [51491]
+[INFO] [gimbal_controller-3]: process started with pid [51493]
+[INFO] [controller-4]: process started with pid [51495]
+[parameter_bridge-1] [INFO] [1793711840.903731699] [gz_bridge]: Creating GZ->ROS Bridge: [/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image (gz.msgs.Image) -> /world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image (sensor_msgs/msg/Image)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793711840.905399550] [gz_bridge]: Creating GZ->ROS Bridge: [/landing_pad/odom (gz.msgs.Odometry) -> /landing_pad/odom (nav_msgs/msg/Odometry)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793711840.907523621] [gz_bridge]: Creating GZ->ROS Bridge: [/model/iris_with_gimbal/odometry (gz.msgs.Odometry) -> /model/iris_with_gimbal/odometry (nav_msgs/msg/Odometry)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793711840.907867455] [gz_bridge]: Creating ROS->GZ Bridge: [/cmd_rover_vel (geometry_msgs/msg/Twist) -> /cmd_rover_vel (gz.msgs.Twist)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793711840.908351782] [gz_bridge]: Creating GZ->ROS Bridge: [/clock (gz.msgs.Clock) -> /clock (rosgraph_msgs/msg/Clock)] (Lazy 0)
+[gimbal_controller-3] [INFO] [1793711841.389214999] [gimbal_controller_node]: Gimbal controller rate: 20.0 Hz
+[gimbal_controller-3] [INFO] [1793711841.389453712] [gimbal_controller_node]: Gimbal target ages: apriltag=0.15s, yolo=0.5s
+[controller-4] SWEEP-TEMP mode=mesh roof_agl=3.000
+[controller-4] [INFO] [1793711841.449684358] [controller_node]: CSV logging initialized: controller_20261104_001721.csv
+[controller-4] [INFO] [1793711841.449920633] [controller_node]: Auto Lander (callbacks) started
+[yolo-2] [INFO] [1793711843.241248105] [yolo_node]: YOLO processing rate: 10.0 Hz
+[yolo-2] [INFO] [1793711843.241569845] [yolo_node]: YOLO parameters: model=ugv_yolo11n_openvino_model, conf=0.50, input=640x360, car_id=0
+[yolo-2] [INFO] [1793711843.241800607] [yolo_node]: Video recording parameters: save_frames=False, create_video=True, video_fps=10.0
+[yolo-2] [INFO] [1793711843.242191708] [yolo_node]: Loading YOLO model: ugv_yolo11n_openvino_model
+[yolo-2] [INFO] [1793711843.651850967] [yolo_node]: YOLO model loaded successfully. Classes: {0: 'Car'}
+[yolo-2] [INFO] [1793711843.666358105] [yolo_node]: YOLO node started, waiting for /camera/image_raw (published directly, or republished by apriltag.py when it's running in webcam mode)...
+[yolo-2] [INFO] [1793711843.686012253] [yolo_node]: [yolo] Frame saving ENABLED - Directory: /home/luke/ros2_ws/yolo_frames_20261104_001723
+[yolo-2] [INFO] [1793711843.686265750] [yolo_node]: [yolo] Video will be saved as: /home/luke/ros2_ws/yolo_detection_video_20261104_001723.mp4
+[controller-4] [INFO] [1793711851.719713601] [controller_node]: GUIDED confirmed by FCU.
+[yolo-2] [INFO] [1793711856.306401252] [yolo_node]: [yolo] Saved 100 frames so far...
+[controller-4] [INFO] [1793711862.097497380] [controller_node]: Takeoff complete at 8.01 m - Starting 200.0s safety timer
+[INFO] [agv_controller-5]: process started with pid [51722]
+[agv_controller-5] [INFO] [1793711866.252451723] [agv_controller]: Turn shape: {'circle_yaw_rate': 0.2, 'sin_peak_yaw_rate': 0.2, 'sin_period': 12.0, 'sin_phase_deg': 0.0, 'mbzirc_radius_m': 16.0, 'mbzirc_centre_distance_m': 54.0, 'mbzirc_duration_s': 1200.0}
+[agv_controller-5] [INFO] [1793711866.252835935] [agv_controller]: Trajectory 'none' at 0.0 km/h (turns after +20 m past the cruise line), duration: 1.00s, loop=False, noise=False
+[parameter_bridge-1] [INFO] [1793711866.253730774] [gz_bridge]: Passing message from ROS geometry_msgs/msg/Twist to Gazebo gz.msgs.Twist (showing msg only once per type)
+[agv_controller-5] [INFO] [1793711866.253904606] [agv_controller]: t= 0.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711867.271998640] [agv_controller]: t= 0.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711868.321686496] [agv_controller]: t= 1.90s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711868.837623654] [yolo_node]: [yolo] Saved 200 frames so far...
+[agv_controller-5] [INFO] [1793711869.349697215] [agv_controller]: t= 2.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711870.395432626] [agv_controller]: t= 3.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711871.448686457] [agv_controller]: t= 4.65s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793711872.029919292] [controller_node]: UKF yolo update failed!
+[agv_controller-5] [INFO] [1793711872.454946462] [agv_controller]: t= 5.55s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793711872.535429155] [controller_node]: UKF: 5 consecutive rejections - re-seeding
+[agv_controller-5] [INFO] [1793711873.527412671] [agv_controller]: t= 6.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711874.567262961] [agv_controller]: t= 7.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711875.602578775] [agv_controller]: t= 8.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711876.656758924] [agv_controller]: t= 9.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711877.696398919] [agv_controller]: t=10.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711878.725440149] [agv_controller]: t=11.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711879.759576394] [agv_controller]: t=12.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711880.136716990] [yolo_node]: [yolo] Saved 300 frames so far...
+[agv_controller-5] [INFO] [1793711880.812880050] [agv_controller]: t=13.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711881.853306793] [agv_controller]: t=13.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711882.897707624] [agv_controller]: t=14.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711883.941018337] [agv_controller]: t=15.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711884.996959682] [agv_controller]: t=16.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711886.033149533] [agv_controller]: t=17.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711887.084808467] [agv_controller]: t=18.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711888.084864044] [agv_controller]: t=19.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711889.118823757] [agv_controller]: t=20.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711890.156175537] [agv_controller]: t=21.50s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711891.130535857] [yolo_node]: [yolo] Saved 400 frames so far...
+[agv_controller-5] [INFO] [1793711891.158695948] [agv_controller]: t=22.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711892.205538271] [agv_controller]: t=23.25s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711893.261128084] [agv_controller]: t=24.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711894.288641909] [agv_controller]: t=25.15s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711895.342312829] [agv_controller]: t=26.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711896.376440945] [agv_controller]: t=27.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711897.432756373] [agv_controller]: t=28.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711898.470074530] [agv_controller]: t=28.95s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711899.513493749] [agv_controller]: t=29.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711900.556222276] [agv_controller]: t=30.85s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711901.598711592] [agv_controller]: t=31.80s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711902.333975529] [yolo_node]: [yolo] Saved 500 frames so far...
+[agv_controller-5] [INFO] [1793711902.640700767] [agv_controller]: t=32.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711903.687367679] [agv_controller]: t=33.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711904.734623352] [agv_controller]: t=34.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711905.789443156] [agv_controller]: t=35.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711906.829605723] [agv_controller]: t=36.45s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711907.874439890] [agv_controller]: t=37.40s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711908.922805079] [agv_controller]: t=38.35s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711909.976298900] [agv_controller]: t=39.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711910.981318511] [agv_controller]: t=40.20s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711911.981426321] [agv_controller]: t=41.10s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711912.524283577] [yolo_node]: Interrupt received, creating video before shutdown (press Ctrl+C again to force quit)...
+[yolo-2] [INFO] [1793711912.524642244] [yolo_node]: Shutting down gracefully...
+[yolo-2] [INFO] [1793711912.525007463] [yolo_node]: [yolo] Creating video from 591 frames (estimated duration: 59.1s at 10.0fps)...
+[yolo-2] [INFO] [1793711912.819831510] [yolo_node]: [yolo] Writing frame 100/591 to video...
+[agv_controller-5] [INFO] [1793711912.997857225] [agv_controller]: t=42.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711913.172038467] [yolo_node]: [yolo] Writing frame 200/591 to video...
+[yolo-2] [INFO] [1793711913.423984137] [yolo_node]: [yolo] Writing frame 300/591 to video...
+[yolo-2] [INFO] [1793711913.665992713] [yolo_node]: [yolo] Writing frame 400/591 to video...
+[yolo-2] [INFO] [1793711913.975278888] [yolo_node]: [yolo] Writing frame 500/591 to video...
+[agv_controller-5] [INFO] [1793711914.018826507] [agv_controller]: t=43.05s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711914.237558100] [yolo_node]: [yolo] Video created successfully: /home/luke/ros2_ws/yolo_detection_video_20261104_001723.mp4
+[yolo-2] [INFO] [1793711914.237796496] [yolo_node]: [yolo] Final video stats: 591 frames written, duration: 59.1s
+[yolo-2] [INFO] [1793711914.237971843] [yolo_node]: [yolo] Cleaning up temporary frame files...
+[agv_controller-5] [INFO] [1793711915.041355035] [agv_controller]: t=44.05s  v=  0.00 m/s  w= 0.000 rad/s
+[INFO] [yolo-2]: process has finished cleanly [pid 51491]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [agv_controller-5]: sending signal 'SIGINT' to process[agv_controller-5]
+[INFO] [controller-4]: sending signal 'SIGINT' to process[controller-4]
+[INFO] [gimbal_controller-3]: sending signal 'SIGINT' to process[gimbal_controller-3]
+[INFO] [parameter_bridge-1]: sending signal 'SIGINT' to process[parameter_bridge-1]
+[controller-4] [INFO] [1793711915.530578180] [controller_node]: Shutting down...
+[controller-4] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[controller-4] [INFO] [1793711915.531007788] [controller_node]: CSV file closed: controller_20261104_001721.csv
+[controller-4] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[gimbal_controller-3] [INFO] [1793711915.531264212] [gimbal_controller_node]: Interrupt received, shutting down...
+[parameter_bridge-1] [INFO] [1793711915.531331059] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[gimbal_controller-3] [INFO] [1793711915.531589523] [gimbal_controller_node]: Shutting down gracefully...
+[controller-4] Traceback (most recent call last):
+[controller-4]   File "/home/luke/ros2_ws/install/auto_lander/lib/auto_lander/controller", line 33, in <module>
+[controller-4]     sys.exit(load_entry_point('auto_lander==0.0.0', 'console_scripts', 'controller')())
+[controller-4]   File "/home/luke/ros2_ws/install/auto_lander/lib/python3.10/site-packages/auto_lander/controller.py", line 2131, in main
+[controller-4]     rclpy.shutdown()
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 130, in shutdown
+[controller-4]     _shutdown(context=context)
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/utilities.py", line 58, in shutdown
+[controller-4]     return context.shutdown()
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/context.py", line 102, in shutdown
+[controller-4]     self.__context.shutdown()
+[controller-4] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+[INFO] [parameter_bridge-1]: process has finished cleanly [pid 51489]
+[INFO] [agv_controller-5]: process has finished cleanly [pid 51722]
+[INFO] [gimbal_controller-3]: process has finished cleanly [pid 51493]
+[ERROR] [controller-4]: process has died [pid 51495, exit code 1, cmd '/home/luke/ros2_ws/install/auto_lander/lib/auto_lander/controller --ros-args -r __node:=controller_node --params-file /tmp/launch_params_unzhiuyg --params-file /tmp/launch_params_sxygkqw9 --params-file /tmp/launch_params_80sbtz38 --params-file /tmp/launch_params_pz38f9pp --params-file /tmp/launch_params_rp59vamx --params-file /tmp/launch_params_a2o5bpag --params-file /tmp/launch_params_td7c8eo8 --params-file /tmp/launch_params_hn3puj74 --params-file /tmp/launch_params_dzv3_jp4 --params-file /tmp/launch_params_phu57tkc --params-file /tmp/launch_params_yfnuv_ry --params-file /tmp/launch_params_u2b8bjdy --params-file /tmp/launch_params_jir_1e2v --params-file /tmp/launch_params_eq5lkioj --params-file /tmp/launch_params_8qyjk_a3 --params-file /tmp/launch_params_pmip5fvg --params-file /tmp/launch_params__00n23m4 --params-file /tmp/launch_params_n_1lnhc7 --params-file /tmp/launch_params_essgecor --params-file /tmp/launch_params_tjo7uuft --params-file /tmp/launch_params_9ea__qn3 --params-file /tmp/launch_params_w63nxumw --params-file /tmp/launch_params_6qqhgam7 --params-file /tmp/launch_params_9vupu3na --params-file /tmp/launch_params_h0j5_pfo --params-file /tmp/launch_params__u79m_w8 --params-file /tmp/launch_params__hrd2hh6 --params-file /tmp/launch_params_m0cxwo4i --params-file /tmp/launch_params_wo8ydhys --params-file /tmp/launch_params_lrlsgvh9 --params-file /tmp/launch_params_xzbyj744 --params-file /tmp/launch_params_9lk8rvs_ --params-file /tmp/launch_params_420xtn1_ --params-file /tmp/launch_params_wqqfsejd --params-file /tmp/launch_params_a4f6lc3w --params-file /tmp/launch_params_f6oh392n --params-file /tmp/launch_params_xigfm8bn --params-file /tmp/launch_params_befbuag_ --params-file /tmp/launch_params_r9x0cg92 --params-file /tmp/launch_params_p14bait0 --params-file /tmp/launch_params_hq040ln1 --params-file /tmp/launch_params_233x1g8g --params-file /tmp/launch_params_9xzugk5n --params-file /tmp/launch_params_swgb4dcl --params-file /tmp/launch_params_dxak2za4 --params-file /tmp/launch_params_f6nh_l6j --params-file /tmp/launch_params_1yjktqh3 --params-file /tmp/launch_params_h2m901u4 --params-file /tmp/launch_params_97e73xl3 --params-file /tmp/launch_params_rbttoxpv --params-file /tmp/launch_params_jmahnom4 --params-file /tmp/launch_params_vydhioy6 --params-file /tmp/launch_params_hmc_um9v --params-file /tmp/launch_params_cv11sqj9 --params-file /tmp/launch_params_kft90ruj --params-file /tmp/launch_params_tucizq94 --params-file /tmp/launch_params_u5m9m7yo'].

@@ -15,7 +15,7 @@ Outputs (saved to ./plots next to the script):
                                 pixel-space box update are shaded.
     trajectory_2d.png        –  2-D XY path: true / filter / raw measurements
     consistency_analysis.png –  NIS / NEES vs time and distributions
-    pipeline_latency.png     –  latency per pipeline stage
+    pipeline_latency.png     –  latency per pipeline stage, one sample per measurement
 
 Car frame convention (same as the body-frame offset below):
     +longitudinal = along the car's heading (estimate ahead of truth)
@@ -34,6 +34,22 @@ Three like-for-like comparisons are drawn:
 
 YOLO raw positions only exist while the UKF is in fallback (box-fit) mode; in box
 mode the raw measurement is pixel edges, so no YOLO raw points are plotted there.
+
+The YOLO box-derived yaw (`landing_pad_yolo_car_glob_yaw_raw`, logged only on frames
+where it was actually fed to the UKF) is drawn on the yaw panel with its ±1σ
+(`landing_pad_yolo_car_yaw_sigma_raw`). Errors beyond ±90° are a front/back flip and
+are ringed in black; the summary counts them and gives the mean normalised squared
+error (err/σ)², which should be about 1 if the yaw σ is honest.
+
+Pipeline latency: new logs write one sample per measurement (`<stream>_<stage>_lag`,
+NaN on every other row), and every stage is plotted on its own:
+    YOLO:     transport, queue, inference, post-process, wait, UKF update
+    AprilTag: transport, processing, wait, UKF update
+Older SITL logs measured some stages inside a single callback while the sim clock was
+frozen, so those read 0 on every sample. Such stages are detected and dropped (their
+time, where it was counted at all, sits in the wait stage, which is relabelled), and
+a note is printed. Legacy logs repeated the three old stage columns on every row;
+those are de-duplicated on the raw measurement stamp before averaging.
 
 Dependencies:
     pip install pandas numpy matplotlib scipy
@@ -92,22 +108,68 @@ STREAMS = [
     ('yolo_car', 'YOLO car fit', YOLO_CAR_C, 'landing_pad_yolo_car'),
 ]
 
-LAG_COLOURS = {
-    # AprilTag pipeline
-    'cam_to_image_lag': '#e63946',
-    'image_to_transform_lag': '#f4a261',
-    'transform_to_UKF_lag': '#2a9d8f',
-    'apriltag_total_lag': '#6a4c93',
-
-    # YOLO pipeline
-    'yolo_cam_to_image_lag': '#d95f02',
-    'yolo_image_to_transform_lag': '#7570b3',
-    'yolo_transform_to_UKF_lag': '#1b9e77',
-    'yolo_total_lag': '#e7298a',
-
-    # Measurement age (the CSV's historical `total_lag` field)
-    'total_lag': '#555555',
+# ── Pipeline latency columns ──
+# New logs: (stream label, column prefix, marker, [(stage suffix, stage label), ...]).
+# Columns are f'{prefix}_{suffix}_lag' plus f'{prefix}_total_lag'.
+LAG_STREAMS = [
+    ('AprilTag', 'apriltag', 'x', [
+        ('transport',  'Transport'),
+        ('processing', 'Processing'),
+        ('wait',       'Wait'),
+        ('apply',      'UKF update'),
+    ]),
+    ('YOLO', 'yolo', 'o', [
+        ('transport',  'Transport'),
+        ('queue',      'Queue'),
+        ('inference',  'Inference'),
+        ('post',       'Post-process'),
+        ('wait',       'Wait'),
+        ('apply',      'UKF update'),
+    ]),
+]
+# Frozen-clock fallbacks for older SITL logs. Before the fixes in yolo.py (timer in its
+# own callback group) and controller.py (apply timed with perf_counter), these stages
+# were measured inside one callback while the sim clock stood still, so they read 0 on
+# every sample. When the probe stage reads 0 on >= FROZEN_ZERO_FRACTION of samples, the
+# listed stages are dropped and the named stages relabelled. YOLO inference time then
+# sat in the wait stage; the old UKF update time wasn't counted anywhere (total
+# excludes it too), so it is just dropped. Post-process is legitimately ~0 ms (sub-ms
+# work on a 1 ms sim clock), so it is never a probe.
+FROZEN_ZERO_FRACTION = 0.95
+FROZEN_RULES = {
+    'YOLO': [
+        ('inference', dict(drop=['Inference', 'Post-process'],
+                           relabel={'Wait': 'Wait + inference'})),
+        ('apply',     dict(drop=['UKF update'])),
+    ],
+    'AprilTag': [
+        ('apply',     dict(drop=['UKF update'])),
+    ],
 }
+# Legacy logs: stage columns and the raw stamp used to de-duplicate repeated rows
+LEGACY_LAG = {
+    'AprilTag': (['cam_to_image_lag', 'image_to_transform_lag', 'transform_to_UKF_lag'],
+                 'landing_pad_april_raw_stamp'),
+    'YOLO':     (['yolo_cam_to_image_lag', 'yolo_image_to_transform_lag',
+                  'yolo_transform_to_UKF_lag'],
+                 'landing_pad_yolo_car_raw_stamp'),
+}
+LEGACY_STAGE_LABELS = ['Camera → Image', 'Image → Transform', 'Transform → UKF']
+
+STAGE_COLOURS = {
+    'Transport':         '#e63946',
+    'Queue':             '#f4a261',
+    'Processing':        '#7570b3',
+    'Inference':         '#7570b3',
+    'Post-process':      '#8ecae6',
+    'Wait':              '#2a9d8f',
+    'Wait + inference':  '#2a9d8f',
+    'UKF update':        '#264653',
+    'Camera → Image':    '#e63946',
+    'Image → Transform': '#7570b3',
+    'Transform → UKF':   '#2a9d8f',
+}
+TOTAL_COLOURS = {'AprilTag': '#6a4c93', 'YOLO': '#e7298a'}
 
 # Per-state sigma colours (7 states)
 SIGMA_COLOURS = {
@@ -146,19 +208,27 @@ def clean_true_position(x, y, t, thresh=OUTLIER_SPEED_THRESH, passes=3):
     """
     Remove single-frame position glitches from the true trajectory.
 
-    A row is flagged as an outlier when the implied speed ENTERING that row
-    AND the implied speed LEAVING that row both exceed `thresh`.  Flagged
-    points are replaced by linear interpolation.  Multiple passes handle
-    back-to-back glitches.
+    A row is flagged as an outlier when it jumps away from its neighbours and
+    back: its distance from the straight line between the previous and next rows,
+    divided by the step time, exceeds `thresh`. Fast but smooth relative motion (the
+    drone closing on a 50 km/h car) stays on that line and is kept; a speed test on
+    each side alone would flag it. Flagged points are replaced by linear
+    interpolation. Multiple passes handle back-to-back glitches.
     """
     x = x.copy().astype(float)
     y = y.copy().astype(float)
+    t = np.asarray(t, dtype=float)
     bad_global = np.zeros(len(x), dtype=bool)
 
     for _ in range(passes):
-        speed = np.hypot(np.diff(x), np.diff(y)) / np.diff(t)
         bad = np.zeros(len(x), dtype=bool)
-        bad[1:-1] = (speed[:-1] > thresh) & (speed[1:] > thresh)
+        if len(x) > 2:
+            span = t[2:] - t[:-2]
+            w = np.where(span > 0, (t[1:-1] - t[:-2]) / np.where(span > 0, span, 1.0), 0.5)
+            mx = x[:-2] + w * (x[2:] - x[:-2])
+            my = y[:-2] + w * (y[2:] - y[:-2])
+            dt = np.maximum(np.minimum(t[1:-1] - t[:-2], t[2:] - t[1:-1]), 1e-3)
+            bad[1:-1] = np.hypot(x[1:-1] - mx, y[1:-1] - my) / dt > thresh
         bad_global |= bad
 
         idx  = np.arange(len(x))
@@ -205,6 +275,72 @@ def new_measurement_mask(stamp):
     is_new = np.ones(len(stamp), dtype=bool)
     is_new[1:] = stamp[1:] != stamp[:-1]
     return (stamp > 0) & is_new
+
+
+def latency_streams(df):
+    """ Per-measurement pipeline latency samples, one dict per stream present:
+            name, marker, t (row time, s), stages [(label, ms array)], total (ms array)
+
+        New logs fill the latency columns on one row per measurement (NaN elsewhere),
+        so the samples are simply the rows where the total is finite. Legacy logs
+        repeated the old three stage columns on every row; there, keep the first row of
+        each raw stamp and take the total as the sum of the stages.
+    """
+    t_all = df['timestamp'].to_numpy()
+    out = []
+
+    def stage_values(col):
+        """ A stage column, or NaN if this log predates it. """
+        if col in df.columns:
+            return df[col].to_numpy(dtype=float)
+        return np.full(len(df), np.nan)
+
+    def frozen(v):
+        """ True if a stage reads 0 on (nearly) every sample: a frozen sim clock. """
+        v = v[np.isfinite(v)]
+        return v.size >= 5 and np.mean(v == 0.0) >= FROZEN_ZERO_FRACTION
+
+    for name, prefix, marker, stages in LAG_STREAMS:
+        total_col = f'{prefix}_total_lag'
+        if total_col in df.columns:
+            rows = np.isfinite(df[total_col].to_numpy(dtype=float))
+            if rows.any():
+                vals = {suffix: stage_values(f'{prefix}_{suffix}_lag')[rows]
+                        for suffix, _ in stages}
+                labelled = [(label, vals[suffix]) for suffix, label in stages
+                            if np.isfinite(vals[suffix]).any()]
+
+                # Older SITL logs: drop stages timed against a frozen sim clock
+                for probe, rule in FROZEN_RULES.get(name, []):
+                    if probe in vals and frozen(vals[probe]):
+                        drop = set(rule.get('drop', []))
+                        relabel = rule.get('relabel', {})
+                        print(f"NOTE: {name} {probe} lag reads 0 on every sample "
+                              f"(sim clock frozen inside the callback in this log): "
+                              f"dropped {sorted(drop)}"
+                              + (f", relabelled {relabel}" if relabel else '') + '.')
+                        labelled = [(relabel.get(lbl, lbl), v) for lbl, v in labelled
+                                    if lbl not in drop]
+
+                out.append(dict(
+                    name=name, marker=marker, t=t_all[rows], stages=labelled,
+                    total=df[total_col].to_numpy(dtype=float)[rows],
+                ))
+            continue
+
+        cols, stamp_col = LEGACY_LAG[name]
+        if not all(c in df.columns for c in cols + [stamp_col]):
+            continue
+        rows = (new_measurement_mask(df[stamp_col].to_numpy())
+                & df[cols].notna().all(axis=1).to_numpy())
+        if not rows.any():
+            continue
+        vals = [df[c].to_numpy(dtype=float)[rows] for c in cols]
+        out.append(dict(name=name, marker=marker, t=t_all[rows],
+                        stages=list(zip(LEGACY_STAGE_LABELS, vals)),
+                        total=np.sum(vals, axis=0)))
+
+    return out
 
 
 def add_state_transitions(ax, df, time_col='timestamp', label=True):
@@ -257,7 +393,7 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
     script_dir = Path(__file__).parent
     if csv_path is None:
         csv_path = Path(sys.argv[1]) if len(sys.argv) > 1 \
-            else script_dir / 'controller_20261017_222005.csv'
+            else script_dir / 'controller_20261105_003050.csv'
     csv_path = Path(csv_path)
 
     out_dir = Path(out_dir) if out_dir is not None else script_dir / 'plots'
@@ -415,7 +551,9 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
         if f'{prefix}_rel_z_raw' in df_valid.columns:
             s['z'] = df_valid[f'{prefix}_rel_z_raw'].to_numpy(dtype=float) - tz
         if f'{prefix}_glob_yaw_raw' in df_valid.columns:
-            s['yaw'] = wrap_angle(df_valid[f'{prefix}_glob_yaw_raw'].to_numpy() - tyaw)
+            s['yaw'] = wrap_angle(df_valid[f'{prefix}_glob_yaw_raw'].to_numpy(dtype=float) - tyaw)
+        if f'{prefix}_yaw_sigma_raw' in df_valid.columns:
+            s['yaw_sigma'] = df_valid[f'{prefix}_yaw_sigma_raw'].to_numpy(dtype=float)
         streams.append(s)
 
     # ── Filter state at each YOLO image stamp (same instant as the raw point) ──
@@ -468,22 +606,8 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
     box_mode = (df_valid['yolo_box_mode'].to_numpy() == 1) if has_box_mode else None
 
     # ── Detect which covariance / latency columns are present ─────────────
-    apriltag_lag_cols = ['cam_to_image_lag', 'image_to_transform_lag', 'transform_to_UKF_lag']
-    yolo_lag_cols = ['yolo_cam_to_image_lag', 'yolo_image_to_transform_lag', 'yolo_transform_to_UKF_lag']
-
-    # A stream that was switched off (e.g. AprilTag toggled off) logs all-NaN latency
-    def has_cols(cols):
-        return all(c in df_valid.columns for c in cols) and df_valid[cols].notna().any().any()
-
-    has_apriltag_lag = has_cols(apriltag_lag_cols)
-    has_yolo_lag = has_cols(yolo_lag_cols)
-    has_meas_age = has_cols(['total_lag'])
-
-    # The CSV's `total_lag` field is measurement age, not the sum of the stages.
-    if has_apriltag_lag:
-        df_valid['apriltag_total_lag'] = df_valid[apriltag_lag_cols].sum(axis=1, min_count=1)
-    if has_yolo_lag:
-        df_valid['yolo_total_lag'] = df_valid[yolo_lag_cols].sum(axis=1, min_count=1)
+    # One sample per measurement (de-duplicated for legacy logs)
+    lat_streams = latency_streams(df_valid)
 
     sigma_cols     = [c for c in SIGMA_COLOURS if c in df_valid.columns]
     has_per_state  = len(sigma_cols) > 0
@@ -492,10 +616,8 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
     has_nis  = 'nis' in df_valid.columns
     has_nees = 'nees' in df_valid.columns
 
-    if not has_apriltag_lag and not has_yolo_lag:
-        print("WARNING: no AprilTag or YOLO latency columns found – latency overlays skipped.")
-    if not has_meas_age:
-        print("WARNING: 'total_lag' column not found – measurement-age diagnostics skipped.")
+    if not lat_streams:
+        print("WARNING: no AprilTag or YOLO latency columns found – latency analysis skipped.")
     if not has_per_state and not has_trace_only:
         print("WARNING: no covariance columns found – covar subplot skipped.")
     if 'controller_state' not in df.columns:
@@ -544,19 +666,14 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
     ax_abs.set_title('Absolute horizontal error (Euclidean norm, XY)', fontsize=10)
     ax_abs.grid(True, alpha=0.3)
 
-    lag_series = [
-        (has_apriltag_lag, 'apriltag_total_lag', 'AprilTag total pipeline', '--', 1.1, 0.75),
-        (has_yolo_lag,     'yolo_total_lag',     'YOLO total pipeline',     '-.', 1.1, 0.75),
-        (has_meas_age,     'total_lag',          'Measurement age',         ':',  0.9, 0.55),
-    ]
-    if any(on for on, *_ in lag_series):
+    if lat_streams:
         ax_lag = ax_abs.twinx()
-        for on, col, label, ls, lw, a in lag_series:
-            if on:
-                ax_lag.plot(ctrl_t, df_valid[col].to_numpy(), color=LAG_COLOURS[col],
-                            lw=lw, alpha=a, ls=ls, label=label)
-        ax_lag.set_ylabel('Latency / age (ms)', fontsize=10)
-        ax_lag.tick_params(axis='y', labelcolor=LAG_COLOURS['total_lag'])
+        for s in lat_streams:
+            ax_lag.plot(s['t'], s['total'], color=TOTAL_COLOURS[s['name']], lw=0.8,
+                        alpha=0.7, ls=':', marker=s['marker'], ms=2.5,
+                        label=f"{s['name']} total latency")
+        ax_lag.set_ylabel('Latency (ms)', fontsize=10)
+        ax_lag.tick_params(axis='y', labelcolor='#555555')
         ax_lag.set_ylim(bottom=0)
         lines_l, labels_l = ax_abs.get_legend_handles_labels()
         lines_r, labels_r = ax_lag.get_legend_handles_labels()
@@ -568,9 +685,32 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
     ax_yaw.plot(est_t, np.degrees(filt_yaw_err), color=FILT_C, lw=1.0, alpha=ALPHA,
                 label='Filter estimate')
     plot_raw(ax_yaw, 'yaw', scale=np.degrees(1.0))
+    flip_ringed = False
+    for s in streams:
+        if 'yaw' not in s:
+            continue
+        ok = s['valid'] & np.isfinite(s['yaw'])
+        if not ok.any():
+            continue
+        e_deg = np.degrees(s['yaw'][ok])
+        # ±1σ of the yaw measurement as fed to the UKF (box yaw only)
+        if 'yaw_sigma' in s:
+            sig = np.degrees(s['yaw_sigma'][ok])
+            ax_yaw.errorbar(s['t'][ok], e_deg, yerr=sig, fmt='none', ecolor=s['colour'],
+                            elinewidth=0.7, capsize=1.5, alpha=0.45)
+        # Front/back flips: the measurement picked the wrong end of the car
+        flip = np.abs(e_deg) > 90.0
+        if flip.any():
+            ax_yaw.scatter(s['t'][ok][flip], e_deg[flip], s=70, facecolors='none',
+                           edgecolors='k', linewidths=0.9, zorder=5,
+                           label=None if flip_ringed else 'Front/back flip (|err| > 90°)')
+            flip_ringed = True
     ax_yaw.axhline(0, color='0.5', ls='--', lw=0.8)
+    for lim in (-90, 90):
+        ax_yaw.axhline(lim, color='0.5', ls=':', lw=0.7)
     ax_yaw.set_ylabel('Yaw error (deg)', fontsize=10)
-    ax_yaw.set_title('Yaw error', fontsize=10)
+    ax_yaw.set_title('Yaw error  (crosses = raw yaw measurements, bars = ±1σ fed to the UKF)',
+                     fontsize=10)
     ax_yaw.grid(True, alpha=0.3)
 
     # ── Panel: per-state 1-sigma covariance ──────────────────────────────
@@ -714,45 +854,45 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
         print(f"Saved: {out3}")
 
     # ── Figure 4 – Pipeline latency analysis ───────────────────────────────
-    if has_apriltag_lag or has_yolo_lag or has_meas_age:
+    # One point per measurement; bars are the mean with ±1 std.
+    if lat_streams:
         fig4, (ax_lag_time, ax_lag_bar) = plt.subplots(1, 2, figsize=(15, 5))
         fig4.suptitle('Pipeline Latency Analysis', fontsize=14, fontweight='bold')
 
-        bar_specs = []   # (label, column)
-        for on, prefix, cols, total, ls in [
-            (has_apriltag_lag, 'AprilTag', apriltag_lag_cols, 'apriltag_total_lag', '--'),
-            (has_yolo_lag,     'YOLO',     yolo_lag_cols,     'yolo_total_lag',     '-.'),
-        ]:
-            if not on:
-                continue
-            for col, stage in zip(cols, ['Camera → Image', 'Image → Transform', 'Transform → UKF']):
-                ax_lag_time.plot(ctrl_t, df_valid[col].to_numpy(), lw=1.1, alpha=0.80,
-                                 color=LAG_COLOURS[col], label=f'{prefix} {stage}')
-                bar_specs.append((f'{prefix}\n{stage}', col))
-            ax_lag_time.plot(ctrl_t, df_valid[total].to_numpy(), lw=1.4, alpha=0.90,
-                             color=LAG_COLOURS[total], ls=ls, label=f'{prefix} total')
-            bar_specs.append((f'{prefix}\nTotal', total))
+        bar_specs = []   # (label, values, colour)
+        for s in lat_streams:
+            for label, v in s['stages']:
+                ok = np.isfinite(v)
+                ax_lag_time.plot(s['t'][ok], v[ok], ls='none', marker=s['marker'], ms=2.5,
+                                 alpha=0.75, color=STAGE_COLOURS[label],
+                                 label=f"{s['name']} {label}")
+                bar_specs.append((f"{s['name']}\n{label}", v, STAGE_COLOURS[label]))
+            ax_lag_time.plot(s['t'], s['total'], lw=0.9, marker=s['marker'], ms=2.5,
+                             alpha=0.9, color=TOTAL_COLOURS[s['name']],
+                             label=f"{s['name']} total")
+            bar_specs.append((f"{s['name']}\nTotal", s['total'], TOTAL_COLOURS[s['name']]))
 
-        if has_meas_age:
-            ax_lag_time.plot(ctrl_t, df_valid['total_lag'].to_numpy(), lw=0.9, alpha=0.55,
-                             color=LAG_COLOURS['total_lag'], ls=':', label='Measurement age')
-            bar_specs.append(('Measurement\nAge', 'total_lag'))
-
-        ax_lag_time.set_title('Latency vs Time')
+        ax_lag_time.set_title('Latency per measurement')
         ax_lag_time.set_xlabel('Time (s)')
-        ax_lag_time.set_ylabel('Latency / age (ms)')
+        ax_lag_time.set_ylabel('Latency (ms)')
+        ax_lag_time.set_ylim(bottom=0)
         ax_lag_time.grid(True, alpha=0.3)
         ax_lag_time.legend(fontsize=7, ncol=2)
 
-        mean_lags = [df_valid[col].mean() for _, col in bar_specs]
-        bars = ax_lag_bar.bar([lbl for lbl, _ in bar_specs], mean_lags,
-                              color=[LAG_COLOURS[col] for _, col in bar_specs], alpha=0.85)
-        ax_lag_bar.set_title('Mean Latency Breakdown')
-        ax_lag_bar.set_ylabel('Mean latency / age (ms)')
+        def finite(v):
+            return v[np.isfinite(v)]
+
+        mean_lags = [finite(v).mean() if finite(v).size else np.nan for _, v, _ in bar_specs]
+        std_lags = [finite(v).std() if finite(v).size else np.nan for _, v, _ in bar_specs]
+        bars = ax_lag_bar.bar([lbl for lbl, _, _ in bar_specs], mean_lags,
+                              yerr=std_lags, capsize=3,
+                              color=[c for *_, c in bar_specs], alpha=0.85)
+        ax_lag_bar.set_title('Mean latency breakdown (±1σ)')
+        ax_lag_bar.set_ylabel('Latency (ms)')
         ax_lag_bar.tick_params(axis='x', labelsize=8)
         ax_lag_bar.grid(True, axis='y', alpha=0.3)
 
-        max_mean = np.nanmax(mean_lags) if mean_lags else 1.0
+        max_mean = np.nanmax(mean_lags) if np.isfinite(mean_lags).any() else 1.0
         for bar, value in zip(bars, mean_lags):
             if np.isfinite(value):
                 ax_lag_bar.text(bar.get_x() + bar.get_width() / 2, value + 0.02 * max_mean,
@@ -782,9 +922,19 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
                 if len(vals):
                     print(f'  {name:<18s} {field:<4s} mean: {vals.mean():+.3f} {unit}   RMS: {rms(vals):.3f} {unit}')
         if 'yaw' in s:
-            vals = s['yaw'][s['valid']]
-            print(f'  {name:<18s} yaw  mean: {np.degrees(vals.mean()):+.2f}°   '
-                  f'RMS: {np.degrees(rms(vals)):.2f}°')
+            yaw_ok = s['valid'] & np.isfinite(s['yaw'])
+            vals = s['yaw'][yaw_ok]
+            if len(vals):
+                n_flip = int(np.sum(np.abs(vals) > np.pi / 2))
+                print(f'  {name:<18s} yaw  mean: {np.degrees(vals.mean()):+.2f}°   '
+                      f'RMS: {np.degrees(rms(vals)):.2f}°   n: {len(vals)}   '
+                      f'front/back flips: {n_flip}')
+                if 'yaw_sigma' in s:
+                    sig = s['yaw_sigma'][yaw_ok]
+                    good = np.isfinite(sig) & (sig > 0)
+                    if good.any():
+                        print(f'  {name:<18s} yaw  mean (err/σ)²: '
+                              f'{np.mean((vals[good] / sig[good]) ** 2):.2f}   (≈1 if σ is honest)')
         vals = s['abs'][s['valid']]
         print(f'  {name:<18s} |e|  mean: {vals.mean():.3f} m   max: {vals.max():.3f} m')
 
@@ -819,16 +969,13 @@ def main(csv_path=None, out_dir=None, window=None, show=True):
         print(f'\n=== YOLO measurement mode ===')
         print(f'  box update: {n_box}   fallback fit: {int(yolo_new.sum()) - n_box}')
 
-    for on, col, title in [
-        (has_apriltag_lag, 'apriltag_total_lag', 'AprilTag total pipeline latency'),
-        (has_yolo_lag,     'yolo_total_lag',     'YOLO total pipeline latency'),
-        (has_meas_age,     'total_lag',          'measurement age'),
-    ]:
-        if on:
-            vals = df_valid[col].to_numpy(dtype=float)
-            print(f'\n=== {title} summary ===')
-            print(f'  mean: {np.nanmean(vals):.1f} ms   max: {np.nanmax(vals):.1f} ms   '
-                  f'min: {np.nanmin(vals):.1f} ms')
+    for s in lat_streams:
+        print(f'\n=== {s["name"]} pipeline latency (ms, n = {len(s["total"])}) ===')
+        for label, v in s['stages'] + [('Total', s['total'])]:
+            v = v[np.isfinite(v)]
+            if len(v):
+                print(f'  {label:<20s} mean: {v.mean():6.1f}   std: {v.std():5.1f}   '
+                      f'p95: {np.percentile(v, 95):6.1f}   max: {v.max():6.1f}')
 
     if has_per_state:
         print('\n=== UKF per-state 1σ summary ===')

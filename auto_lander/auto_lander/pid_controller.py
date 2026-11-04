@@ -111,6 +111,7 @@ class PIDController:
         quad_vel,
         landing_pad_relative_position,
         landing_pad_relative_velocity,
+        landing_pad_acceleration=None,
     ):
         """PD/PN Controller Logic
 
@@ -128,6 +129,8 @@ class PIDController:
                                  globally aligned) (m) — 3-vector [x, y, z]
         :param landing_pad_relative_velocity: target-drone velocity v_m (m/s) (ENU
                                  globally aligned) — 3-vector [vx, vy, vz]
+        :param landing_pad_acceleration: pad acceleration (m/s^2, ENU globally aligned),
+                                 2- or 3-vector, added as feedforward (xy only). None = off
         :return: AttitudeTarget msg (attitude quaternion + thrust field interpreted by the
                  FCU as a normalised climb rate, 0.5 = hold)
         """
@@ -209,6 +212,11 @@ class PIDController:
         accel_parallel = self.Kp * u + self.Kd * du
         accel = accel_perp + accel_parallel
 
+        # Pad acceleration feedforward (xy): the acceleration needed to keep up with a
+        # turning / accelerating pad, so the PD doesn't have to hold an error to produce it
+        if landing_pad_acceleration is not None:
+            accel = accel + np.r_[np.asarray(landing_pad_acceleration, dtype=float)[:2], 0.0]
+
         # ---- Altitude: outer loop only; FCU runs vel/accel/throttle ----
         z_err = target_altitude - (-u[QUAD_State.Z])    # height-above-pad error, +up
 
@@ -236,8 +244,11 @@ class PIDController:
         thrust_field = float(np.clip(thrust_field, 0.0, 1.0))
 
         # ---- Horizontal accel -> tilt ----
-        drag_x = self.cD * quad_vel[QUAD_State.X] * abs(quad_vel[QUAD_State.X])
-        drag_y = self.cD * quad_vel[QUAD_State.Y] * abs(quad_vel[QUAD_State.Y])
+        # Quadratic drag along the velocity vector, F = cD |v| v (heading independent; the
+        # per-axis form gave only 71% of the drag when flying at 45 deg to the axes)
+        v_h = np.hypot(quad_vel[QUAD_State.X], quad_vel[QUAD_State.Y])
+        drag_x = self.cD * v_h * quad_vel[QUAD_State.X]
+        drag_y = self.cD * v_h * quad_vel[QUAD_State.Y]
 
         F_x = self.m * accel[QUAD_State.X] + drag_x
         F_y = self.m * accel[QUAD_State.Y] + drag_y

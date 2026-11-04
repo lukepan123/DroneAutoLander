@@ -3,41 +3,94 @@ from datetime import datetime
 
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import TimerAction, ExecuteProcess
+from launch.actions import TimerAction, ExecuteProcess, DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
+
+""" SITL launch: Gazebo bridge, YOLO, gimbal, controller and the scripted AGV.
+
+    e.g. ros2 launch auto_lander main_launch_sim.py trajectory:=sin speed_kmh:=40.0
+"""
+
+# ---- Camera (Gazebo iris_with_gimbal camera) ----
+CAMERA_HFOV_RAD = 2.7925268                      # 160 deg, matches the SDF sensor
+CAMERA_DISTORTION = [0.0, 0.0, 0.0, 0.0, 0.0]    # ideal pinhole in sim
+
+# Camera mount in the drone body frame. Read by the perception nodes
+# (vision_common.load_camera_mount), not by the gimbal controller.
+CAMERA_MOUNT = {
+    "camera_offset_x": 0.02,
+    "camera_offset_y": -0.01,
+    "camera_offset_z": -0.124923,
+    "camera_mount_roll": -1.5707963,
+    "camera_mount_pitch": 0.0,
+    "camera_mount_yaw": -1.5707963,
+}
+
 
 def generate_launch_description():
+    # ----- Launch arguments (AGV test case; run_batch.sh sets these per run) -----
+    launch_args = [
+        DeclareLaunchArgument("trajectory", default_value="none",
+                              description="none | straight | circle | sin | mbzirc | turn | mix1 | mix2"),
+        DeclareLaunchArgument("speed_kmh", default_value="0.0",
+                              description="AGV cruise speed (straight / circle / sin)"),
+        DeclareLaunchArgument("accel_distance_m", default_value="50.0",
+                              description="Distance over which the AGV reaches cruise speed"),
+        DeclareLaunchArgument("turn_start_distance_m", default_value="20.0",
+                              description="Straight cruise after reaching speed, before any turn"),
+        DeclareLaunchArgument("sin_phase_deg", default_value="0.0",
+                              description="Phase the sine weave starts at (deg); for mbzirc, "
+                                          "the lap phase the car spawns at"),
+        DeclareLaunchArgument("agv_add_noise", default_value="false",
+                              description="Add Gaussian noise to the AGV v and w commands"),
+        DeclareLaunchArgument("agv_delay_s", default_value="25.0",
+                              description="Seconds from launch to AGV start (mbzirc batch runs use 5)"),
+        # UAV GPS waiting point. Defaults = drone spawn in iris_runway_new.sdf;
+        # mbzirc batch runs use the figure-8 centre (-35.365605, 149.164137)
+        DeclareLaunchArgument("gps_lat", default_value="-35.365876",
+                              description="UAV GPS waiting point latitude (deg)"),
+        DeclareLaunchArgument("gps_lon", default_value="149.164137",
+                              description="UAV GPS waiting point longitude (deg)"),
+        DeclareLaunchArgument("record_bag", default_value="false",
+                              description="Record a rosbag of the key topics to ./bags/<run_id>"),
+    ]
 
-    # One ID shared by the bag and the controller's CSV/event/truth files
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     bag_dir = os.path.join(os.getcwd(), "bags", run_id)
 
-    # ----- Step 1a: Rosbag recorder -----
-    # bag_record = ExecuteProcess(
-    #     cmd=[
-    #         "ros2", "bag", "record",
-    #         "-s", "mcap",
-    #         "--use-sim-time",
-    #         "-o", bag_dir,
-    #         "/tf", "/tf_static", "/clock",
-    #         "/mavros/state",
-    #         "/mavros/global_position/local",
-    #         "/mavros/global_position/global",
-    #         "/mavros/imu/data",
-    #         "/mavros/setpoint_raw/attitude",
-    #         "/mavros/setpoint_velocity/cmd_vel",
-    #         "/mavros/setpoint_raw/global",
-    #         "/landing_pad/found",
-    #         "/landing_pad/pipeline_timing",
-    #         "/landing_pad/yolo_pipeline_timing",
-    #         "/quadcopter/true_odom",
-    #         "/landing_pad/odom",
-    #     ],
-    #     output="screen",
-    #     sigterm_timeout="20",   # give it time to finalise the bag on Ctrl+C
-    #     sigkill_timeout="30",
-    # )
+    # ----- Rosbag recorder (record_bag:=true) -----
+    bag_record = ExecuteProcess(
+        condition=IfCondition(LaunchConfiguration("record_bag")),
+        cmd=[
+            "ros2", "bag", "record",
+            "--use-sim-time",
+            "-o", bag_dir,
+            "/tf", "/tf_static", "/clock",
+            "/mavros/state",
+            "/mavros/global_position/local",
+            "/mavros/global_position/global",
+            "/mavros/imu/data",
+            "/mavros/setpoint_raw/attitude",
+            "/mavros/setpoint_velocity/cmd_vel",
+            "/mavros/setpoint_raw/global",
+            "/mavros/gimbal_control/device/attitude_status",
+            "/landing_pad/found",
+            "/landing_pad/yolo_car_meas",
+            "/landing_pad/yolo_target",
+            "/landing_pad/gimbal_angle",
+            "/landing_pad/rel_odom",
+            "/landing_pad/pipeline_timing",
+            "/quadcopter/true_odom",
+            "/landing_pad/odom",
+        ],
+        output="screen",
+        sigterm_timeout="20",   # give it time to finalise the bag on Ctrl+C
+        sigkill_timeout="30",
+    )
 
-    # ----- Step 2a: Gazebo Camera + Gimbal Bridge -----
+    # ----- Gazebo camera, odometry and AGV bridge -----
     gz_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
@@ -61,7 +114,7 @@ def generate_launch_description():
         ],
     )
 
-    # Run AprilTag landing pad detector node
+    # AprilTag landing pad detector (not launched in SITL; kept for reference)
     apriltag_pose_detector = Node(
         package="auto_lander",
         executable="apriltag",
@@ -109,15 +162,16 @@ def generate_launch_description():
             {"apriltag_tag_to_pad_yaw_deg": 90.0},
 
             # ----- Camera -----
-            {"camera_fov_horizontal": 2.7925268},
-            {"camera_distortion_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0]},
+            {"camera_fov_horizontal": CAMERA_HFOV_RAD},
+            {"camera_distortion_coeffs": CAMERA_DISTORTION},
+            CAMERA_MOUNT,
 
             # ----- Timestamp alignment buffers -----
             {"odometry_buffer_window_s": 1.0},
         ],
     )
 
-    # Run YOLO landing pad detector node
+    # YOLO car detector
     yolo_pose_detector = Node(
         package="auto_lander",
         executable="yolo",
@@ -149,19 +203,20 @@ def generate_launch_description():
             {"yolo_car_class_id": 0},
 
             # ----- Ground-ray check -----
-            # (car shape / pad height now live on the controller, see yolo_car_boxes)
+            # (car shape / pad height live on the controller, see yolo_car_boxes)
             {"yolo_ground_ray_z_epsilon": 0.05},
 
             # ----- Camera -----
-            {"camera_fov_horizontal": 2.7925268},
-            {"camera_distortion_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0]},
+            {"camera_fov_horizontal": CAMERA_HFOV_RAD},
+            {"camera_distortion_coeffs": CAMERA_DISTORTION},
+            CAMERA_MOUNT,
 
             # ----- Buffers -----
             {"odometry_buffer_window_s": 1.0},
         ],
     )
 
-    # Run independent gimbal controller
+    # Independent gimbal controller
     gimbal_controller = Node(
         package="auto_lander",
         executable="gimbal_controller",
@@ -182,16 +237,10 @@ def generate_launch_description():
             {"gimbal_servo_min_angle_deg": -90.0},
             {"gimbal_servo_max_angle_deg": 25.0},
             {"gimbal_yaw_command_deg": 0.0},
-            {"camera_offset_x": 0.02},
-            {"camera_offset_y": -0.01},
-            {"camera_offset_z": -0.124923},
-            {"camera_mount_roll": -1.5707963},
-            {"camera_mount_pitch": 0.0},
-            {"camera_mount_yaw": -1.5707963},
         ],
     )
 
-    # Run main controller node
+    # Main controller
     controller = Node(
         package="auto_lander",
         executable="controller",
@@ -203,6 +252,7 @@ def generate_launch_description():
             {"ground_truth_available": True},
             {"yolo_shadow_fit_enabled": True},    # SITL analysis; False on the Pi in flight
             {"use_sim_time": True},
+            {"wait_for_pilot_guided": False},     # SITL: controller switches to GUIDED itself
             {"max_runtime": 200.0},
             {"boundary_limit": 800.0},
 
@@ -215,13 +265,24 @@ def generate_launch_description():
             {"landing_chase_altitude": 7.0},
             {"landing_descent_rate_far": -1.0},
             {"landing_descent_rate_close": -1.0},
-            {"landing_time_visual_min_time (s)": 0.6},
-            {"landing_pad_locked_time (s)": 20.0},
+            {"landing_time_visual_min_time (s)": 1.1},
+            {"landing_pad_locked_time (s)": 30.0},
             {"landing_pad_lost_time (s)": 4.0},
 
+            # ----- Throttle cut / termination check -----
+            {"landing_cut_height_max": 1.0},
+            {"landing_lead_time_max": 0.5},
+            {"landing_cut_margin": 0.10},
+            {"landing_pad_size": [1.80, 1.48]},   # sim platform box is 1.71 x 1.41 (0.95 scale)
+            {"landing_gear_size": [0.3, 0.3]},
+            {"landing_car_a_max": 4.905},
+            {"landing_car_a_lat_max": 5.0},
+            {"landing_z_touchdown_accel_threshold": 4.0},
+            # landing_z_touchdown_max_height left at its default (inf = ungated)
+
             # ----- GPS loiter / waiting point -----
-            {"gps_lat": -35.365876},
-            {"gps_lon": 149.164137},
+            {"gps_lat": ParameterValue(LaunchConfiguration("gps_lat"), value_type=float)},
+            {"gps_lon": ParameterValue(LaunchConfiguration("gps_lon"), value_type=float)},
             {"gps_in_loc_buffer (m)": 2.0},
 
             # ----- Initial landing-pad state -----
@@ -230,11 +291,13 @@ def generate_launch_description():
             {"initial_yaw_state": 0.0},
 
             # ----- UKF parameters -----
-            {"UKF_seeding_num_samples": 5},
+            {"UKF_seeding_num_samples": 10},
             {"UKF_alpha": 0.5},
             {"UKF_beta": 2.0},
             {"UKF_kappa": 0.0},
             {"UKF_mahalanobis_threshold": 15.0},
+            {"UKF_max_consecutive_rejections": 5},
+            {"UKF_buffer_window_s": 0.5},
 
             {"UKF_initial_P_diag": [
                 1.00,
@@ -253,15 +316,18 @@ def generate_launch_description():
                 0.030,
                 0.050,
                 0.001,
-                0.010,
+                0.050,
             ]},
 
             {"UKF_unhealthy_covar": 500.0},
-            {"UKF_freq": 20.0},
+            {"UKF_freq": 40.0},
+            {"apriltag_enabled": False},
 
             # ----- YOLO measurement model -----
-            {"UKF_yolo_box_yaw_sigma_max": 0.25},  # rad; 0.0 = fit-only baseline
-            {"UKF_yolo_box_pixel_sigma": 5.0},     # px per box edge; NIS says ~2 in sim
+            {"UKF_yolo_box_yaw_sigma_max": 0.25},
+            {"UKF_yolo_box_pixel_sigma": 5.0},
+            {"UKF_yolo_fit_yaw_enabled": True},
+            {"yolo_roof_height_gain": 0.2},
 
             # ----- Car shape (car model frame: x fwd, y left, z up; metres) -----
             # Frame = prius_hybrid base_link (same origin as /landing_pad/odom), origin at
@@ -277,6 +343,7 @@ def generate_launch_description():
             ]},
             # Platform top-centre in the same frame. Keep plot_errors.py TRUE_OFFSET_* equal to it.
             {"yolo_car_pad_position": [-0.5, 0.0, 1.525]},
+            {"yolo_car_rear_axle": [-1.45, 0.0]},
 
             # ----- Controller loop -----
             {"CTRL_freq": 20.0},
@@ -290,11 +357,11 @@ def generate_launch_description():
             {"PID_Kp_pos_z": 2.0},
             {"PID_vz_up_max": 2.0},           # = WPNAV_SPEED_UP
             {"PID_vz_dn_max": 2.0},           # = WPNAV_SPEED_DN
-            {"PID_max_tilt": 0.5},            # rad, <= ANGLE_MAX
+            {"PID_max_tilt": 0.70},            # rad, <= ANGLE_MAX
 
             {"PID_mass": 1.48},
             {"PID_gravity": 9.81},
-            {"PID_drag_coefficient": 0.035},
+            {"PID_drag_coefficient": 0.03},
 
             {"PID_max_angle_rate": 1.0},
 
@@ -306,27 +373,43 @@ def generate_launch_description():
             {"PID_drop_off_strength": 0.5},
             {"PID_terminal_gain": 1.0},
             {"PID_drop_off": 7.0},
+
+            # Pad-acceleration feedforward (turns / speed changes). 0.0 = off (pure PD)
+            {"PID_accel_ff_gain": 1.0},
         ],
     )
 
-    # Run AGV controller node (SITL only)
+    # AGV controller (SITL only)
     agv_controller = Node(
         package="auto_lander",
         executable="agv_controller",
         name="agv_controller",
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        parameters=[{
+            "use_sim_time": True,
+            "trajectory": ParameterValue(LaunchConfiguration("trajectory"), value_type=str),
+            "speed_kmh": ParameterValue(LaunchConfiguration("speed_kmh"), value_type=float),
+            "accel_distance_m": ParameterValue(LaunchConfiguration("accel_distance_m"), value_type=float),
+            "turn_start_distance_m": ParameterValue(LaunchConfiguration("turn_start_distance_m"), value_type=float),
+            "add_noise": ParameterValue(LaunchConfiguration("agv_add_noise"), value_type=bool),
+
+            # Turn shape: same steering profile at every speed (only v changes)
+            "circle_yaw_rate": 0.2,     # rad/s, steady turn
+            "sin_peak_yaw_rate": 0.2,   # rad/s, peak of the weave (matches the circle)
+            "sin_period": 12.0,         # s
+            "sin_phase_deg": ParameterValue(LaunchConfiguration("sin_phase_deg"), value_type=float),
+        }],
     )
     delayed_agv_controller = TimerAction(
-        period=25.0,  # Wait a few secs
+        period=LaunchConfiguration("agv_delay_s"),  # default 25 s; keep >= ~5 s so the gz bridge is up
         actions=[agv_controller],
     )
 
     return LaunchDescription(
-        [
-            #bag_record,
+        launch_args + [
+            bag_record,
             gz_bridge,
-            #apriltag_pose_detector,
+            # apriltag_pose_detector,
             yolo_pose_detector,
             gimbal_controller,
             controller,

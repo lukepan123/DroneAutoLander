@@ -1,6 +1,7 @@
 import os
 import sys
 import signal
+import threading
 import cv2
 import numpy as np
 import rclpy
@@ -9,6 +10,8 @@ import warnings
 
 from cv_bridge import CvBridge
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import HistoryPolicy
@@ -49,9 +52,14 @@ from .vision_common import get_workspace_root
         [8:12]  intrinsics fx, fy, cx, cy (px)
         [12:15] camera position in the drone-relative local-level frame (m)
         [15:24] camera rotation (level <- camera), row-major
+        [24:28] pipeline timestamps (s, node clock): image received, processing
+                started, inference done, measurement published. NaN when
+                diagnostics_enabled is False.
 
     Carrying the camera pose (attitude + gimbal angle, both interpolated to the image
     stamp) in the measurement lets the UKF replay it exactly during OOSM rollback.
+    Carrying the pipeline timestamps in the same message means the controller never has
+    to pair the measurement with a separate timing message.
 
     When several cars are detected, the node keeps following the same one: it picks the
     candidate nearest the previously chosen box, and only falls back to the most
@@ -128,7 +136,7 @@ class YoloNode(Node):
         self.declare_parameter("yolo_car_class_id", 0)
         self._car_class_id = (self.get_parameter("yolo_car_class_id").get_parameter_value().integer_value)
 
-        self.declare_parameter("yolo_edge_margin_px", 2)
+        self.declare_parameter("yolo_edge_margin_px", 10)
         self._yolo_edge_margin_px = (self.get_parameter("yolo_edge_margin_px").get_parameter_value().integer_value)
         self.declare_parameter("yolo_ground_ray_z_epsilon", 1e-3)
         self._ground_ray_z_epsilon = (self.get_parameter("yolo_ground_ray_z_epsilon").get_parameter_value().double_value)
@@ -200,6 +208,7 @@ class YoloNode(Node):
             _odom_qos,
         )
         self._odom_buffer = OdometryBuffer(window_s=self._odometry_buffer_window_s)
+        self._buf_lock = threading.Lock()
 
         # Gimbal angle (deg) from gimbal_controller.py, interpolated to image stamps.
         self._gimbal_buffer = GimbalAngleBuffer(
@@ -220,8 +229,18 @@ class YoloNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
+        # Three callback groups, one executor thread each (see main()):
+        #   image  - stamps frames on true arrival, even mid-inference
+        #   timer  - the YOLO inference loop (below)
+        #   default - odometry, gimbal angle and the sim /clock subscription
+        # Keeping the timer out of the default group stops a saturated inference loop
+        # from starving odometry/gimbal updates (stale camera pose paired with fresh
+        # boxes) and freezing sim time. _buf_lock guards the two buffers, which are now
+        # written and read from different threads.
+        self._image_cb_group = MutuallyExclusiveCallbackGroup()
         self.image_subscription = self.create_subscription(
-            Image, "/camera/image_raw", self._image_store_callback, _img_qos
+            Image, "/camera/image_raw", self._image_store_callback, _img_qos,
+            callback_group=self._image_cb_group,
         )
         self.get_logger().info(
             "YOLO node started, waiting for /camera/image_raw (published directly, "
@@ -233,11 +252,6 @@ class YoloNode(Node):
         self._landing_pad_found_publisher = self.create_publisher(Bool, "/landing_pad/found", 10)
         self._yolo_target_publisher = self.create_publisher(Vector3Stamped, "/landing_pad/yolo_target", 10)
         self._car_measurement_publisher = self.create_publisher(Float64MultiArray, "/landing_pad/yolo_car_meas", 10)
-
-        # ---- DIAGNOSTICS ----
-        self._yolo_pipeline_timing_publisher = self.create_publisher(
-            Vector3Stamped, "/landing_pad/yolo_pipeline_timing", 10
-        )
 
         # ---- FRAME RECORDING ----
         self._frame_recorder = FrameRecorder(
@@ -253,29 +267,37 @@ class YoloNode(Node):
             cv2.namedWindow("YOLO Debug", cv2.WINDOW_AUTOSIZE)
 
         # ---- IMAGE BUFFER ----
-        self._img_msg = None
-        self._img_received_time = None
-        self._img_seq = 0
+        # (msg, receive time in s, sequence number), swapped in as ONE tuple so the
+        # timer can never pair a frame with another frame's receive time
+        self._latest_image = None
+        self._img_seq = 0              # written only by the image callback
         self._last_processed_seq = -1
+        self._debug_frame = None       # handed to the main thread for display
 
         # ---- TRACK STATE ----
         self._track_box = None        # (cx, cy, w, h) of the last chosen detection
         self._track_time = -np.inf    # image stamp (s) of the last chosen detection
 
         # ---- PROCESSING TIMER ----
+        self._timer_cb_group = MutuallyExclusiveCallbackGroup()
         self._yolo_timer = self.create_timer(
-            1.0 / self._yolo_processing_rate, self._yolo_timer_callback
+            1.0 / self._yolo_processing_rate, self._yolo_timer_callback,
+            callback_group=self._timer_cb_group,
         )
+
+    def _now_sec(self) -> float:
+        """ Node clock (sim time in SITL) in seconds. """
+        return self.get_clock().now().nanoseconds * 1e-9
 
     # ---- RECEPTION CALLBACKS ----
     def _image_store_callback(self, msg) -> None:
-        """ Store the latest incoming image message.
+        """ Store the latest incoming image message with its receive time.
 
         :param msg: Incoming Image message from /camera/image_raw
         """
-        self._img_msg = msg
-        self._img_received_time = self.get_clock().now()
+        t_rx = self._now_sec()
         self._img_seq += 1
+        self._latest_image = (msg, t_rx, self._img_seq)
 
     def _quad_odometry_callback(self, msg: Odometry) -> None:
         """ Obtain FCU Odometry, buffering stamped attitude/altitude for
@@ -283,7 +305,8 @@ class YoloNode(Node):
 
         :param msg: Incoming Odometry message
         """
-        self._odom_buffer.push(msg)
+        with self._buf_lock:
+            self._odom_buffer.push(msg)
 
     def _gimbal_angle_callback(self, msg: Vector3Stamped) -> None:
         """ Buffer the measured gimbal pitch for image-timestamp alignment.
@@ -291,22 +314,26 @@ class YoloNode(Node):
         :param msg: Vector3Stamped from gimbal_controller.py; vector.x is the actual
                     gimbal pitch in degrees
         """
-        self._gimbal_buffer.push(stamp_to_sec(msg.header.stamp), msg.vector.x)
+        with self._buf_lock:
+            self._gimbal_buffer.push(stamp_to_sec(msg.header.stamp), msg.vector.x)
 
-    def _get_new_frame(self):
-        """ Pull the latest frame, but only if it's newer than the last frame this
-            node already processed.
+    def _get_new_image(self):
+        """ Take the latest image, but only if it's newer than the last one this node
+            already processed.
 
-        :return: (frame, stamp) if a new frame is available, otherwise (None, None)
+        :return: (image msg, receive time in s) if a new image is available, else None
         """
-        if self._img_msg is None or self._img_seq == self._last_processed_seq:
-            return None, None
+        latest = self._latest_image
+        if latest is None or latest[2] == self._last_processed_seq:
+            return None
 
-        self._last_processed_seq = self._img_seq
+        img_msg, t_rx, seq = latest
+        self._last_processed_seq = seq
+        return img_msg, t_rx
 
-        msg = self._img_msg
-        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        stamp = msg.header.stamp
+    def _to_frame(self, img_msg):
+        """ Convert an Image message to a BGR frame at the processing resolution. """
+        frame = self._bridge.imgmsg_to_cv2(img_msg, desired_encoding="bgr8")
 
         if frame.shape[0] != self._image_height or frame.shape[1] != self._image_width:
             frame = cv2.resize(
@@ -315,23 +342,37 @@ class YoloNode(Node):
                 interpolation=cv2.INTER_AREA,
             )
 
-        return frame, stamp
+        return frame
 
     def _yolo_timer_callback(self) -> None:
         """ Fires at yolo_processing_rate. Runs the YOLO car detector independently of
             the AprilTag pipeline, publishes the raw box + image-time camera geometry as
             the UKF measurement, and an image target for the independent gimbal
             controller.
+
+            Pipeline timestamps carried in the measurement ([24:28], node clock):
+                t_rx     image callback ran (true arrival, separate callback group)
+                t_start  this timer picked the image up       (queue = t_start - t_rx)
+                t_inf    detector returned       (inference, incl. decode/resize/pose)
+                t_pub    measurement about to be published    (post-processing)
         """
 
         if not self.yolo_enabled or self.yolo_model is None:
             return
 
-        frame, stamp = self._get_new_frame()
-        if frame is None:
+        latest = self._get_new_image()
+        if latest is None:
             return  # no new frame since this node last ran
+        img_msg, t_rx = latest
+        t_start = self._now_sec()
 
-        odom = self._odom_buffer.get_at(stamp)
+        frame = self._to_frame(img_msg)
+        stamp = img_msg.header.stamp
+
+        with self._buf_lock:
+            odom = self._odom_buffer.get_at(stamp)
+            gimbal_deg = self._gimbal_buffer.get_at(stamp)
+
         if odom is None:
             self.get_logger().warn(
                 "No odometry buffered yet - skipping frame", throttle_duration_sec=1.0
@@ -339,7 +380,6 @@ class YoloNode(Node):
             return
         q, altitude = odom
 
-        gimbal_deg = self._gimbal_buffer.get_at(stamp)
         if gimbal_deg is None:
             self.get_logger().warn(
                 "No gimbal angle buffered yet - skipping frame",
@@ -351,8 +391,11 @@ class YoloNode(Node):
         # gimbal angle both interpolated to `stamp`).
         T_local_cam = camera_pose_in_level_frame(q, gimbal_deg, self._camera_mount)
 
+        detections = self._yolo_detection(frame)
+        t_inf = self._now_sec()
+
         # Keep following the same car if YOLO returns several candidates
-        car_detection = self._select_candidate(self._yolo_detection(frame), stamp_to_sec(stamp))
+        car_detection = self._select_candidate(detections, stamp_to_sec(stamp))
 
         if car_detection is not None:
             cx, cy, bw, bh, confidence = car_detection
@@ -382,33 +425,35 @@ class YoloNode(Node):
             ray = T_local_cam[:3, :3] @ self._intrinsics.matrix_inv @ np.array([cx, cy, 1.0])
             if ray[2] < -self._ground_ray_z_epsilon * np.linalg.norm(ray):
                 self._landing_pad_found_publisher.publish(Bool(data=True))
-                msg = Float64MultiArray()
-                msg.data = np.r_[
+                timing = ([t_rx, t_start, t_inf, self._now_sec()]
+                          if self.diagnostics_enabled else [np.nan] * 4)
+                meas = Float64MultiArray()
+                meas.data = np.r_[
                     stamp.sec, stamp.nanosec, #type: ignore
                     u0, u1, v0, v1,
                     confidence, altitude,
                     self._intrinsics_flat,
                     T_local_cam[:3, 3], T_local_cam[:3, :3].ravel(),
+                    timing,
                 ].astype(float).tolist()
-                self._car_measurement_publisher.publish(msg)
-
-        # Pipeline Latency Diagnostics
-        if self.diagnostics_enabled:
-            transform_ready_time = self.get_clock().now()
-            timing_msg = Vector3Stamped()
-            timing_msg.header.stamp = stamp
-            timing_msg.header.frame_id = "yolo_pipeline_timing"
-            timing_msg.vector.x = self._img_received_time.nanoseconds / 1e9  #type: ignore
-            timing_msg.vector.y = transform_ready_time.nanoseconds / 1e9
-            self._yolo_pipeline_timing_publisher.publish(timing_msg)
+                self._car_measurement_publisher.publish(meas)
 
         if self.show_debug_window:
             self._show_yolo_debug(frame, car_detection)
-            cv2.imshow("YOLO Debug", frame)
-            cv2.waitKey(1)
+            self._debug_frame = frame   # shown by the main thread (see show_debug_frame)
 
         if self.save_frames or self.create_video:
             self._frame_recorder.save(frame)
+
+    def show_debug_frame(self) -> None:
+        """ Display the latest debug frame. Call from the main thread only: OpenCV
+            windows must be driven from one thread, and the timer can run on any
+            executor thread.
+        """
+        frame, self._debug_frame = self._debug_frame, None
+        if frame is not None:
+            cv2.imshow("YOLO Debug", frame)
+        cv2.waitKey(1)
 
     def _yolo_detection(self, frame):
         """ Run YOLO and return every car detection that passes the confidence, class
@@ -525,6 +570,11 @@ def main(args=None):
     rclpy.init(args=args)
     node = YoloNode()
 
+    # Three threads, one per callback group: image, YOLO timer, and the default group
+    # (odometry/gimbal/clock), so inference never blocks pose or sim-time updates.
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
+
     shutdown_in_progress = False
 
     def signal_handler(signum, frame):
@@ -544,10 +594,17 @@ def main(args=None):
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        rclpy.spin(node)
+        if node.show_debug_window:
+            # Dispatch callbacks from here so the debug window stays on the main thread
+            while rclpy.ok():
+                executor.spin_once(timeout_sec=0.01)
+                node.show_debug_frame()
+        else:
+            executor.spin()
     except KeyboardInterrupt:
         node.get_logger().info("Shutting down gracefully...")
     finally:
+        executor.shutdown()
         try:
             node._frame_recorder.finalize()
         except Exception as e:

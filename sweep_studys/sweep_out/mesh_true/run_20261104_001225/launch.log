@@ -1,0 +1,95 @@
+[INFO] [launch]: All log files can be found below /home/luke/.ros/log/2026-11-04-00-13-25-964306-luke-Vivobook-ASUSLaptop-K3605VU-K3605VU-49497
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [parameter_bridge-1]: process started with pid [49514]
+[INFO] [yolo-2]: process started with pid [49516]
+[INFO] [gimbal_controller-3]: process started with pid [49518]
+[INFO] [controller-4]: process started with pid [49520]
+[parameter_bridge-1] [INFO] [1793711606.416463473] [gz_bridge]: Creating GZ->ROS Bridge: [/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image (gz.msgs.Image) -> /world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image (sensor_msgs/msg/Image)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793711606.418015031] [gz_bridge]: Creating GZ->ROS Bridge: [/landing_pad/odom (gz.msgs.Odometry) -> /landing_pad/odom (nav_msgs/msg/Odometry)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793711606.419497725] [gz_bridge]: Creating GZ->ROS Bridge: [/model/iris_with_gimbal/odometry (gz.msgs.Odometry) -> /model/iris_with_gimbal/odometry (nav_msgs/msg/Odometry)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793711606.420686889] [gz_bridge]: Creating ROS->GZ Bridge: [/cmd_rover_vel (geometry_msgs/msg/Twist) -> /cmd_rover_vel (gz.msgs.Twist)] (Lazy 0)
+[parameter_bridge-1] [INFO] [1793711606.421782978] [gz_bridge]: Creating GZ->ROS Bridge: [/clock (gz.msgs.Clock) -> /clock (rosgraph_msgs/msg/Clock)] (Lazy 0)
+[gimbal_controller-3] [INFO] [1793711606.539329371] [gimbal_controller_node]: Gimbal controller rate: 20.0 Hz
+[gimbal_controller-3] [INFO] [1793711606.539671194] [gimbal_controller_node]: Gimbal target ages: apriltag=0.15s, yolo=0.5s
+[controller-4] SWEEP-TEMP mode=mesh roof_agl=1.525
+[controller-4] [INFO] [1793711606.682240430] [controller_node]: CSV logging initialized: controller_20261104_001326.csv
+[controller-4] [INFO] [1793711606.682522001] [controller_node]: Auto Lander (callbacks) started
+[yolo-2] [INFO] [1793711608.284181560] [yolo_node]: YOLO processing rate: 10.0 Hz
+[yolo-2] [INFO] [1793711608.284394463] [yolo_node]: YOLO parameters: model=ugv_yolo11n_openvino_model, conf=0.50, input=640x360, car_id=0
+[yolo-2] [INFO] [1793711608.284571174] [yolo_node]: Video recording parameters: save_frames=False, create_video=True, video_fps=10.0
+[yolo-2] [INFO] [1793711608.284927914] [yolo_node]: Loading YOLO model: ugv_yolo11n_openvino_model
+[yolo-2] [INFO] [1793711608.697235084] [yolo_node]: YOLO model loaded successfully. Classes: {0: 'Car'}
+[yolo-2] [INFO] [1793711608.708668855] [yolo_node]: YOLO node started, waiting for /camera/image_raw (published directly, or republished by apriltag.py when it's running in webcam mode)...
+[yolo-2] [INFO] [1793711608.740604355] [yolo_node]: [yolo] Frame saving ENABLED - Directory: /home/luke/ros2_ws/yolo_frames_20261104_001328
+[yolo-2] [INFO] [1793711608.740973581] [yolo_node]: [yolo] Video will be saved as: /home/luke/ros2_ws/yolo_detection_video_20261104_001328.mp4
+[controller-4] [INFO] [1793711617.348836979] [controller_node]: GUIDED confirmed by FCU.
+[yolo-2] [INFO] [1793711621.388829561] [yolo_node]: [yolo] Saved 100 frames so far...
+[controller-4] [INFO] [1793711627.714920242] [controller_node]: Takeoff complete at 8.04 m - Starting 200.0s safety timer
+[INFO] [agv_controller-5]: process started with pid [49743]
+[agv_controller-5] [INFO] [1793711631.382799482] [agv_controller]: Turn shape: {'circle_yaw_rate': 0.2, 'sin_peak_yaw_rate': 0.2, 'sin_period': 12.0, 'sin_phase_deg': 0.0, 'mbzirc_radius_m': 16.0, 'mbzirc_centre_distance_m': 54.0, 'mbzirc_duration_s': 1200.0}
+[agv_controller-5] [INFO] [1793711631.383256393] [agv_controller]: Trajectory 'none' at 0.0 km/h (turns after +20 m past the cruise line), duration: 1.00s, loop=False, noise=False
+[parameter_bridge-1] [INFO] [1793711631.384378855] [gz_bridge]: Passing message from ROS geometry_msgs/msg/Twist to Gazebo gz.msgs.Twist (showing msg only once per type)
+[agv_controller-5] [INFO] [1793711631.384580477] [agv_controller]: t= 0.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711632.412867392] [agv_controller]: t= 0.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711633.448064599] [agv_controller]: t= 1.85s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711633.753814782] [yolo_node]: [yolo] Saved 200 frames so far...
+[agv_controller-5] [INFO] [1793711634.475624945] [agv_controller]: t= 2.80s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711635.524001351] [agv_controller]: t= 3.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711636.557661429] [agv_controller]: t= 4.70s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711637.601954867] [agv_controller]: t= 5.65s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711638.634414478] [agv_controller]: t= 6.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711639.636589748] [agv_controller]: t= 7.40s  v=  0.00 m/s  w= 0.000 rad/s
+[controller-4] [WARN] [1793711639.786064882] [controller_node]: UKF yolo update failed!
+[controller-4] [WARN] [1793711640.260304443] [controller_node]: UKF: 5 consecutive rejections - re-seeding
+[agv_controller-5] [INFO] [1793711640.644179927] [agv_controller]: t= 8.30s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711641.657542162] [agv_controller]: t= 9.10s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711642.685699289] [agv_controller]: t=10.05s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711643.694699748] [agv_controller]: t=11.00s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711644.732035084] [agv_controller]: t=11.95s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711644.923022386] [yolo_node]: [yolo] Saved 300 frames so far...
+[agv_controller-5] [INFO] [1793711645.774792156] [agv_controller]: t=12.90s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711646.828731333] [agv_controller]: t=13.75s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711647.840707345] [agv_controller]: t=14.60s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711648.854224824] [agv_controller]: t=15.55s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711649.882882944] [agv_controller]: t=16.50s  v=  0.00 m/s  w= 0.000 rad/s
+[agv_controller-5] [INFO] [1793711650.916389767] [agv_controller]: t=17.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711651.498222924] [yolo_node]: Interrupt received, creating video before shutdown (press Ctrl+C again to force quit)...
+[yolo-2] [INFO] [1793711651.498592457] [yolo_node]: Shutting down gracefully...
+[yolo-2] [INFO] [1793711651.498909170] [yolo_node]: [yolo] Creating video from 357 frames (estimated duration: 35.7s at 10.0fps)...
+[yolo-2] [INFO] [1793711651.751025828] [yolo_node]: [yolo] Writing frame 100/357 to video...
+[agv_controller-5] [INFO] [1793711651.958345092] [agv_controller]: t=18.45s  v=  0.00 m/s  w= 0.000 rad/s
+[yolo-2] [INFO] [1793711652.121515188] [yolo_node]: [yolo] Writing frame 200/357 to video...
+[yolo-2] [INFO] [1793711652.390917549] [yolo_node]: [yolo] Writing frame 300/357 to video...
+[yolo-2] [INFO] [1793711652.511740188] [yolo_node]: [yolo] Video created successfully: /home/luke/ros2_ws/yolo_detection_video_20261104_001328.mp4
+[yolo-2] [INFO] [1793711652.511955206] [yolo_node]: [yolo] Final video stats: 357 frames written, duration: 35.7s
+[yolo-2] [INFO] [1793711652.512116232] [yolo_node]: [yolo] Cleaning up temporary frame files...
+[agv_controller-5] [INFO] [1793711652.979376988] [agv_controller]: t=19.45s  v=  0.00 m/s  w= 0.000 rad/s
+[INFO] [yolo-2]: process has finished cleanly [pid 49516]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [agv_controller-5]: sending signal 'SIGINT' to process[agv_controller-5]
+[INFO] [controller-4]: sending signal 'SIGINT' to process[controller-4]
+[INFO] [gimbal_controller-3]: sending signal 'SIGINT' to process[gimbal_controller-3]
+[INFO] [parameter_bridge-1]: sending signal 'SIGINT' to process[parameter_bridge-1]
+[controller-4] [INFO] [1793711653.503542556] [controller_node]: Shutting down...
+[controller-4] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[parameter_bridge-1] [INFO] [1793711653.503613904] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[controller-4] [INFO] [1793711653.504229382] [controller_node]: CSV file closed: controller_20261104_001326.csv
+[controller-4] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[gimbal_controller-3] [INFO] [1793711653.516334355] [gimbal_controller_node]: Interrupt received, shutting down...
+[gimbal_controller-3] [INFO] [1793711653.516621336] [gimbal_controller_node]: Shutting down gracefully...
+[controller-4] Traceback (most recent call last):
+[controller-4]   File "/home/luke/ros2_ws/install/auto_lander/lib/auto_lander/controller", line 33, in <module>
+[controller-4]     sys.exit(load_entry_point('auto_lander==0.0.0', 'console_scripts', 'controller')())
+[controller-4]   File "/home/luke/ros2_ws/install/auto_lander/lib/python3.10/site-packages/auto_lander/controller.py", line 2131, in main
+[controller-4]     rclpy.shutdown()
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 130, in shutdown
+[controller-4]     _shutdown(context=context)
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/utilities.py", line 58, in shutdown
+[controller-4]     return context.shutdown()
+[controller-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/context.py", line 102, in shutdown
+[controller-4]     self.__context.shutdown()
+[controller-4] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+[INFO] [parameter_bridge-1]: process has finished cleanly [pid 49514]
+[INFO] [agv_controller-5]: process has finished cleanly [pid 49743]
+[INFO] [gimbal_controller-3]: process has finished cleanly [pid 49518]
+[ERROR] [controller-4]: process has died [pid 49520, exit code 1, cmd '/home/luke/ros2_ws/install/auto_lander/lib/auto_lander/controller --ros-args -r __node:=controller_node --params-file /tmp/launch_params_i31r9gd0 --params-file /tmp/launch_params_7dwatq03 --params-file /tmp/launch_params_3w96wged --params-file /tmp/launch_params_8r9ivz4u --params-file /tmp/launch_params_psd0_bwu --params-file /tmp/launch_params_8v7h2dhz --params-file /tmp/launch_params_sa_tfh9j --params-file /tmp/launch_params_cw2gvnqi --params-file /tmp/launch_params_4sx0_yk9 --params-file /tmp/launch_params_51nxb_ga --params-file /tmp/launch_params_okue610e --params-file /tmp/launch_params_lj0fpk54 --params-file /tmp/launch_params_5z2k0xpy --params-file /tmp/launch_params_4ww0umkq --params-file /tmp/launch_params_jcaveiqj --params-file /tmp/launch_params_s0d9hz1h --params-file /tmp/launch_params_5w0bat39 --params-file /tmp/launch_params_1akw2ead --params-file /tmp/launch_params_5x7i92_v --params-file /tmp/launch_params_1mlbm8fz --params-file /tmp/launch_params_34qi979h --params-file /tmp/launch_params_vyhi36o2 --params-file /tmp/launch_params_jm0tcjqk --params-file /tmp/launch_params__j05vbft --params-file /tmp/launch_params_91j64u71 --params-file /tmp/launch_params_mq2pr6_p --params-file /tmp/launch_params_0oal720s --params-file /tmp/launch_params_ttnsh3oj --params-file /tmp/launch_params_mnl7rebi --params-file /tmp/launch_params__8yymu3h --params-file /tmp/launch_params_fkho_13e --params-file /tmp/launch_params_1b85bs4p --params-file /tmp/launch_params_0zila9lh --params-file /tmp/launch_params_h492_yc5 --params-file /tmp/launch_params__jck0s0g --params-file /tmp/launch_params_kdx2rw_v --params-file /tmp/launch_params_i790fvsy --params-file /tmp/launch_params_wgln1yz0 --params-file /tmp/launch_params_va8bn12x --params-file /tmp/launch_params_6xdc4rtl --params-file /tmp/launch_params_f2g4rg7m --params-file /tmp/launch_params_vbih5isf --params-file /tmp/launch_params_xutw6q04 --params-file /tmp/launch_params_ugekntkz --params-file /tmp/launch_params_lj_7_56d --params-file /tmp/launch_params__k8idpek --params-file /tmp/launch_params_c796soun --params-file /tmp/launch_params_m7x4zptr --params-file /tmp/launch_params_fmjxi1u_ --params-file /tmp/launch_params_lzjj4z8s --params-file /tmp/launch_params_gc0ydvyp --params-file /tmp/launch_params_jhtn8o5f --params-file /tmp/launch_params_x1umqplw --params-file /tmp/launch_params_w6npy7rz --params-file /tmp/launch_params_yc587j2v --params-file /tmp/launch_params_q3tayt7p --params-file /tmp/launch_params_c12nm0ah'].
