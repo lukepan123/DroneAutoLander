@@ -196,7 +196,11 @@ class PIDController:
         r = np.linalg.norm(u[:2])
         lam_gain_factor = 1 - np.exp(-self.drop_off_strength * r)
 
-        gain_factor = self.terminal_gain * self.drop_off / (np.linalg.norm(u)**2 + self.drop_off)
+        # Horizontal error drives the drop-off; height only counts up to z_cap, so the
+        # chase-height gains aren't crushed (|u| ~ 15 m gave gain_factor ~0.04)
+        z_cap = 3.0
+        d2 = u[0]**2 + u[1]**2 + min(u[2]**2, z_cap**2)
+        gain_factor = self.terminal_gain * self.drop_off / (d2 + self.drop_off)
 
         self.lam = self.lam_0 * lam_gain_factor
         self.Kp = self.Kp_0 * gain_factor

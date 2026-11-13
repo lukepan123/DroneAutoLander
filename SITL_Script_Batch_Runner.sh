@@ -15,6 +15,10 @@
 #  MBZIRC  : TRAJECTORIES="mbzirc" SPEEDS="15" ./run_batch.sh mbzirc
 #            Each run gets its own world (run dir/world.sdf, from MBZIRC_WORLD) with the
 #            car spawned at that repeat's lap phase; WORLD is not used for mbzirc runs.
+#  Corners : TRAJECTORIES="corners" SPEEDS="45" ./run_batch.sh main
+#            One fixed path (speed_kmh is ignored; 45 is its top speed and labels the
+#            folder). Same lead-in and per-run world as the swept runs, spawned at
+#            agv_controller corners_world_pose(). REPEATS (default 10) sets the run count.
 #  Swept   : straight / circle / sin runs above 0 km/h also get their own world (from WORLD)
 #            with the car spawned d_ramp(v) behind the cruise line (agv_controller
 #            swept_world_poses), so it is at cruise before the UAV can see it.
@@ -132,8 +136,8 @@ make_world() {   # $1 = run dir, $2 = trajectory, $3 = speed (km/h), $4 = lap ph
         ros_env
         python3 - "$ARDU_GZ/worlds/$template" "$1/world.sdf" "$2" "$3" "$4" <<'PY'
 import re, sys
-from auto_lander.agv_controller import (KMH_TO_MS, UAV_WAIT_WORLD, mbzirc_world_poses,
-                                        swept_world_poses)
+from auto_lander.agv_controller import (KMH_TO_MS, UAV_WAIT_WORLD, corners_world_pose,
+                                        mbzirc_world_poses, swept_world_poses)
 
 src, dst, traj, speed_kmh, phase = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4]), float(sys.argv[5])
 sdf = open(src).read()
@@ -165,8 +169,9 @@ else:
     ux, uy, _ = get_pose(sdf, "iris_with_gimbal")
     if abs(ux - UAV_WAIT_WORLD[0]) > 0.01 or abs(uy - UAV_WAIT_WORLD[1]) > 0.01:
         sys.exit(f"UAV in {src} is at ({ux}, {uy}), agv_controller expects {UAV_WAIT_WORLD}")
-    car = swept_world_poses(speed_kmh * KMH_TO_MS)
-sdf = set_pose(sdf, "prius_hybrid", car)
+    # corners has a fixed lead-in speed, so its spawn ignores the speed folder
+    car = corners_world_pose() if traj == "corners" else swept_world_poses(speed_kmh * KMH_TO_MS)
+sdf = set_pose(sdf, "grand_vitara", car)
 open(dst, "w").write(sdf)
 print(f"car ({car[0]:.3f}, {car[1]:.3f}, {car[2]:.1f} deg)")
 PY
@@ -272,7 +277,7 @@ run_one() {     # $1 = trajectory, $2 = speed (km/h), $3 = repeat
         # Per-run world: mbzirc spawns the car at this repeat's lap phase; moving swept runs
         # spawn it far enough back to be at cruise before it comes into view. 0 km/h keeps
         # WORLD untouched (the static runs and their spawn are unchanged).
-        if [[ $traj == mbzirc || $spd != 0 ]]; then
+        if [[ $traj == mbzirc || $traj == corners || $spd != 0 ]]; then
             if ! spawn=$(make_world "$d" "$traj" "$spd" "$phase" 2>"$d/world_gen.log"); then
                 log "    could not write the run world (see $d/world_gen.log), stopping"
                 exit 1

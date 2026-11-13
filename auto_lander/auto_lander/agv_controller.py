@@ -9,9 +9,11 @@ t1 and t2 seconds". The controller samples the trajectory each control tick
 and publishes it as a Twist, optionally with Gaussian noise added on top.
 
 The trajectory is selected by ROS parameters so a batch runner can sweep it:
-    trajectory            : none | straight | circle | sin | mbzirc | turn | mix1 | mix2
+    trajectory            : none | straight | circle | sin | corners | mbzirc | turn | mix1 | mix2
     speed_kmh             : cruise speed for straight / circle / sin (fixed scripts ignore it);
-                            for mbzirc, 0 = competition speed schedule, > 0 = constant speed
+                            for mbzirc, 0 = competition speed schedule, > 0 = constant speed;
+                            corners ignores it (fixed profile, run it as 45 km/h so the
+                            results folder is labelled with its top speed)
     accel_distance_m      : mbzirc only: distance over which the car reaches its first speed.
                             The swept trajectories ramp at the Prius limits instead (below).
     turn_start_distance_m : straight cruise past the cruise line before any turn begins
@@ -44,6 +46,10 @@ The ramp is jerk-limited at the Prius limits (PRIUS_*), so the car is at cruise 
 with zero acceleration by the cruise line, which sits well before the point where the
 UAV first detects it. Only the spawn moves with speed: swept_world_poses(v) gives the
 pose the SDF must use (run_batch.sh writes it per run, as for mbzirc).
+
+The corners trajectory reuses that lead-in at a fixed CORNERS_TOP_SPEED_KMH, then drives a
+fixed circuit of corners: brake on the straight, clothoid in, arc, accelerate out through the
+clothoid exit, repeat. See corners_trajectory().
 """
 
 import rclpy
@@ -290,6 +296,162 @@ def sin_trajectory(v: float,
         for t0, t1, w0, w1 in zip(t[:-1], t[1:], w[:-1], w[1:])
     ]
     return Trajectory(segments)
+
+
+# ---------------------------------------------------------------------------
+# Cornering circuit: brake for a corner, turn, accelerate out, repeat
+# ---------------------------------------------------------------------------
+# One fixed path and speed profile (speed_kmh is ignored). The lead-in is the swept one at
+# CORNERS_TOP_SPEED_KMH, so the spawn is corners_world_pose() and the first braking point
+# is d_turn past the cruise line (35 m in run_batch.sh: abeam the UAV waiting point).
+#
+# Each corner, in order along the path:
+#   straight    jerk-limited braking to the corner speed (CORNER_BRAKE_DECEL)
+#               (the lead-in still ramps at the Prius limit, so the spawn matches)
+#   clothoid    curvature ramps 0 -> 1/R over CORNER_TRANSITION_S at corner speed
+#   arc         constant radius R = v_c^2 / CORNER_LAT_ACCEL (slower corner = tighter)
+#   clothoid    curvature ramps back to 0 while the car already accelerates out
+#   straight    jerk-limited acceleration to the exit speed (CORNER_ACCEL), then a short cruise
+# Accelerations are everyday street driving (naturalistic studies: ~1.4-2.5 m/s^2 pulling
+# away, ~2.1-3.5 m/s^2 braking, ~3.1 m/s^2 peak lateral in urban turns), not Prius maxima.
+# The car steers the path (w = v * curvature), so the yaw rate varies with both the
+# steering and the speed: it rises through the entry, holds on the arc, and unwinds faster
+# than the steering alone on the exit. Peak yaw rate differs per corner (0.36-0.72 rad/s).
+CORNERS_TOP_SPEED_KMH = 45.0   # lead-in cruise and fastest straight (stays < 50 km/h)
+CORNER_LAT_ACCEL = 3.0         # m/s^2 at the apex (circle peaks at 3.9 m/s^2 at 70 km/h)
+CORNER_TRANSITION_S = 3.0      # s at corner speed to wind the steering in (and out)
+CORNER_ACCEL = 1.0             # m/s^2, accelerating out of corners (x 0.95 margin = 1.52)
+CORNER_BRAKE_DECEL = 1.0       # m/s^2, braking into corners (x 0.95 margin = 2.38)
+CORNERS_DURATION = 360.0       # s, outlasts run_batch.sh's RUN_TIMEOUT: never stops mid-run
+# (turn [deg, + = left], corner speed [km/h], exit speed [km/h], cruise at exit speed [m])
+_CORNERS_HALF = (
+    ( 90.0, 20.0, 40.0,  5.0),   # square left
+    (-90.0, 20.0, 45.0, 10.0),   # square right
+    (-60.0, 25.0, 35.0,  0.0),   # fast kink right, straight into...
+    (120.0, 15.0, 40.0,  5.0),   # ...a tight hairpin-style left
+    (-60.0, 25.0, 45.0, 10.0),   # fast kink right, back on the original heading
+)
+# The second half mirrors the first, so each cycle ends on the starting heading with no net
+# sideways drift: the car weaves along world +y instead of wandering across the map.
+CORNERS_CYCLE = _CORNERS_HALF + tuple((-a, vc, vx, c) for a, vc, vx, c in _CORNERS_HALF)
+
+
+def _phase_speed(t: np.ndarray, phases, j_max: float) -> np.ndarray:
+    """Speed at times t for a list of (duration, v_from, v_to, S-curve params or None)."""
+    starts = np.concatenate(([0.0], np.cumsum([p[0] for p in phases])))
+    v = np.full_like(t, phases[-1][2])   # hold the final speed past the end
+    for k, (_, v0, v1, prm) in enumerate(phases):
+        i0, i1 = np.searchsorted(t, starts[k:k + 2])
+        if prm is None:
+            v[i0:i1] = v0
+        else:
+            a, t_jerk, t_const = prm
+            v[i0:i1] = v0 + np.sign(v1 - v0) * _ramp_speed(
+                t[i0:i1] - starts[k], abs(v1 - v0), a, t_jerk, t_const, j_max)
+    return v
+
+
+def _heading_along(s: np.ndarray, knots_s, knots_k) -> np.ndarray:
+    """Heading change from s = 0 for a piecewise-linear curvature profile (exact)."""
+    S, K = np.asarray(knots_s, float), np.asarray(knots_k, float)
+    psi_knots = np.concatenate(([0.0], np.cumsum(0.5 * (K[1:] + K[:-1]) * np.diff(S))))
+    i = np.clip(np.searchsorted(S, s, side='right') - 1, 0, len(S) - 2)
+    ds = s - S[i]
+    slope = (K[i + 1] - K[i]) / np.maximum(S[i + 1] - S[i], 1e-12)
+    return psi_knots[i] + K[i] * ds + 0.5 * slope * ds**2
+
+
+def corners_world_pose():
+    """Gazebo world spawn (x, y, yaw[deg]) of the car for the corners trajectory."""
+    return swept_world_poses(CORNERS_TOP_SPEED_KMH * KMH_TO_MS)
+
+
+def corners_trajectory(v: float = 0.0,
+                       d_turn: float = TURN_START_DISTANCE,
+                       cycle=CORNERS_CYCLE,
+                       top_speed_kmh: float = CORNERS_TOP_SPEED_KMH,
+                       lat_accel: float = CORNER_LAT_ACCEL,
+                       t_transition: float = CORNER_TRANSITION_S,
+                       duration: float = CORNERS_DURATION,
+                       dt: float = 0.05,
+                       **_) -> Trajectory:
+    """Prius lead-in to top_speed_kmh, cruise d_turn past the cruise line, then corners
+    from `cycle` back to back (repeating it) until `duration` has passed. v is ignored.
+
+    The path is defined in arc length (piecewise-linear curvature) and the speed in time
+    (jerk-limited S-curves: CORNER_ACCEL out of corners, CORNER_BRAKE_DECEL into them,
+    the Prius limit for the lead-in only), lined up
+    so braking ends exactly at each clothoid entry and acceleration starts exactly at each
+    clothoid exit. Segments are built as in mbzirc_trajectory(): one control tick each,
+    with v*dt and w*dt the exact distance and heading change, centred on the tick.
+    """
+    j = CMD_LIMIT_MARGIN * PRIUS_MAX_JERK
+    a_up = CMD_LIMIT_MARGIN * PRIUS_MAX_ACCEL      # lead-in only (must match swept_world_poses)
+    a_corner = CMD_LIMIT_MARGIN * CORNER_ACCEL
+    a_down = CMD_LIMIT_MARGIN * CORNER_BRAKE_DECEL
+    v_top = top_speed_kmh * KMH_TO_MS
+    if v_top > CMD_LIMIT_MARGIN * PRIUS_MAX_SPEED:
+        raise ValueError(f"{top_speed_kmh:.1f} km/h is above the Prius speed limit")
+
+    phases = []   # (duration, v_from, v_to, S-curve params or None)
+
+    def change(v0, v1, a_rise=a_corner):
+        """Append a jerk-limited speed change; return the distance it covers."""
+        dv = abs(v1 - v0)
+        if dv < 1e-9:
+            return 0.0
+        a, t_jerk, t_const, t_ramp, _ = ramp_profile(dv, a_rise if v1 > v0 else a_down, j)
+        phases.append((t_ramp, v0, v1, (a, t_jerk, t_const)))
+        return 0.5 * (v0 + v1) * t_ramp       # symmetric S-curve: mean speed is the midpoint
+
+    def hold(v_, d):
+        if d > 1e-9:
+            phases.append((d / v_, v_, v_, None))
+        return max(d, 0.0)
+
+    # Same lead-in as _lead_in(): ramp from rest, then d_turn past the cruise line
+    s = change(0.0, v_top, a_up) + hold(v_top, max(d_turn, 0.0))
+    knots_s, knots_k = [0.0], [0.0]
+    v_now, k = v_top, 0
+    while sum(p[0] for p in phases) < duration:
+        turn_deg, vc_kmh, vx_kmh, cruise = cycle[k % len(cycle)]
+        vc, vx = vc_kmh * KMH_TO_MS, vx_kmh * KMH_TO_MS
+        if max(vc, vx) > v_top + 1e-9:
+            raise ValueError("corner speeds must not exceed top_speed_kmh")
+        radius = vc**2 / lat_accel
+        sweep = np.radians(abs(turn_deg))
+        l_t = min(vc * t_transition, radius * sweep)   # both clothoids together turn l_t / R
+        l_arc = radius * sweep - l_t
+        kappa = np.sign(turn_deg) / radius
+
+        s += change(v_now, vc)                          # brake on the straight
+        knots_s += [s, s + l_t, s + l_t + l_arc, s + 2.0 * l_t + l_arc]
+        knots_k += [0.0, kappa, kappa, 0.0]
+        s += hold(vc, l_t + l_arc)                      # entry clothoid and arc at v_c
+        d_acc = change(vc, vx)                          # accelerate out from the exit clothoid
+        s += d_acc + hold(vx, max(l_t - d_acc, 0.0) + cruise)
+        v_now, k = vx, k + 1
+    knots_s.append(s + 1e6)                             # straight beyond the last corner
+    knots_k.append(0.0)
+
+    # Distance along the path on a 10x finer grid, then exact per-tick (v, w)
+    t_end = sum(p[0] for p in phases)
+    sub = 10
+    n = int(np.ceil(t_end / dt))
+    t_fine = np.linspace(0.0, n * dt, n * sub + 1)
+    v_fine = _phase_speed(t_fine, phases, j)
+    s_fine = np.concatenate(([0.0], np.cumsum(0.5 * (v_fine[1:] + v_fine[:-1]) * np.diff(t_fine))))
+    t, s_t = t_fine[::sub], s_fine[::sub]
+    psi = _heading_along(s_t, knots_s, knots_k)
+    v_seg = np.diff(s_t) / dt
+    w_seg = np.diff(psi) / dt
+
+    half = 0.5 * dt   # centred on the control tick, see mbzirc_trajectory()
+    return Trajectory([
+        TrajectorySegment(t_start=float(t0) - half, t_end=float(t1) - half,
+                          v_start=float(vs), v_end=float(vs), w_start=float(ws), w_end=float(ws))
+        for t0, t1, vs, ws in zip(t[:-1], t[1:], v_seg, w_seg)
+    ])   # hold_last: ends on a straight, so it keeps driving straight at the exit speed
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +705,9 @@ def make_trajectory(name: str, v: float,
     if name == "mbzirc":
         # v <= 0 is valid here: it selects the competition speed schedule
         return mbzirc_trajectory(v, d_accel=d_accel, **shape)
+    if name == "corners":
+        # fixed profile: v is ignored, the lead-in runs at CORNERS_TOP_SPEED_KMH
+        return corners_trajectory(d_turn=d_turn, **shape)
     if name in SWEPT_TRAJECTORIES:
         if v <= 0.0:
             return no_trajectory()
@@ -551,7 +716,7 @@ def make_trajectory(name: str, v: float,
         return SWEPT_TRAJECTORIES[name](v, d_turn=d_turn, **shape)
     if name in FIXED_TRAJECTORIES:
         return FIXED_TRAJECTORIES[name]()
-    valid = sorted(SWEPT_TRAJECTORIES) + ["mbzirc"] + sorted(FIXED_TRAJECTORIES)
+    valid = sorted(SWEPT_TRAJECTORIES) + ["corners", "mbzirc"] + sorted(FIXED_TRAJECTORIES)
     raise ValueError(f"Unknown trajectory '{name}'. Valid: {valid}")
 
 
@@ -605,6 +770,19 @@ class AGV_Controller(Node):
                     f"Expected world spawn (x, y, yaw): car ({car[0]:.3f}, {car[1]:.3f}, "
                     f"{car[2]:.3f} deg), UAV ({uav[0]:.3f}, {uav[1]:.3f}). "
                     f"The SDF poses must match these.")
+            elif name == 'corners':
+                car = corners_world_pose()
+                if speed_kmh > 0 and abs(speed_kmh - CORNERS_TOP_SPEED_KMH) > 1e-6:
+                    self.get_logger().warn(
+                        f"corners ignores speed_kmh ({speed_kmh:.1f}); it always runs its "
+                        f"fixed profile up to {CORNERS_TOP_SPEED_KMH:.0f} km/h. Check the "
+                        f"car spawn below matches the world.")
+                self.get_logger().info(
+                    f"Corners: Prius ramp to {CORNERS_TOP_SPEED_KMH:.0f} km/h, first braking "
+                    f"{d_turn:.0f} m past the cruise line, {len(CORNERS_CYCLE)} corners per "
+                    f"cycle. Expected world spawn (x, y, yaw): car ({car[0]:.3f}, "
+                    f"{car[1]:.3f}, {car[2]:.3f} deg), UAV ({UAV_WAIT_WORLD[0]:.3f}, "
+                    f"{UAV_WAIT_WORLD[1]:.3f}). The SDF poses must match these.")
             elif name in SWEPT_TRAJECTORIES:
                 v = speed_kmh * KMH_TO_MS
                 car = swept_world_poses(v)

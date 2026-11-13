@@ -1,14 +1,27 @@
 """
-plot_data.py – Quadcopter flight data visualiser
-================================================
+plot_state.py – Quadcopter flight data visualiser (SITL and real flights)
+=========================================================================
 Usage:
-    python plot_data.py                                  # newest controller_*.csv here
-    python plot_data.py path/to/controller_data.csv
-    python plot_data.py path/to/controller_data.csv --offset-x 0.1 --offset-y -0.05
-    python plot_data.py --offset-y 0.1                   # 0.1 m to the car's left
-    python plot_data.py --offset-x -0.2 --offset-frame global
-    python plot_data.py --settle-time 5                  # resting error 5 s after the cut
-    python plot_data.py --no-show                        # save plots + metrics, don't open windows
+    python plot_state.py                                  # CSV_FILE in LOG_DIR (set below)
+    python plot_state.py controller_20261113_154652.csv   # another log in LOG_DIR
+    python plot_state.py path/to/controller_data.csv
+    python plot_state.py path/to/controller_data.csv --offset-x 0.1 --offset-y -0.05
+    python plot_state.py --offset-y 0.1                   # 0.1 m to the car's left
+    python plot_state.py --offset-x -0.2 --offset-frame global
+    python plot_state.py --settle-time 5                  # resting error 5 s after the cut
+    python plot_state.py --no-show                        # save plots + metrics, don't open windows
+    python plot_state.py real.csv --fleet fleet.csv       # real flight + RTK truth (else auto-found)
+    python plot_state.py real.csv --rtk-bias 2.1,-1.0     # remove a measured RTK frame offset (m)
+
+Real flights
+------------
+Logs are loaded through log_loader.py (keep it next to this script). SITL logs carry
+Gazebo truth. Real logs have none, so truth is built from an overlapping RTK telemetry
+log (fleet*.csv / *rtk*.csv next to the CSV, or --fleet) in the same conventions as
+SITL. Without one, the quad is drawn from its FCU estimate and truth-based metrics are
+reported as unavailable. Pad height above the car origin comes from the platform
+(SITL 1.5 m, Grand Vitara 1.75 m, see log_loader.PLATFORMS). Remember the real pad sits
+at x = -0.79 m in the car frame (SITL -0.5 m): pass it as --offset-x to score against it.
 
 Options
 -------
@@ -22,6 +35,10 @@ Options
 --settle-time                          Seconds after the throttle cut at which the
                                        resting landing error is evaluated (default 3).
 --no-show                              Do not open interactive figures.
+--fleet PATH | none                    RTK telemetry log for real flights (default: auto).
+--rtk-bias E,N | auto                  Constant offset (m) of the car's RTK frame vs the
+                                       quad's GPS frame, removed from the truth. 'auto'
+                                       references it to the vision (see log_loader.py).
 
 Outputs
 -------
@@ -79,6 +96,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from log_loader import describe_truth, load_log, resolve_csv
+
+# ── Log selection ──────────────────────────────────────────────────────────
+# Used when no CSV is given on the command line: CSV_FILE is a file name in LOG_DIR (or a
+# full path); None = newest controller_*.csv in LOG_DIR. A bare file name on the command
+# line is also looked up in LOG_DIR.
+LOG_DIR  = "/home/luke/ros2_ws/field_2026-11-13_novideo/field_2026-11-13/pi_7inch"
+CSV_FILE = "controller_20261113_151308.csv"
+
 # ── Colours ────────────────────────────────────────────────────────────────
 C_QUAD      = "#2196F3"
 C_PAD       = "#FF9800"      # filtered landing pad
@@ -89,6 +115,7 @@ C_YOLO_CAR  = "#00ACC1"
 ALPHA_LINE = 0.90
 LW = 1.6
 OUTLIER_SPEED_THRESH = 20.0
+TRUE_LABEL = {"sim": "Landing pad (true)", "rtk": "Landing pad (RTK)"}
 
 # ── Mission-metric state definitions ───────────────────────────────────────
 # Edit these if your state numbering changes.
@@ -97,7 +124,8 @@ ACQ_END_STATE    = 4000     # end of "time to acquisition"
 LAND_START_STATE = 4000     # start of "time to landing"
 LAND_END_STATE   = 6000     # end of "time to landing" / throttle cut
 ATTEMPT_GROUP    = 4        # state group (code // 1000) counted as a landing attempt
-LP_ABOVE_GND     = 1.5      # roof (pad) height above the car's odometry origin (m)
+LP_ABOVE_GND     = 1.5      # roof (pad) height above the car's odometry origin (m);
+                            # replaced per log by the platform value from log_loader
 CONTACT_GAP_TOL  = 0.05     # m, vertical gap within this of the resting gap = touchdown
 
 # Raw measurement streams: label, colour, CSV column prefix, marker size
@@ -116,6 +144,7 @@ STATE_LABELS = {
     5: "Landing aborted",
     6: "Landing confirmed",
     7: "RTL",
+    8: "Pilot override",
 }
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -146,8 +175,8 @@ def raw_events(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
     One row per genuinely new raw measurement of a stream (the CSV holds the last
     measurement on every row until the next arrives), with columns:
         t            image timestamp, relative to the start of the log (s)
-        x, y, z      world position: logged relative measurement + the quad's TRUE
-                     position interpolated to the image timestamp
+        x, y, z      world position: logged relative measurement + the quad's reference
+                     position (truth, else FCU estimate) interpolated to the image timestamp
         yaw          measured yaw (AprilTag only), else absent
     Rows whose position is NaN (e.g. YOLO in pixel-space box mode) are dropped.
     """
@@ -162,7 +191,7 @@ def raw_events(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
     ev["t"] = ev[stamp_col] - df["timestamp"].iloc[0]
 
     for a, rel_col in zip("xyz", rel_cols):
-        quad_at_stamp = np.interp(ev["t"], df["t"], df[f"quad_true_{a}"])
+        quad_at_stamp = np.interp(ev["t"], df["t"], df[f"quad_ref_{a}"])
         rel = ev[rel_col] if rel_col in ev.columns else np.nan
         ev[a] = rel + quad_at_stamp
     out = ["t", "x", "y", "z"]
@@ -224,11 +253,13 @@ def time_series(df, quad_col, pad_col, true_col, ylabel, title, name, out_dir,
     fig, ax = plt.subplots(figsize=(10, 4))
     if quad_col is not None:
         ax.plot(t, scale * df[quad_col], color=C_QUAD, lw=LW, alpha=ALPHA_LINE,
-                label="Quadcopter")
+                label=df.attrs.get("quad_ref_label", "Quadcopter"))
     ax.plot(t, scale * df[pad_col], color=C_PAD, lw=LW, alpha=ALPHA_LINE,
             label="Landing pad (UKF)", linestyle="--")
-    ax.plot(t, scale * (df[true_col] + true_add), color=C_TRUE, lw=LW, alpha=ALPHA_LINE,
-            label="Landing pad (true)", linestyle=":")
+    if np.isfinite(df[true_col].to_numpy(float)).any():     # no truth on real flights w/o RTK
+        ax.plot(t, scale * (df[true_col] + true_add), color=C_TRUE, lw=LW, alpha=ALPHA_LINE,
+                label=TRUE_LABEL.get(df.attrs.get("truth_source"), "Landing pad (true)"),
+                linestyle=":")
     for label, colour, ev, size in (raw or []):
         if raw_field in ev.columns and len(ev):
             ax.scatter(ev["t"], scale * ev[raw_field], color=colour, s=size,
@@ -239,8 +270,9 @@ def time_series(df, quad_col, pad_col, true_col, ylabel, title, name, out_dir,
 
 
 # ── Loading ────────────────────────────────────────────────────────────────
-def load(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path).copy()   # copy() consolidates the ~140 columns before adding more
+def load(path: str, fleet="auto", rtk_bias=None) -> pd.DataFrame:
+    """ SITL or real log via log_loader (truth attached where it exists). """
+    df = load_log(path, fleet=fleet, rtk_bias=rtk_bias)
     # Relative controller-log time
     df["t"] = df["timestamp"] - df["timestamp"].iloc[0]
     return df
@@ -312,6 +344,7 @@ def compute_mission_metrics(df: pd.DataFrame, offset=(0.0, 0.0, 0.0),
                             offset_frame: str = "car", settle_time: float = 3.0):
     """Build the mission-summary text (list of lines) for the log in `df`."""
     L = ["=" * 64, "MISSION METRICS", "=" * 64]
+    L.append(f"  Truth: {describe_truth(df)}")
 
     if "controller_state" not in df.columns:
         L.append("  'controller_state' column not found – cannot compute metrics.")
@@ -338,10 +371,17 @@ def compute_mission_metrics(df: pd.DataFrame, offset=(0.0, 0.0, 0.0),
     if missing:
         L.append(f"  Cannot compute: missing column(s) {missing}")
     elif not np.isfinite(df[needed].to_numpy(float)).any():
-        L.append("  Cannot compute: no ground truth in this log.")
+        L.append("  Cannot compute: no ground truth in this log (real flight: add an RTK "
+                 "fleet log, see --fleet).")
+    elif cut_row is not None and not np.isfinite(df[needed].iloc[cut_row].to_numpy(float)).all():
+        L.append(f"  Cannot compute: no truth at the throttle cut (t = {t[cut_row]:.2f} s), "
+                 f"the RTK log does not cover it.")
     elif cut_row is None:
-        L.append(f"  State {LAND_END_STATE} never reached – error at the FINAL log row:")
-        L += _landing_error_lines(df, len(df) - 1, "End of log", offset, offset_frame)
+        last = int(np.flatnonzero(np.isfinite(df[needed].to_numpy(float)).all(axis=1))[-1])
+        where = "FINAL log row" if last == len(df) - 1 else "last row with truth"
+        L.append(f"  State {LAND_END_STATE} never reached – error at the {where}:")
+        L += _landing_error_lines(df, last, "End of log" if last == len(df) - 1
+                                  else "End of truth", offset, offset_frame)
     else:
         # Rest: settle_time after the cut, or the last row if the log ends first
         rest_row = int(np.searchsorted(t, t[cut_row] + settle_time))
@@ -445,7 +485,7 @@ def print_mission_metrics(df, out_dir, offset, offset_frame, settle_time):
 def plot_position(df, raw, out_dir):
     for a in "xyz":
         time_series(
-            df, f"quad_true_{a}", f"landing_pad_glob_{a}", f"landing_pad_glob_true_{a}",
+            df, f"quad_ref_{a}", f"landing_pad_glob_{a}", f"landing_pad_glob_true_{a}",
             ylabel=f"Position {a.upper()} (m)", title=f"Position {a.upper()} vs Time",
             name=f"position_{a}.png", out_dir=out_dir,
             true_add=LP_ABOVE_GND if a == "z" else 0.0,   # pad sits on the roof
@@ -457,7 +497,7 @@ def plot_position(df, raw, out_dir):
 def plot_velocity(df, out_dir):
     for a in "xyz":
         time_series(
-            df, f"quad_true_v{a}", f"landing_pad_glob_v{a}", f"landing_pad_glob_true_v{a}",
+            df, f"quad_ref_v{a}", f"landing_pad_glob_v{a}", f"landing_pad_glob_true_v{a}",
             ylabel=f"Velocity V{a} (m/s)", title=f"Velocity V{a.upper()} vs Time",
             name=f"velocity_v{a}.png", out_dir=out_dir,
         )
@@ -466,7 +506,7 @@ def plot_velocity(df, out_dir):
 
 def plot_yaw(df, raw, out_dir):
     time_series(
-        df, "quad_true_yaw", "landing_pad_glob_yaw", "landing_pad_glob_true_yaw",
+        df, "quad_ref_yaw", "landing_pad_glob_yaw", "landing_pad_glob_true_yaw",
         ylabel="Yaw (°)", title="Yaw vs Time", name="yaw.png", out_dir=out_dir,
         scale=np.degrees(1.0), raw=raw, raw_field="yaw",   # only AprilTag measures yaw
     )
@@ -490,9 +530,9 @@ def plot_ukf_only(df, col, scale, ylabel, title, name, out_dir):
 def plot_trajectories(df, raw, out_dir):
     """ 3-D and top-down trajectories, all in the true world frame, shifted so the
         quad starts at the origin. """
-    origin = df[["quad_true_x", "quad_true_y"]].iloc[0].to_numpy(float)
+    origin = df[["quad_ref_x", "quad_ref_y"]].iloc[0].to_numpy(float)
     # copy=True: pandas >= 3 returns read-only views, and these are shifted in place below
-    quad = df[["quad_true_x", "quad_true_y", "quad_true_z"]].to_numpy(float, copy=True)
+    quad = df[["quad_ref_x", "quad_ref_y", "quad_ref_z"]].to_numpy(float, copy=True)
     pad = df[["landing_pad_glob_x", "landing_pad_glob_y", "landing_pad_glob_z"]].to_numpy(float, copy=True)
     true = df[["landing_pad_glob_true_x", "landing_pad_glob_true_y",
                "landing_pad_glob_true_z"]].to_numpy(float, copy=True)
@@ -501,10 +541,13 @@ def plot_trajectories(df, raw, out_dir):
         arr[:, :2] -= origin
 
     lines = [
-        (quad, dict(color=C_QUAD, label="Quadcopter")),
+        (quad, dict(color=C_QUAD, label=df.attrs.get("quad_ref_label", "Quadcopter"))),
         (pad,  dict(color=C_PAD, label="Landing pad (UKF)", linestyle="--")),
-        (true, dict(color=C_TRUE, label="Landing pad (true)", linestyle=":")),
     ]
+    if np.isfinite(true[:, :2]).any():
+        lines.append((true, dict(color=C_TRUE, linestyle=":",
+                                 label=TRUE_LABEL.get(df.attrs.get("truth_source"),
+                                                      "Landing pad (true)"))))
 
     # 3-D
     fig = plt.figure(figsize=(10, 8))
@@ -558,8 +601,8 @@ def parse_args():
         description="Quadcopter flight data visualiser + mission metrics."
     )
     p.add_argument("csv", nargs="?", default=None,
-                   help="Path to controller CSV (default: newest controller_*.csv "
-                        "next to this script).")
+                   help="Controller CSV: full path or a file name in LOG_DIR "
+                        "(default: CSV_FILE in LOG_DIR, else the newest log there).")
     p.add_argument("--offset-x", type=float, default=0.0,
                    help="X offset (m) added to true roof position to form the landing target.")
     p.add_argument("--offset-y", type=float, default=0.0,
@@ -575,30 +618,46 @@ def parse_args():
                         "(default: 3).")
     p.add_argument("--no-show", action="store_true",
                    help="Save plots/metrics but don't open interactive windows.")
+    p.add_argument("--fleet", default="auto",
+                   help="RTK telemetry CSV for real flights (default: auto-find "
+                        "*fleet*.csv / *rtk*.csv overlapping the log; 'none' to disable).")
+    p.add_argument("--rtk-bias", default=None,
+                   help="Constant RTK frame offset 'E,N' (m) to remove, or 'auto'.")
     return p.parse_args()
 
 
+def parse_bias(text):
+    """ --rtk-bias value -> None / 'auto' / (E, N). """
+    if text is None or text.lower() == "auto":
+        return text
+    e, n = (float(v) for v in text.split(","))
+    return (e, n)
+
+
 def main():
+    global LP_ABOVE_GND
     args = parse_args()
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    if args.csv is not None:
-        csv_path = args.csv
-    else:
-        csv_path = os.path.join(script_dir, 'controller_20261020_204829.csv')
-    if not os.path.isfile(csv_path):
-        print(f"ERROR: could not find CSV at '{csv_path}'")
-        print("Usage: python plot_data.py [path/to/data.csv] "
+    try:
+        csv_path = resolve_csv(args.csv, LOG_DIR, CSV_FILE, script_dir)
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}")
+        print("Usage: python plot_state.py [path/to/data.csv | file name in LOG_DIR] "
               "[--offset-x X] [--offset-y Y] [--offset-z Z] "
-              "[--offset-frame car|global] [--settle-time S] [--no-show]")
+              "[--offset-frame car|global] [--settle-time S] [--no-show] "
+              "[--fleet PATH|none] [--rtk-bias E,N|auto]")
         sys.exit(1)
     out_dir = os.path.join(script_dir, "plots")
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"\nLoading data from: {csv_path}")
-    df = load(csv_path)
-    print(f"  {len(df)} rows  |  duration {df['t'].iloc[-1]:.1f} s\n")
+    fleet = None if str(args.fleet).lower() == "none" else args.fleet
+    df = load(csv_path, fleet=fleet, rtk_bias=parse_bias(args.rtk_bias))
+    LP_ABOVE_GND = df.attrs.get("lp_above_gnd", LP_ABOVE_GND)
+    print(f"  {len(df)} rows  |  duration {df['t'].iloc[-1]:.1f} s")
+    print(f"  {describe_truth(df)}\n")
 
-    # ── Clean true X/Y ────────────────────────────────────────────────
+    # ── Clean true X/Y (SITL glitches; harmless on RTK truth) ─────────
     true_x, true_y, outlier_mask = clean_true_position(
         df["landing_pad_glob_true_x"].values,
         df["landing_pad_glob_true_y"].values,

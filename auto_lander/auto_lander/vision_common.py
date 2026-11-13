@@ -36,7 +36,75 @@ from typing import cast
     interpolates both to the image's header.stamp, and calls camera_pose_in_level_frame
     with the mount from load_camera_mount. This is time-aligned to the image and cannot
     fail with a TF extrapolation error - the buffers clamp to the newest sample instead.
+
+    Camera model: the SIYI A2 mini is a 160 deg (horizontal) fisheye, used with its
+    on-board distortion correction OFF. Everything works in raw fisheye pixels through
+    the Kannala-Brandt model (OpenCV cv2.fisheye convention), see fisheye_project /
+    fisheye_pixel_to_ray. The UKF (ukf.py) imports the same two functions, so the
+    perception nodes and the filter cannot disagree about the lens.
 """
+
+
+# ---- FISHEYE CAMERA MODEL ----
+# Kannala-Brandt (cv2.fisheye): a ray at angle theta from the optical axis lands at
+#     theta_d = theta * (1 + k1 th^2 + k2 th^4 + k3 th^6 + k4 th^8)
+#     (u, v) = (fx * theta_d * x / r + cx,  fy * theta_d * y / r + cy),  r = hypot(x, y)
+# D = (k1, k2, k3, k4) = 0 is the ideal equidistant lens (r = f theta), the model the
+# Gazebo wide-angle camera renders. theta comes from atan2(r, z), not atan(r / z) as in
+# cv2.fisheye.projectPoints, so rays beyond 90 deg (and behind the camera) still map to
+# a finite, monotonic radius: they land outside the image and get clipped there.
+# Camera frame: x right, y down, z forward (OpenCV).
+
+def fisheye_project(pts_cam: np.ndarray, K: np.ndarray, D) -> np.ndarray:
+    """ Camera-frame points (..., 3) -> fisheye pixels (..., 2).
+
+    :param pts_cam: Points in the camera frame, any leading shape
+    :param K:       3x3 camera matrix
+    :param D:       Fisheye coefficients (k1, k2, k3, k4)
+    :return: Pixel coordinates, same leading shape as pts_cam
+    """
+    x, y, z = pts_cam[..., 0], pts_cam[..., 1], pts_cam[..., 2]
+    k1, k2, k3, k4 = D
+    r = np.hypot(x, y)
+    th = np.arctan2(r, z)
+    th2 = th * th
+    th_d = th * (1.0 + th2 * (k1 + th2 * (k2 + th2 * (k3 + th2 * k4))))
+    # theta_d / r -> 1 / z on the optical axis
+    on_axis = r < 1e-12
+    scale = np.where(on_axis, 1.0 / np.maximum(z, 1e-12), th_d / np.where(on_axis, 1.0, r))
+    return np.stack([K[0, 0] * x * scale + K[0, 2],
+                     K[1, 1] * y * scale + K[1, 2]], axis=-1)
+
+
+def fisheye_pixel_to_ray(u: float, v: float, K: np.ndarray, D) -> np.ndarray:
+    """ Fisheye pixel -> unit ray in the camera frame (3,). Inverse of fisheye_project,
+        valid beyond 90 deg.
+
+    :param u, v: Pixel coordinates
+    :param K:    3x3 camera matrix
+    :param D:    Fisheye coefficients (k1, k2, k3, k4)
+    :return: Unit ray (x right, y down, z forward)
+    """
+    mx = (u - K[0, 2]) / K[0, 0]
+    my = (v - K[1, 2]) / K[1, 1]
+    th_d = np.hypot(mx, my)
+    if th_d < 1e-12:
+        return np.array([0.0, 0.0, 1.0])
+
+    # Invert theta_d(theta) with Newton; theta_d is monotonic for a sane calibration
+    k1, k2, k3, k4 = D
+    th = th_d
+    for _ in range(10):
+        th2 = th * th
+        f = th * (1 + th2 * (k1 + th2 * (k2 + th2 * (k3 + th2 * k4)))) - th_d
+        df = 1 + th2 * (3 * k1 + th2 * (5 * k2 + th2 * (7 * k3 + th2 * 9 * k4)))
+        step = f / df
+        th -= step
+        if abs(step) < 1e-12:
+            break
+
+    s = np.sin(th) / th_d
+    return np.array([mx * s, my * s, np.cos(th)])
 
 
 def get_workspace_root() -> str | None:
@@ -59,27 +127,34 @@ def stamp_to_sec(stamp) -> float:
 
 
 def image_target_message(stamp, centre_x: float, centre_y: float, intrinsics, frame_id: str):
-    """ Pack a normalised image target and the frame's vertical FOV into a ROS message.
+    """ Pack an image target and the frame's vertical FOV into a ROS message.
 
-        vector.x = normalised image x coordinate (0..1)
-        vector.y = normalised image y coordinate (0..1)
+        vector.x = horizontal target coordinate, 0..1 across the image
+        vector.y = vertical target coordinate, 0..1 down the image
         vector.z = image vertical FOV (radians)
+
+        The fisheye pixel is turned into its ray and encoded as a tangent, so that
+        image_target_to_angle_error (atan of a tangent, unchanged in the gimbal
+        controller) returns the target's true angle. With fov_vertical = the true angle
+        of the top/bottom edge, the image edges still encode to exactly 0 and 1.
     """
+    ray = fisheye_pixel_to_ray(centre_x, centre_y, intrinsics.matrix, intrinsics.dist_coeffs_array)
+    z = max(ray[2], 1e-6)
     msg = Vector3Stamped()
     msg.header.stamp = stamp
     msg.header.frame_id = frame_id
-    msg.vector.x = float(centre_x / intrinsics.width)
-    msg.vector.y = float(centre_y / intrinsics.height)
+    msg.vector.x = float(0.5 + (ray[0] / z) / (2.0 * np.tan(intrinsics.fov_horizontal / 2.0)))
+    msg.vector.y = float(0.5 + (ray[1] / z) / (2.0 * np.tan(intrinsics.fov_vertical / 2.0)))
     msg.vector.z = float(intrinsics.fov_vertical)
     return msg
 
 
 def image_target_to_angle_error(normalised_centre_y: float, fov_vertical: float) -> float:
-    """ Convert a normalised image-row target into a signed vertical angle error.
+    """ Convert an image target's vertical coordinate into a signed vertical angle error.
 
         Positive = target below the image centre. The image target carries the
         vertical FOV so this remains valid for the different processing resolutions
-        used by AprilTag and YOLO.
+        used by AprilTag and YOLO. Exact for the fisheye: see image_target_message.
     """
     return float(
         np.degrees(
@@ -114,38 +189,54 @@ class TagDefinition:
 
 @dataclass
 class CameraIntrinsics:
-    """ Pinhole camera model derived from image size + horizontal FOV. Both nodes
-        build one of these from the same img_width/img_height parameters so their
-        pixel<->ray math stays consistent.
+    """ Fisheye camera model (Kannala-Brandt, see fisheye_project) for the frame as
+        processed. Every node builds one from the same img_width/img_height parameters
+        so their pixel<->ray math stays consistent.
 
-        Distortion coefficients are passed in from the node parameters so the camera
-        calibration can be changed without touching this shared module. The vertical
-        FOV is also carried with image-target messages so the independent gimbal
-        controller can recover the target angle without knowing which node produced it.
+        Without a calibration (matrix_px all zeros) it is the ideal equidistant lens
+        whose horizontal FOV spans the image width: f = (W / 2) / (HFOV / 2), principal
+        point at the image centre. That is exactly what the Gazebo wide-angle camera
+        renders. For the real camera pass the cv2.fisheye.calibrate result, scaled from
+        the calibration resolution to width x height.
+
+        The vertical FOV (true angle between the top and bottom edges) is carried with
+        image-target messages so the independent gimbal controller can recover the
+        target angle without knowing which node produced it.
+
+    :param dist_coeffs: Fisheye coefficients (k1, k2, k3, k4); zeros = equidistant
+    :param matrix_px:   Optional (fx, fy, cx, cy) in px at width x height; all zeros
+                        or None = derive from the horizontal FOV
     """
 
     width: int
     height: int
     fov_horizontal: float
-    dist_coeffs: tuple[float, float, float, float, float]
+    dist_coeffs: tuple[float, float, float, float]
+    matrix_px: tuple[float, float, float, float] | None = None
 
     def __post_init__(self):
-        self.fov_vertical = 2 * np.arctan(
-            np.tan(self.fov_horizontal / 2) / (self.width / self.height)
-        )
+        if len(self.dist_coeffs) != 4:
+            raise ValueError("fisheye dist_coeffs must hold 4 values (k1, k2, k3, k4)")
 
-        fx = self.width / (2 * np.tan(self.fov_horizontal / 2))
-        fy = self.height / (2 * np.tan(self.fov_vertical / 2))
+        if self.matrix_px is not None and any(self.matrix_px):
+            fx, fy, cx, cy = self.matrix_px
+        else:
+            fx = fy = (self.width / 2) / (self.fov_horizontal / 2)
+            cx, cy = self.width / 2, self.height / 2
+
         self.matrix = np.array(
             [
-                [fx, 0, self.width / 2],
-                [0, fy, self.height / 2],
+                [fx, 0, cx],
+                [0, fy, cy],
                 [0, 0, 1],
             ],
             dtype=np.float64,
         )
-        self.matrix_inv = np.linalg.inv(self.matrix)
         self.dist_coeffs_array = np.array(self.dist_coeffs, dtype=np.float64)
+
+        # True angle from the optical axis to the top edge, doubled
+        top = fisheye_pixel_to_ray(cx, 0.0, self.matrix, self.dist_coeffs_array)
+        self.fov_vertical = 2 * np.arctan2(-top[1], top[2])
 
 
 @dataclass

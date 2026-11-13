@@ -32,6 +32,10 @@ from launch_ros.parameter_descriptions import ParameterValue
 CAMERA_HFOV_RAD = 2.7925268                      # TODO: calibrate (spec value, 160 deg)
 CAMERA_DISTORTION = [0.0, 0.0, 0.0, 0.0, 0.0]    # TODO: k1 k2 p1 p2 k3 from calibration
 
+# YOLO processing resolution (16:9). Shared by the YOLO node and the controller,
+# whose UKF clips its predicted box to it, so the two can't drift apart.
+YOLO_IMAGE_SIZE = {"img_width": 640, "img_height": 360}
+
 # ---- Camera mount in the drone body frame: TODO measure on the real airframe ----
 # Read by the perception nodes (vision_common.load_camera_mount).
 CAMERA_MOUNT = {
@@ -215,8 +219,7 @@ def generate_launch_description():
 
             # ----- Processing -----
             {"yolo_processing_rate": 10.0},
-            {"img_width": 640},                # 16:9, same aspect as the AprilTag frame
-            {"img_height": 360},
+            YOLO_IMAGE_SIZE,
 
             # ----- YOLO -----
             {"yolo_enabled": True},
@@ -345,7 +348,7 @@ def generate_launch_description():
             ]},
 
             {"UKF_unhealthy_covar": 500.0},
-            {"UKF_freq": 40.0},                   # drop to 20 if "UKF loop took" warnings appear
+            {"UKF_freq": 20.0},                   # drop to 20 if "UKF loop took" warnings appear
             {"apriltag_enabled": False},
 
             # ----- YOLO measurement model -----
@@ -353,6 +356,7 @@ def generate_launch_description():
             {"UKF_yolo_box_pixel_sigma": 5.0},
             {"UKF_yolo_fit_yaw_enabled": True},
             {"yolo_roof_height_gain": 0.2},
+            YOLO_IMAGE_SIZE,                      # UKF clips its predicted box to the frame
 
             # ----- Car shape -----
             {"yolo_car_boxes": CAR_BOXES},

@@ -30,6 +30,7 @@ from .vision_common import OdometryBuffer
 from .vision_common import GimbalAngleBuffer
 from .vision_common import FrameRecorder
 from .vision_common import camera_pose_in_level_frame
+from .vision_common import fisheye_pixel_to_ray
 from .vision_common import image_target_message
 from .vision_common import load_camera_mount
 from .vision_common import stamp_to_sec
@@ -46,7 +47,7 @@ from .vision_common import get_workspace_root
 
     /landing_pad/yolo_car_meas (std_msgs/Float64MultiArray) layout:
         [0:2]   image stamp (sec, nanosec)
-        [2:6]   undistorted box edges u_min, u_max, v_min, v_max (px, pinhole K)
+        [2:6]   raw box edges u_min, u_max, v_min, v_max (fisheye px, as detected)
         [6]     confidence
         [7]     drone altitude at the image stamp (m)
         [8:12]  intrinsics fx, fy, cx, cy (px)
@@ -55,6 +56,13 @@ from .vision_common import get_workspace_root
         [24:28] pipeline timestamps (s, node clock): image received, processing
                 started, inference done, measurement published. NaN when
                 diagnostics_enabled is False.
+        [28:32] fisheye coefficients k1, k2, k3, k4 (cv2.fisheye convention)
+
+    The box is NOT undistorted. A 160 deg fisheye has no pinhole equivalent (the image
+    corners are beyond 90 deg), and the fisheye frame edge is curved in any pinhole
+    frame, so a box truncated by the edge could not be matched. Instead the UKF projects
+    the car through the same fisheye model (vision_common.fisheye_project) and clips
+    its predicted box to the real image rectangle, exactly as YOLO's box is clipped.
 
     Carrying the camera pose (attitude + gimbal angle, both interpolated to the image
     stamp) in the measurement lets the UKF replay it exactly during OOSM rollback.
@@ -136,7 +144,7 @@ class YoloNode(Node):
         self.declare_parameter("yolo_car_class_id", 0)
         self._car_class_id = (self.get_parameter("yolo_car_class_id").get_parameter_value().integer_value)
 
-        self.declare_parameter("yolo_edge_margin_px", 10)
+        self.declare_parameter("yolo_edge_margin_px", 0)
         self._yolo_edge_margin_px = (self.get_parameter("yolo_edge_margin_px").get_parameter_value().integer_value)
         self.declare_parameter("yolo_ground_ray_z_epsilon", 1e-3)
         self._ground_ray_z_epsilon = (self.get_parameter("yolo_ground_ray_z_epsilon").get_parameter_value().double_value)
@@ -152,10 +160,16 @@ class YoloNode(Node):
         # ---- CAMERA PARAMETERS ----
         self.declare_parameter("camera_fov_horizontal", 2.7925268)
         self._camera_fov_horizontal = (self.get_parameter("camera_fov_horizontal").get_parameter_value().double_value)
-        self.declare_parameter("camera_distortion_coeffs", [0.0, 0.0, 0.0, 0.0, 0.0])
+        # Fisheye k1..k4 (cv2.fisheye); zeros = ideal equidistant lens (the Gazebo camera)
+        self.declare_parameter("camera_distortion_coeffs", [0.0, 0.0, 0.0, 0.0])
         camera_distortion_coeffs = (self.get_parameter("camera_distortion_coeffs").get_parameter_value().double_array_value)
-        if len(camera_distortion_coeffs) != 5:
-            raise ValueError("camera_distortion_coeffs must contain exactly five values")
+        if len(camera_distortion_coeffs) != 4:
+            raise ValueError("camera_distortion_coeffs must contain exactly four fisheye values (k1..k4)")
+        # Calibrated fx, fy, cx, cy at img_width x img_height; zeros = derive from the FOV
+        self.declare_parameter("camera_matrix_px", [0.0, 0.0, 0.0, 0.0])
+        camera_matrix_px = (self.get_parameter("camera_matrix_px").get_parameter_value().double_array_value)
+        if len(camera_matrix_px) != 4:
+            raise ValueError("camera_matrix_px must contain exactly four values (fx, fy, cx, cy)")
 
         # ---- BUFFER PARAMETERS ----
         self.declare_parameter("odometry_buffer_window_s", 1.0)
@@ -178,6 +192,7 @@ class YoloNode(Node):
             self._image_height,
             self._camera_fov_horizontal,
             tuple(camera_distortion_coeffs), # type:ignore
+            tuple(camera_matrix_px),         # type:ignore
         )
         K = self._intrinsics.matrix
         self._intrinsics_flat = np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2]])
@@ -399,21 +414,8 @@ class YoloNode(Node):
 
         if car_detection is not None:
             cx, cy, bw, bh, confidence = car_detection
+            # Raw fisheye box: the UKF projects through the same lens model
             u0, u1, v0, v1 = cx - 0.5 * bw, cx + 0.5 * bw, cy - 0.5 * bh, cy + 0.5 * bh
-
-            # Undistort a 3x3 grid over the box (corners, edge midpoints, centre) and
-            # take its extent: distortion bends straight edges, so corners alone can
-            # miss the true extent. P=K keeps the output in the same pinhole pixel frame
-            # the UKF projects into.
-            if np.any(self._dist_coeffs):
-                us, vs = np.meshgrid([u0, cx, u1], [v0, cy, v1])
-                und = cv2.undistortPoints(
-                    np.c_[us.ravel(), vs.ravel()].reshape(-1, 1, 2),
-                    self._intrinsics.matrix, self._dist_coeffs, P=self._intrinsics.matrix,
-                ).reshape(-1, 2)
-                u0, u1 = und[:, 0].min(), und[:, 0].max()
-                v0, v1 = und[:, 1].min(), und[:, 1].max()
-                cx, cy = und[4]   # grid centre
 
             self._yolo_target_publisher.publish(
                 image_target_message(stamp, cx, cy, self._intrinsics, "yolo_target")
@@ -422,8 +424,9 @@ class YoloNode(Node):
             # Only a box whose centre ray points at the ground is a usable measurement.
             # Note: unlike apriltag.py, this only ever publishes True - a missed YOLO
             # detection shouldn't override AprilTag's own found signal on the topic.
-            ray = T_local_cam[:3, :3] @ self._intrinsics.matrix_inv @ np.array([cx, cy, 1.0])
-            if ray[2] < -self._ground_ray_z_epsilon * np.linalg.norm(ray):
+            ray = T_local_cam[:3, :3] @ fisheye_pixel_to_ray(
+                cx, cy, self._intrinsics.matrix, self._dist_coeffs)       # unit ray
+            if ray[2] < -self._ground_ray_z_epsilon:
                 self._landing_pad_found_publisher.publish(Bool(data=True))
                 timing = ([t_rx, t_start, t_inf, self._now_sec()]
                           if self.diagnostics_enabled else [np.nan] * 4)
@@ -435,6 +438,7 @@ class YoloNode(Node):
                     self._intrinsics_flat,
                     T_local_cam[:3, 3], T_local_cam[:3, :3].ravel(),
                     timing,
+                    self._dist_coeffs,
                 ].astype(float).tolist()
                 self._car_measurement_publisher.publish(meas)
 

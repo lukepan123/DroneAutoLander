@@ -14,8 +14,12 @@ from launch_ros.parameter_descriptions import ParameterValue
 """
 
 # ---- Camera (Gazebo iris_with_gimbal camera) ----
-CAMERA_HFOV_RAD = 2.7925268                      # 160 deg, matches the SDF sensor
-CAMERA_DISTORTION = [0.0, 0.0, 0.0, 0.0, 0.0]    # ideal pinhole in sim
+CAMERA_HFOV_RAD = 2.7925268                      # 160 deg, matches the SDF wideanglecamera
+CAMERA_DISTORTION = [0.0, 0.0, 0.0, 0.0]         # fisheye k1..k4: ideal equidistant in sim
+
+# YOLO processing resolution (16:9). Shared by the YOLO node and the controller,
+# whose UKF clips its predicted box to it, so the two can't drift apart.
+YOLO_IMAGE_SIZE = {"img_width": 640, "img_height": 360}
 
 # Camera mount in the drone body frame. Read by the perception nodes
 # (vision_common.load_camera_mount), not by the gimbal controller.
@@ -106,6 +110,8 @@ def generate_launch_description():
 
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
 
+            "/ghost_cam/image@sensor_msgs/msg/Image[gz.msgs.Image", # TODO: REMOVE WHEN DONE!
+
             "--ros-args",
             "-r",
             "/world/iris_runway_new/model/iris_with_gimbal/model/gimbal/link/tilt_link/sensor/camera/image:=/camera/image_raw",
@@ -193,8 +199,7 @@ def generate_launch_description():
 
             # ----- Processing -----
             {"yolo_processing_rate": 10.0},
-            {"img_width": 640},
-            {"img_height": 360},
+            YOLO_IMAGE_SIZE,
 
             # ----- YOLO -----
             {"yolo_enabled": True},
@@ -257,12 +262,12 @@ def generate_launch_description():
             {"boundary_limit": 800.0},
 
             # ----- Landing state / altitude parameters -----
-            {"landing_recovery_height": 7.0},
-            {"landing_height_above_gnd": 1.5},
-            {"landing_height_threshold": 0.2},
+            {"landing_recovery_height": 10.0},
+            {"landing_height_above_gnd": 1.705},  # Grand Vitara pad top (= yolo_car_pad_position z)
+            {"landing_height_threshold": 0.15},
             {"landing_centered_error_threshold": 3.0},
 
-            {"landing_chase_altitude": 7.0},
+            {"landing_chase_altitude": 15.0},
             {"landing_descent_rate_far": -1.0},
             {"landing_descent_rate_close": -1.0},
             {"landing_time_visual_min_time (s)": 1.1},
@@ -273,7 +278,7 @@ def generate_launch_description():
             {"landing_cut_height_max": 1.0},
             {"landing_lead_time_max": 0.5},
             {"landing_cut_margin": 0.10},
-            {"landing_pad_size": [1.80, 1.48]},   # sim platform box is 1.71 x 1.41 (0.95 scale)
+            {"landing_pad_size": [1.20, 1.20]},
             {"landing_gear_size": [0.3, 0.3]},
             {"landing_car_a_max": 4.905},
             {"landing_car_a_lat_max": 5.0},
@@ -320,30 +325,30 @@ def generate_launch_description():
             ]},
 
             {"UKF_unhealthy_covar": 500.0},
-            {"UKF_freq": 40.0},
+            {"UKF_freq": 20.0},
             {"apriltag_enabled": False},
 
             # ----- YOLO measurement model -----
             {"UKF_yolo_box_yaw_sigma_max": 0.25},
-            {"UKF_yolo_box_pixel_sigma": 5.0},
+            {"UKF_yolo_box_pixel_sigma": 20.0},    # raw fisheye px: retune (~4x finer than the old pinhole px)
             {"UKF_yolo_fit_yaw_enabled": True},
             {"yolo_roof_height_gain": 0.2},
+            YOLO_IMAGE_SIZE,                      # UKF clips its predicted box to the frame
 
             # ----- Car shape (car model frame: x fwd, y left, z up; metres) -----
-            # Frame = prius_hybrid base_link (same origin as /landing_pad/odom), origin at
-            # ground level. Boxes fitted to the SDF collision primitives; mirrors estimated.
+            # Frame = grand_vitara base_link (same origin as /landing_pad/odom), origin at
+            # ground level, midway between the axles. Boxes fitted to the mesh vertices.
             # 6 numbers per box; add or remove rows freely.
             {"yolo_car_boxes": [
-                # x_min   x_max   y_min    y_max   z_min  z_max     (xy scaled 0.95)
-                -2.196,   2.126, -0.846,   0.846,  0.00,  0.85,    # lower body, bumpers, wheels
-                -2.139,   1.233, -0.846,   0.846,  0.85,  1.15,    # upper body, trunk deck
-                -1.332,   0.426, -0.608,   0.608,  1.15,  1.38,    # greenhouse
-                -1.094,   0.188, -0.608,   0.608,  1.38,  1.49,    # roof
-                -1.332,   0.378, -0.703,   0.703,  1.515, 1.525,   # landing platform
+                # x_min   x_max   y_min    y_max   z_min  z_max
+                -2.175,  1.833, -0.920,  0.920,  0.00,  1.05,    # lower body (YOLO-calibrated)
+                -2.040,  0.488, -0.794,  0.794,  1.05,  1.45,    # greenhouse
+                -1.769,  0.308, -0.680,  0.680,  1.45,  1.62,    # roof
+                -1.400, -0.200, -0.600,  0.600,  1.695, 1.705,   # landing platform, 1.2 x 1.2 m
             ]},
             # Platform top-centre in the same frame. Keep plot_errors.py TRUE_OFFSET_* equal to it.
-            {"yolo_car_pad_position": [-0.5, 0.0, 1.525]},
-            {"yolo_car_rear_axle": [-1.45, 0.0]},
+            {"yolo_car_pad_position": [-0.80, 0.0, 1.705]},
+            {"yolo_car_rear_axle": [-1.32, 0.0]},
 
             # ----- Controller loop -----
             {"CTRL_freq": 20.0},
@@ -351,7 +356,7 @@ def generate_launch_description():
             # ----- PID controller parameters -----
             {"PID_lam_0": 6.0},
             {"PID_Kp_0": 8.0},
-            {"PID_Kd_0": 4.0},
+            {"PID_Kd_0": 3.0},
 
             # Altitude: outer height loop only, FCU runs vel/accel/throttle
             {"PID_Kp_pos_z": 2.0},
@@ -370,9 +375,9 @@ def generate_launch_description():
             {"PID_d_hold_radius": 6.0},
             {"PID_marker_yaw_sigma_threshold": 0.25},
 
-            {"PID_drop_off_strength": 0.5},
-            {"PID_terminal_gain": 1.0},
-            {"PID_drop_off": 7.0},
+            {"PID_drop_off_strength": 0.4},
+            {"PID_terminal_gain": 0.5},
+            {"PID_drop_off": 10.0},
 
             # Pad-acceleration feedforward (turns / speed changes). 0.0 = off (pure PD)
             {"PID_accel_ff_gain": 1.0},

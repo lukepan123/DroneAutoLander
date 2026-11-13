@@ -1,4 +1,5 @@
 import csv
+import time
 import numpy as np
 import tf_transformations
 import tf2_ros
@@ -117,7 +118,7 @@ class Orchestrator(Node):
         self.LANDING_ACQUIRE_BEARING_MAX = np.radians(self.get_parameter("landing_acquire_bearing_max_deg").get_parameter_value().double_value)
         # Early acquisition (3000 -> 4000 before the lock timer): the UKF is confident and
         # the drone is matching the pad's velocity, continuously for the dwell time
-        self.declare_parameter("landing_confident_pos_sigma", 0.50)      # m, 1-sigma horizontal position
+        self.declare_parameter("landing_confident_pos_sigma", 1.00)      # m, 1-sigma horizontal position
         self.LANDING_CONFIDENT_POS_SIGMA = self.get_parameter("landing_confident_pos_sigma").get_parameter_value().double_value
         self.declare_parameter("landing_confident_vel_sigma", 2.00)      # m/s, 1-sigma pad velocity vector
         self.LANDING_CONFIDENT_VEL_SIGMA = self.get_parameter("landing_confident_vel_sigma").get_parameter_value().double_value
@@ -317,7 +318,7 @@ class Orchestrator(Node):
         # box fit (position, plus resolved box yaw) is fed instead, as during seeding
         self.declare_parameter('UKF_yolo_box_yaw_sigma_max', 0.25)   # rad
         self.UKF_YOLO_BOX_YAW_SIGMA_MAX = self.get_parameter("UKF_yolo_box_yaw_sigma_max").get_parameter_value().double_value
-        self.declare_parameter('UKF_yolo_box_pixel_sigma', 10.0)      # px, per box edge
+        self.declare_parameter('UKF_yolo_box_pixel_sigma', 10.0)      # raw fisheye px, per box edge
         self.UKF_YOLO_BOX_PIXEL_SIGMA = self.get_parameter("UKF_yolo_box_pixel_sigma").get_parameter_value().double_value
 
         # Box-derived yaw for the fallback fit: the box gives |car yaw - camera heading|,
@@ -355,6 +356,14 @@ class Orchestrator(Node):
         self.YOLO_CAR_FIT_MAX_REL_RMS = self.get_parameter("yolo_car_fit_max_rel_rms").get_parameter_value().double_value
         self.declare_parameter("yolo_roof_height_gain", 0.2)  # per car detection; how fast the pad height tracks (0 = fixed)
         self.YOLO_ROOF_HEIGHT_GAIN = self.get_parameter("yolo_roof_height_gain").get_parameter_value().double_value
+        # Frame size as processed by yolo.py (same launch constant as its node): the UKF
+        # clips its predicted (fisheye) box to it
+        self.declare_parameter("img_width", 640)
+        self.declare_parameter("img_height", 360)
+        self.YOLO_IMAGE_SIZE = (
+            self.get_parameter("img_width").get_parameter_value().integer_value,
+            self.get_parameter("img_height").get_parameter_value().integer_value,
+        )
 
         # region ---- CTRL PARAMETERS ----
         self.declare_parameter('CTRL_freq', 20.0)
@@ -427,6 +436,7 @@ class Orchestrator(Node):
             rear_axle=self.YOLO_CAR_REAR_AXLE,
             yaw_seed_var_max=1.0 if self.UKF_YOLO_FIT_YAW_ENABLED else None,
             buffer_window=self.UKF_BUFFER_WINDOW,
+            image_size=self.YOLO_IMAGE_SIZE,
         )
 
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
@@ -977,6 +987,7 @@ class Orchestrator(Node):
 
         now = self.get_clock().now()
         now_sec = now.nanoseconds * 1e-9
+        tick_perf = time.perf_counter()   # sim clock is frozen inside this callback
 
         # Predict UKF step up to now (after seeding). The filter steps by the gap since
         # its own last event, so a seed/measurement stamped in the past is caught up.
@@ -1011,11 +1022,11 @@ class Orchestrator(Node):
         ])
 
         # Update YOLO measurement noise, inflate covariance as altitude drops since
-        # the bounding box becomes a worse estimate (clipping, car != box at close range).
+        # the bounding box becomes a worse estimate (car != box at close range).
         alt = -self.landing_pad_relative_position_forward_predict[LP_State.PZ]
 
         d_near, d_far = 0.0, self.LANDING_HEIGHT_ABOVE_GND + 2.0
-        scale_max, gamma = 20.0, 2.0
+        scale_max, gamma = 10.0, 2.0
         scale_t = np.clip((d_far - alt) / (d_far - d_near), 0.0, 1.0)
         yolo_car_scale = 1.0 + (scale_max - 1.0) * scale_t ** gamma
 
@@ -1074,7 +1085,10 @@ class Orchestrator(Node):
             key = (int(d[0]), int(d[1]))
             stamp = key[0] + key[1] * 1e-9
             K = np.array([[d[8], 0.0, d[10]], [0.0, d[9], d[11]], [0.0, 0.0, 1.0]])
-            cam = (d[15:24].reshape(3, 3), d[12:15], K, d[7])
+            # Fisheye k1..k4 ride in the message so the UKF projects through exactly the
+            # lens model YOLO's box came from (and replays it unchanged during OOSM)
+            D = d[28:32] if d.size >= 32 else np.zeros(4)
+            cam = (d[15:24].reshape(3, 3), d[12:15], K, d[7], D)
             # Pipeline timestamps ride in the message itself (older yolo.py: absent)
             checkpoints = d[24:28] if d.size >= 28 else None
 
@@ -1122,7 +1136,8 @@ class Orchestrator(Node):
             # transform every tick until a new one arrives)
             if self.DIAGNOSTICS_ENABLED and stamp != self._latency_last_stamp[measurement_type]:
                 self._latency_last_stamp[measurement_type] = stamp
-                t_done = self.get_clock().now().nanoseconds * 1e-9
+                # t_done = self.get_clock().now().nanoseconds * 1e-9
+                t_done = now_sec + (time.perf_counter() - tick_perf)
                 self._record_latency(measurement_type, stamp, checkpoints, now_sec, t_done)
 
         # Divergence guard: the gate rejecting every frame means the filter has lost the
@@ -1230,8 +1245,11 @@ class Orchestrator(Node):
         self.landing_pad_relative_odometry.twist.twist.linear.z = float(rel_vz)
 
         # Check for timer overruns
-        end = self.get_clock().now()
-        elapsed = (end - now).nanoseconds / 1e6
+        # end = self.get_clock().now()
+        # elapsed = (end - now).nanoseconds / 1e6
+        # if elapsed > 1.0/(self.UKF_FREQ) * 1000:
+        #     self.get_logger().warn(f"UKF loop took {elapsed:.2f} ms!")
+        elapsed = (time.perf_counter() - tick_perf) * 1000.0
         if elapsed > 1.0/(self.UKF_FREQ) * 1000:
             self.get_logger().warn(f"UKF loop took {elapsed:.2f} ms!")
 

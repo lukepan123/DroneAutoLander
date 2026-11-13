@@ -6,6 +6,8 @@ from scipy.optimize import least_squares
 
 from .state_definitions import LP_State
 from .state_definitions import LP_Meas
+from .vision_common import fisheye_project
+from .vision_common import fisheye_pixel_to_ray
 
 """ UKF Class definitions to implement a target/chaser kinematic model. Consists of all
     higher level UKF logic for prediction and updating of kinematic model, as well as
@@ -15,11 +17,14 @@ from .state_definitions import LP_Meas
       - "pose" (cam is None): z = (px, py, pz, yaw), measured directly. Used by AprilTag
         and by the YOLO fallback (fitted position, plus the box-derived yaw once it
         can be resolved against the filter's heading, see fit_car_box).
-      - "box"  (cam given):   z = (u_min, u_max, v_min, v_max), the YOLO bounding box
-        edges in pixels. h(x) projects the car's shape (a union of boxes, at the sigma
-        point's pad position AND yaw) through the image-time camera pose. The UKF therefore uses the current
-        yaw estimate and propagates the yaw/position/height coupling through the
-        covariance properly, instead of a yaw-agnostic fit upstream.
+      - "box"  (cam given):   z = (u_min, u_max, v_min, v_max), the raw YOLO bounding
+        box edges in fisheye pixels. h(x) projects the car's shape (a union of boxes, at
+        the sigma point's pad position AND yaw) through the image-time camera pose and
+        the fisheye lens model (vision_common.fisheye_project), clipped to the image so
+        a car partly out of frame is still a valid measurement (its clipped edges carry
+        no information). The UKF therefore uses the current yaw estimate and propagates
+        the yaw/position/height coupling through the covariance properly, instead of a
+        yaw-agnostic fit upstream.
 """
 
 class UKF:
@@ -43,7 +48,8 @@ class UKF:
 
     _Event = namedtuple("_Event", ["t", "kind", "x", "P", "X_prop", "data"])
 
-    # cam = (R_level_cam (3x3), t_level_cam (3,), K (3x3), altitude) or None
+    # cam = (R_level_cam (3x3), t_level_cam (3,), K (3x3), altitude, D (4,)) or None,
+    # D = fisheye coefficients k1..k4
     _Meas = namedtuple("_Meas", ["z", "R", "cam"])
 
 
@@ -54,7 +60,7 @@ class UKF:
                  seed_window_n, seed_window_min_dt,
                  car_boxes, pad_position,
                  car_fit_max_rel_rms, car_roof_gain, rear_axle=None,
-                 yaw_seed_var_max=None, buffer_window=0.5) -> None:
+                 yaw_seed_var_max=None, buffer_window=0.5, *, image_size) -> None:
 
         """ Initialise the UKF. Preprocesses and computes the required sigma weights and
             stores them to reduce run-time computation.
@@ -74,6 +80,8 @@ class UKF:
         :param buffer_window:       OOSM history length (s). Must comfortably exceed the
                                     worst-case image -> UKF latency, or late measurements
                                     are dropped as older than the buffer.
+        :param image_size:          (width, height) of the frame YOLO processes (px). The
+                                    predicted box is clipped to it, as YOLO's own box is.
         """
         # ---- UKF PARAMETERS ----
         # Dimensions
@@ -136,7 +144,19 @@ class UKF:
             for x0, x1, y0, y1, z0, z1 in boxes
             for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)
         ])
-        self._car_corners = corners - pad                       # (8 * n_boxes, 3)
+        # Corners plus 3 interior points on every box edge: through the fisheye, straight
+        # edges project as curves that bulge past the corners (up to ~9 px at 640x360
+        # close to the car), so corners alone would under-size the predicted box. With
+        # these the projected extent is within ~0.5 px of a densely sampled surface.
+        edge_pts = []
+        for x0, x1, y0, y1, z0, z1 in boxes:
+            c8 = np.array([[x, y, z] for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)])
+            for i in range(8):
+                for j in range(i + 1, 8):
+                    if np.count_nonzero(c8[i] != c8[j]) == 1:    # differ in one axis: an edge
+                        for f in (0.25, 0.5, 0.75):
+                            edge_pts.append(c8[i] + f * (c8[j] - c8[i]))
+        self._car_corners = np.vstack([corners, edge_pts]) - pad    # (44 * n_boxes, 3)
 
         # Centre of the car's overall extents, relative to the pad (fit initial guess)
         self._centre_from_pad = 0.5 * (corners.min(axis=0) + corners.max(axis=0)) - pad
@@ -146,6 +166,9 @@ class UKF:
         self._car_fit_max_rel_rms = car_fit_max_rel_rms
         self._car_roof_gain = car_roof_gain
         self._yaw_seed_var_max = yaw_seed_var_max
+
+        # Image bounds for clipping the predicted box
+        self._img_w, self._img_h = float(image_size[0]), float(image_size[1])
 
         # Ackermann kinematics: only the rear axle moves along the heading. CTRA is run
         # at the axle; this is the pad's offset from it in the car frame (x fwd, y left).
@@ -326,7 +349,7 @@ class UKF:
                                 edges (u_min, u_max, v_min, v_max) in pixels
         :param R:               Measurement covariance (4x4)
         :param now:             Current timestamp (s)
-        :param cam:             (R_level_cam, t_level_cam, K, altitude) at the image
+        :param cam:             (R_level_cam, t_level_cam, K, altitude, D) at the image
                                 stamp for box measurements, else None
         :param pipeline_timing: Optional Vector3Stamped containing pipeline timestamps
         :param quad_vel:        Drone velocity (local frame), stored with seed samples so
@@ -480,8 +503,8 @@ class UKF:
             wrong costs least: if it can't be separated, the camera axis is returned
             with delta folded into the sigma.
 
-        :param box:     (u_min, u_max, v_min, v_max) in pixels
-        :param cam:     (R_level_cam, t_level_cam, K, altitude) at the image stamp
+        :param box:     (u_min, u_max, v_min, v_max) in fisheye pixels
+        :param cam:     (R_level_cam, t_level_cam, K, altitude, D) at the image stamp
         :param yaw_ref: Optional (yaw, sigma_yaw, px_sigma): the filter's heading, its
                         1-sigma (rad), and the YOLO edge noise (px) used for the fitted
                         yaw's sigma. None skips the yaw extraction.
@@ -489,13 +512,14 @@ class UKF:
                  ground. pos = [px, py, pz] (pad top-centre) in the local-level frame.
                  yaw/sigma_yaw are None when not requested or not resolvable.
         """
-        R_lc, t_lc, K, altitude = cam
+        R_lc, t_lc, K, altitude, D = cam
         box = np.asarray(box, dtype=float)
         cx, cy = 0.5 * (box[0] + box[1]), 0.5 * (box[2] + box[3])
         bw, bh = box[1] - box[0], box[3] - box[2]
 
-        ray = R_lc @ np.linalg.solve(K, [cx, cy, 1.0])
-        ray /= np.linalg.norm(ray)
+        # Initial guess only (the box centre is not exactly the car centre's image under
+        # the fisheye); the shape fit below projects through the full lens model
+        ray = R_lc @ fisheye_pixel_to_ray(cx, cy, K, D)      # unit ray
         if ray[2] >= -1e-3:
             return None
 
@@ -962,14 +986,14 @@ class UKF:
 
     def _box_edges(self, pad, yaw, cam) -> np.ndarray:
         """ Project the car shape (union of boxes) into the image and return its
-            overall bounding box.
+            overall bounding box, clipped to the image.
 
         :param pad: (N, 3) landing pad positions, drone-relative, local-level frame
         :param yaw: (N,) car headings in the local-level frame
-        :param cam: (R_level_cam, t_level_cam, K, altitude) at the image stamp
-        :return: (N, 4) [u_min, u_max, v_min, v_max] in pixels
+        :param cam: (R_level_cam, t_level_cam, K, altitude, D) at the image stamp
+        :return: (N, 4) [u_min, u_max, v_min, v_max] in fisheye pixels
         """
-        R_lc, t_lc, K, _ = cam
+        R_lc, t_lc, K, _, D = cam
         c, s = np.cos(yaw)[:, None], np.sin(yaw)[:, None]
         fwd, left, up = self._car_corners.T
 
@@ -980,11 +1004,16 @@ class UKF:
             pad[:, None, 2] + up,
         ], axis=-1)                                         # (N, M, 3)
 
-        uv = ((pts - t_lc) @ R_lc) @ K.T                    # camera frame -> pixels
-        uv = uv[..., :2] / np.maximum(uv[..., 2:], 0.1)
+        uv = fisheye_project((pts - t_lc) @ R_lc, K, D)     # camera frame -> pixels
+
+        # Clip to the image: a car partly out of frame gives a truncated YOLO box, and the
+        # clipped edges then match it exactly. Every sigma point agrees on a clipped edge,
+        # so it has no spread and the update takes no information from it.
         return np.stack([
-            uv[..., 0].min(axis=1), uv[..., 0].max(axis=1),
-            uv[..., 1].min(axis=1), uv[..., 1].max(axis=1),
+            np.clip(uv[..., 0].min(axis=1), 0.0, self._img_w),
+            np.clip(uv[..., 0].max(axis=1), 0.0, self._img_w),
+            np.clip(uv[..., 1].min(axis=1), 0.0, self._img_h),
+            np.clip(uv[..., 1].max(axis=1), 0.0, self._img_h),
         ], axis=1)
 
 

@@ -71,7 +71,7 @@ Outputs (in <root>/batch_results unless --out is given):
                               error (single column)
         landing_clusters      every speed pooled, a row per trajectory and a column per
                               mode (CLUSTER_POOL_SPEEDS, CLUSTER_GRID)
-        trajectories_topdown  top-down car and drone paths, a panel per trajectory
+        trajectories_topdown  top-down car paths coloured by speed, 2x2 (TOPDOWN_GRID)
     <trajectory>/
         runs.csv              one row per CSV, every metric above
         summary.csv           per speed and mode: mean / std over runs, paired filter-vs-raw
@@ -118,6 +118,7 @@ from scipy import stats
 from scipy.interpolate import interp1d
 
 import plot_errors as pe
+from log_loader import PLATFORMS
 
 
 # ── Config ─────────────────────────────────────────────────────────────────
@@ -151,9 +152,16 @@ _MODE_LOOK = [('-', 'o'), ('--', 's'), ('-.', '^'), (':', 'D')]   # dash, marker
 MODE_COLOURS = {m: cmap_colour(m, 0.15 + 0.4 * i) for i, m in enumerate(MODES)}
 MODE_STYLES  = {m: _MODE_LOOK[i % len(_MODE_LOOK)][0] for i, m in enumerate(MODES)}
 MODE_MARKERS = {m: _MODE_LOOK[i % len(_MODE_LOOK)][1] for i, m in enumerate(MODES)}
+LINE_MARKERS   = False   # markers on the line plots (RMSE / landing vs speed); False: lines only
+CLUSTER_MARKER = 'o'     # one marker shape for every mode on the landing-cluster plots
+
+
+def line_marker(marker):
+    """ The marker a line plot uses: none unless LINE_MARKERS. """
+    return marker if LINE_MARKERS else None
 
 # Start of the error window (end is always the end of the first attempt)
-WINDOW_START = 'converged'   # 'converged' (filter's own covariance), 'fixed' (3000 +
+WINDOW_START = 'fixed'   # 'converged' (filter's own covariance), 'fixed' (3000 +
                              # SETTLE_S) or 'descent' (first 4000 to touchdown / abort)
 SETTLE_S     = 0.0           # 'fixed': s after the first 3000
 
@@ -176,10 +184,11 @@ CONV_FALLBACK_TO_FIXED = False   # never converged -> use 'fixed'; False -> run 
 MAX_MEAS_AGE_S = 0.25
 REF_STATE = 3000     # reference for time to acquisition / landing (2100 = first sighting)
 
-# Car geometry, car base_link frame (x fwd, y left, z up). Keep equal to the launch file.
-PAD_POSITION  = (-0.5, 0.0, 1.525)          # pad top-centre (yolo_car_pad_position)
-PAD_SIZE      = (1.80, 1.48)                # length x width (landing_pad_size)
-CAR_FOOTPRINT = (-2.31, 2.24, -0.89, 0.89)  # x_min, x_max, y_min, y_max (body box)
+# Car geometry, car base_link frame (x fwd, y left, z up). Single source of truth:
+# log_loader.PLATFORMS['sim'] (the SITL car), shared with plot_errors.py.
+PAD_POSITION  = tuple(PLATFORMS['sim']['pad_in_car'])     # pad top-centre (yolo_car_pad_position)
+PAD_SIZE      = tuple(PLATFORMS['sim']['pad_size'])       # length x width (landing_pad_size)
+CAR_FOOTPRINT = tuple(PLATFORMS['sim']['car_footprint'])  # x_min, x_max, y_min, y_max (body)
 
 # Successful landing: final resting pose
 REST_AVG_S           = 0.5            # s, median over the end of the log
@@ -234,8 +243,8 @@ TABLE_FONT      = '\\small'   # '' for normalsize (IEEE / Elsevier page widths t
 TABLE_COLSEP_PT = 4          # LaTeX default is 6 pt
 
 # Display names, used in the table caption; other trajectories show their folder name
-TRAJ_LABELS = {'straight': '(a) Straight', 'sin': '(b) Sinusoidal', 'circle': '(c) Circular',
-               'mbzirc': 'MBZIRC'}
+TRAJ_LABELS = {'straight': 'Straight Trajectory', 'sin': 'Sinusoidal Trajectory', 'circle': 'Circular Trajectory',
+               'corners': 'Cornering Trajectory', 'mbzirc': 'MBZIRC'}
 
 # A 0 km/h run is the same experiment whichever trajectory folder it was run under (the
 # car never moves), so its results are copied into every trajectory without its own.
@@ -246,14 +255,27 @@ SHARE_STATIONARY = True
 # and get their own LaTeX table (in their folder), but are left out of the pooled table
 # and the all_trajectories grid, and neither give nor receive shared 0 km/h runs.
 # Matched case-insensitively against the folder name.
-STANDALONE = ['mbzirc']
+# corners is one fixed path and speed profile (run as a single 45 km/h folder, its top
+# speed), so it has no speed axis to share with the swept trajectories.
+STANDALONE = ['mbzirc', 'corners']
 
-# Top-down trajectory figure: car (pad centre) and drone paths over the whole run, start
-# and end marked; one representative run per trajectory (<trajectory>/trajectory_topdown,
-# and the trajectories side by side in all_trajectories/trajectories_topdown)
-PLOT_TOPDOWN  = True
-TOPDOWN_MODE  = 'main'
-TOPDOWN_SPEED = None    # km/h; None = the fastest speed with a successful landing
+# Top-down trajectory figure (for describing the test cases): the car's pad-centre path on
+# the ground, coloured by the car's speed along it, one panel per trajectory in a grid
+# (all_trajectories/trajectories_topdown) plus one per trajectory (<trajectory>/
+# trajectory_topdown). Swept trajectories draw one representative run per speed, since their
+# radius / weave amplitude grows with speed; fixed ones (corners, mbzirc) their one profile.
+# Each panel is rotated so the car's starting heading points right, with the origin at the
+# UAV waiting point, so every panel shares the same reference.
+PLOT_TOPDOWN       = True
+TOPDOWN_GRID       = ('straight', 'circle', 'sin', 'corners')   # panels, row by row
+TOPDOWN_NCOLS      = 2
+TOPDOWN_MODE       = 'main'
+TOPDOWN_SPEEDS     = None      # km/h drawn for swept trajectories; None = every speed run (> 0)
+TOPDOWN_SPAN       = 'log'     # 'log': spawn to end of log; 'landing': spawn to the touchdown /
+                               #   end of the first attempt (the part the UAV actually faced)
+TOPDOWN_SHOW_DRONE = False     # also draw the drone's path (dashed grey)
+TOPDOWN_MARK_UAV   = True      # mark the UAV waiting point (the panels' origin)
+TOPDOWN_CMAP_RANGE = (0.0, 0.85)   # COLOURMAP stops for 0 -> top speed (skip the pale end)
 
 # 3-D flight paths: one figure per trajectory and speed, one panel per mode, every repeat
 # overlaid (written to <trajectory>/paths_3d/<frame>_<NN>kmh)
@@ -289,27 +311,30 @@ LEGEND_FONTSIZE  = 7.5     # pt, legend text (independent of PAPER_RC)
 # A tight crop would make it narrower, and scaling it up to the column would enlarge the
 # font. If the entries do not fit in one row, they wrap onto more rows automatically.
 # Legend labels for the figures (MODES labels are still used in the printout)
-LABELS    = {'main': 'UKF, with Latency Compensation', 'no_oosm': 'UKF, no Latency Compensation'}
+LABELS    = {'main': 'UKF, Latency Comp.', 'no_oosm': 'UKF, no Latency Comp.'}
 RAW_LABEL = 'Raw Measurement'
 RAW_C     = cmap_colour('raw')
 
 # Figure style: the one place to change how the figures look. Every line width, marker
 # and font size in the figures is a multiple of these values.
+SHOW_GRID  = False      # gridlines on the 2-D figures
+CLUSTER_ZERO_LINES = True   # cluster plots: one line along x = 0 and one along y = 0
 BAND_ALPHA = 0.18       # opacity of the ±1σ bands that replace error bars
 PAPER_RC = {
-    'font.size': 10, 'axes.titlesize': 10, 'axes.labelsize': 10,
-    'xtick.labelsize': 9.5, 'ytick.labelsize': 9.5, 'legend.fontsize': 9.5,
+    'font.size': 9.5, 'axes.titlesize': 9.5, 'axes.labelsize': 9.5,
+    'xtick.labelsize': 9.0, 'ytick.labelsize': 9.0, 'legend.fontsize': 9.0,
     'lines.linewidth': 0.8, 'lines.markersize': 2.6, 'errorbar.capsize': 1.5,
     'axes.linewidth': 0.5, 'grid.linewidth': 0.3, 'grid.alpha': 0.3,
     'xtick.major.width': 0.5, 'ytick.major.width': 0.5,
     'xtick.major.size': 2.0, 'ytick.major.size': 2.0,
     'xtick.minor.size': 1.2, 'xtick.minor.width': 0.4,
-    'xtick.major.pad': 2.0, 'ytick.major.pad': 2.0, 'axes.labelpad': 2.0,
+    'xtick.major.pad': 4.0, 'ytick.major.pad': 2.0, 'axes.labelpad': 2.0,
     'axes.titlepad': 3.0,
     'legend.frameon': False, 'legend.handlelength': 1.8, 'legend.columnspacing': 1.2,
     'savefig.pad_inches': 0.02,
     'pdf.fonttype': 42, 'ps.fonttype': 42,   # embed TrueType fonts (journal requirement)
-    'font.family': 'serif', 'font.serif': ['Times New Roman'], 'mathtext.fontset': 'stix',
+    'font.family': 'sans-serif', 'font.sans-serif': ['DejaVu Sans'],   # matplotlib default
+    'mathtext.fontset': 'dejavusans',                                  # maths to match
 }
 
 PER_RUN_DPI = 200    # plot_errors.py figures in --per-run-plots (its own default is 500)
@@ -458,7 +483,18 @@ def flight_paths(df, t, state, sl, rel_x, rel_y, cos_yaw, sin_yaw):
         pz = df['landing_pad_glob_true_z'].to_numpy(float) + PAD_POSITION[2]
         x0, y0 = px[0], py[0]
         qx, qy = df['quad_true_x'].to_numpy(float), df['quad_true_y'].to_numpy(float)
-        out['topdown'] = dict(car=decimate(px - x0, py - y0), drone=decimate(qx - x0, qy - y0))
+        # Car speed along the path (km/h); UAV waiting point = where the drone is when it
+        # starts searching (2000); end of the first attempt for TOPDOWN_SPAN = 'landing'
+        speed = 3.6 * np.hypot(df['landing_pad_glob_true_vx'].to_numpy(float),
+                               df['landing_pad_glob_true_vy'].to_numpy(float))
+        speed = np.clip(np.nan_to_num(speed), 0.0, 3.6 * PATH3D_CAR_GLITCH_SPEED)
+        k_wait = int(np.argmax(state == 2000)) if (state == 2000).any() else 0
+        t_attempt = first_time(t, (t > first_time(t, state // 1000 == 4))
+                               & np.isin(state // 1000, (2, 5, 6, 7)))
+        out['topdown'] = dict(
+            car=decimate(px - x0, py - y0, speed, t), drone=decimate(qx - x0, qy - y0, t),
+            uav=(qx[k_wait] - x0, qy[k_wait] - y0), heading0=float(cyaw[0]),
+            t_end=t_attempt if np.isfinite(t_attempt) else t[-1])
         if not np.isfinite(t_start):
             return out
         w = t >= t_start
@@ -532,10 +568,11 @@ def analyse_run(csv_path):
     true_x, true_y, _ = pe.clean_true_position(
         df['landing_pad_rel_true_x'].to_numpy()[sl], df['landing_pad_rel_true_y'].to_numpy()[sl], ts)
     true_yaw, _ = pe.clean_true_yaw(df['landing_pad_glob_true_yaw'].to_numpy()[sl], ts)
-    true_z = df['landing_pad_rel_true_z'].to_numpy(dtype=float)[sl] + pe.TRUE_OFFSET_Z_BODY
+    # (plot_errors.py takes the same offset from log_loader.PLATFORMS via df.attrs)
+    true_z = df['landing_pad_rel_true_z'].to_numpy(dtype=float)[sl] + PAD_POSITION[2]
     c, s = np.cos(true_yaw), np.sin(true_yaw)
-    true_x = true_x + pe.TRUE_OFFSET_X_BODY * c - pe.TRUE_OFFSET_Y_BODY * s
-    true_y = true_y + pe.TRUE_OFFSET_X_BODY * s + pe.TRUE_OFFSET_Y_BODY * c
+    true_x = true_x + PAD_POSITION[0] * c - PAD_POSITION[1] * s
+    true_y = true_y + PAD_POSITION[0] * s + PAD_POSITION[1] * c
     truth = interp1d(ts, np.vstack([true_x, true_y, true_z, c, s]), kind='linear', axis=1,
                      bounds_error=False, fill_value='extrapolate')
     path = flight_paths(df, t, state, sl, true_x, true_y, c, s) \
@@ -895,7 +932,7 @@ def line_band(ax, x, y, s, colour, ls, marker):
         s None: line only. A missing σ (one run) gives no band at that point. """
     x, y = np.asarray(x, float), np.asarray(y, float)
     ok = np.isfinite(y)
-    ax.plot(x[ok], y[ok], color=colour, ls=ls, marker=marker, zorder=3)
+    ax.plot(x[ok], y[ok], color=colour, ls=ls, marker=line_marker(marker), zorder=3)
     if s is not None and ok.any():
         s = np.nan_to_num(np.asarray(s, float))
         ax.fill_between(x[ok], np.clip(y - s, 0, None)[ok], (y + s)[ok], color=colour,
@@ -905,7 +942,7 @@ def line_band(ax, x, y, s, colour, ls, marker):
 def band_handle(colour, ls, marker, text):
     """ Legend entry: the line drawn over a patch of its band. """
     return (Patch(facecolor=colour, alpha=BAND_ALPHA, lw=0),
-            Line2D([], [], color=colour, ls=ls, marker=marker, label=text))
+            Line2D([], [], color=colour, ls=ls, marker=line_marker(marker), label=text))
 
 
 HEADING_H = 0.2   # in, height of a bold heading row above a row of panels
@@ -967,10 +1004,10 @@ def speed_axis(ax, speeds, ticks=None):
     ax.xaxis.set_major_locator(MultipleLocator(major))
     ax.xaxis.set_minor_locator(MultipleLocator(minor))
     ax.xaxis.set_major_formatter(FormatStrFormatter('%g'))
-    pad = 0.5 * minor
-    ax.set_xlim(min(speeds) - pad, max(speeds) + pad)
-    ax.grid(True, which='major')
-    ax.grid(True, which='minor', axis='x', alpha=0.6 * plt.rcParams['grid.alpha'])
+    ax.set_xlim(min(speeds), max(speeds))   # no gap before the first or after the last speed
+    if SHOW_GRID:
+        ax.grid(True, which='major')
+        ax.grid(True, which='minor', axis='x', alpha=0.6 * plt.rcParams['grid.alpha'])
 
 
 def rescale_shared_columns(axes, bottoms=None, tops=None):
@@ -1017,11 +1054,16 @@ def draw_pad(ax, xlim, ylim):
         neighbouring labels don't collide. """
     ax.plot(0, 0, 'x', ms=ms(1.6), color=TARGET_C, mew=lw(1.6), zorder=9)   # target
     ax.set_aspect('equal', adjustable='box')
-    ax.grid(True)
+    ax.grid(SHOW_GRID)
+    if CLUSTER_ZERO_LINES:   # the pad's centrelines, styled like a gridline, behind the data
+        for line in (ax.axhline, ax.axvline):
+            line(0.0, color=plt.rcParams['grid.color'], lw=plt.rcParams['grid.linewidth'],
+                 alpha=plt.rcParams['grid.alpha'], zorder=1)
     for axis, lim in ((ax.xaxis, xlim), (ax.yaxis, ylim)):
         ticks = np.arange(np.ceil(lim[0] / 0.5) * 0.5, lim[1] + 1e-9, 0.5)
-        axis.set_major_locator(plt.FixedLocator(
-            ticks[(ticks > lim[0] + 0.05) & (ticks < lim[1] - 0.05)]))
+        ticks = ticks[(ticks > lim[0] + 0.05) & (ticks < lim[1] - 0.05)]
+        axis.set_major_locator(plt.FixedLocator(np.union1d(np.round(ticks, 6), [0.0])))
+        axis.set_major_formatter(FormatStrFormatter('%.1f'))   # 0.0 at the centre
 
 
 AXIS_METRICS = ['lat', 'long', 'z']
@@ -1136,8 +1178,8 @@ def draw_landing_row(axes, runs, speeds):
 
 
 def mode_handles(modes):
-    return [Line2D([], [], color=MODE_COLOURS[m], ls=MODE_STYLES[m], marker=MODE_MARKERS[m],
-                   label=label(m)) for m in modes]
+    return [Line2D([], [], color=MODE_COLOURS[m], ls=MODE_STYLES[m],
+                   marker=line_marker(MODE_MARKERS[m]), label=label(m)) for m in modes]
 
 
 def plot_landing(runs, out_dir):
@@ -1185,45 +1227,37 @@ def cluster_view():
 
 
 def draw_cluster_panel(ax, runs, modes, xlim, ylim):
-    """ Pad-frame panel: every mode's successful landings, 1σ ellipse and mean, plus its
-        k/n successes stacked in the bottom-right corner in the mode colour. """
+    """ Pad-frame panel: every mode's successful landings, 1σ ellipse and mean.
+        One marker shape (CLUSTER_MARKER); modes differ by colour. """
     draw_pad(ax, xlim, ylim)
-    tally = []
     for mode in modes:
         g = runs[runs['mode'] == mode]
         ok = g[g['success']]
         c = MODE_COLOURS[mode]
         ax.scatter(*cluster_xy(ok), s=ms(0.86) ** 2, color=c, clip_on=False,
-                   marker=MODE_MARKERS[mode], ec='white', lw=axlw(0.4), alpha=0.8, zorder=4)
+                   marker=CLUSTER_MARKER, ec='none', lw=0, alpha=0.8, zorder=4)
         if len(ok):
-            ax.plot(*(v.mean() for v in cluster_xy(ok)), marker=MODE_MARKERS[mode],
+            ax.plot(*(v.mean() for v in cluster_xy(ok)), marker=CLUSTER_MARKER,
                     ms=ms(1.25), mfc=c, mec='black', mew=axlw(), ls='none', zorder=6)
         if CLUSTER_ELLIPSES:
             cov_ellipse(ax, np.column_stack(cluster_xy(ok)), c, ls=MODE_STYLES[mode])
-        if len(g):
-            tally.append((f'{len(ok)}/{len(g)}', c))
-    for j, (txt, c) in enumerate(reversed(tally)):
-        ax.text(0.93, 0.10 + 0.11 * j, txt, transform=ax.transAxes, ha='right',
-                va='bottom', fontsize=fs(0.8), color=c, fontweight='bold',
-                bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.75), zorder=10)
 
 
 def cluster_handles(modes):
-    if CLUSTER_ELLIPSES:   # line style in the legend = that mode's ellipse
-        return mode_handles(modes) + [
-            Line2D([], [], color='0.35', lw=lw(0.9), label='1σ ellipse'),
-            Line2D([], [], ls='none', marker='o', mfc='0.6', mec='black', mew=axlw(),
-                   ms=ms(1.25), label='Mean')]
-    # Nothing is drawn as a line, so the mode entries are markers only
-    return [Line2D([], [], ls='none', color=MODE_COLOURS[m], marker=MODE_MARKERS[m],
-                   label=label(m)) for m in modes] + [
-        Line2D([], [], ls='none', marker='o', mfc='0.6', mec='black', mew=axlw(),
-               ms=ms(1.25), label='Mean')]
+    # One marker shape for every mode; with ellipses the line style is that mode's ellipse
+    modes_h = [Line2D([], [], ls=MODE_STYLES[m] if CLUSTER_ELLIPSES else 'none',
+                      color=MODE_COLOURS[m], marker=CLUSTER_MARKER, mec='none',
+                      label=label(m)) for m in modes]
+    mean_h = Line2D([], [], ls='none', marker=CLUSTER_MARKER, mfc='0.6', mec='black',
+                    mew=axlw(), ms=ms(1.25), label='Mean')
+    if CLUSTER_ELLIPSES:
+        return modes_h + [Line2D([], [], color='0.35', lw=lw(0.9), label='1σ ellipse'), mean_h]
+    return modes_h + [mean_h]
 
 
 def plot_clusters(runs, out_dir):
     """ Successful landings in the pad frame: one panel per speed, every mode overlaid
-        with its landings, 1σ ellipse, mean and k/n successes. One figure with a single
+        with its landings, 1σ ellipse and mean. One figure with a single
         legend; panels wrap into balanced rows of at most CLUSTER_GROUP_SIZE
         (7 speeds -> 4 + 3, not 5 + 2). A success always ends over the pad, so the view
         is the pad plus CLUSTER_MARGIN and nothing is clipped. """
@@ -1307,7 +1341,7 @@ def plot_clusters_pooled_by_speed(per_traj, out_dir, name):
             'mode_rows'  a row per mode, a column per trajectory, full width, colourbar
                          on the right
         Each panel shows its successful landings, a 1σ ellipse per speed
-        (CLUSTER_ELLIPSES) and k/n. """
+        (CLUSTER_ELLIPSES). """
     trajs = traj_order(per_traj)
     modes = [m for m in MODES if any(m in set(r['mode']) for r in per_traj.values())]
     speeds = sorted(set().union(*(set(r['speed']) for r in per_traj.values())))
@@ -1365,20 +1399,14 @@ def plot_clusters_pooled_by_speed(per_traj, out_dir, name):
             traj, mode = (rows[i], cols_[j]) if by_traj else (cols_[j], rows[i])
             g = per_traj[traj][per_traj[traj]['mode'] == mode]
             draw_pad(ax, xlim, ylim)
-            if panel_w < 1.8:   # narrow: label the outer ticks only, 0 is the centre cross
-                ax.xaxis.set_major_locator(plt.FixedLocator([-0.5, 0.5]))
+            if panel_w < 1.8:   # narrow: ticks at -0.5, 0.0 and 0.5 only
+                ax.xaxis.set_major_locator(plt.FixedLocator([-0.5, 0.0, 0.5]))
             for sp in speeds:
                 ok = g[(g['speed'] == sp) & g['success']]
                 ax.scatter(*cluster_xy(ok), s=ms(0.95) ** 2, color=cols[sp], clip_on=False,
-                           marker=MODE_MARKERS[mode], ec='white', lw=axlw(0.3), alpha=0.9,
-                           zorder=4)
+                           marker=CLUSTER_MARKER, ec='none', lw=0, alpha=0.9, zorder=4)
                 if CLUSTER_ELLIPSES:
                     cov_ellipse(ax, np.column_stack(cluster_xy(ok)), cols[sp])
-            if len(g):
-                ax.text(0.93, 0.10, f'{int(g["success"].sum())}/{len(g)}',
-                        transform=ax.transAxes, ha='right', va='bottom', fontsize=fs(0.8),
-                        color='0.25', fontweight='bold',
-                        bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.75), zorder=10)
             if i == j == 0:
                 fwd_arrow(ax)
             if by_traj:
@@ -1417,56 +1445,116 @@ def plot_clusters_pooled(per_traj, out_dir, name='landing_clusters_pooled'):
         plot_clusters_pooled_by_mode(per_traj, out_dir, name)
 
 
-def plot_topdown(per_traj, paths, out_dir, name):
-    """ Top-down view of each trajectory: the car's pad centre and the drone over the
-        whole run of one representative run (TOPDOWN_MODE at TOPDOWN_SPEED, else the
-        fastest speed it landed at), start (open circle) and end (filled square, a cross
-        if that run failed) marked, equal axes. One panel per trajectory, side by side.
-        per_traj: {trajectory: runs} """
+def topdown_picks(runs, paths):
+    """ (speed, top-down path) to draw for one trajectory: one run per speed (TOPDOWN_MODE,
+        landed runs first, lowest rep), speeds > 0 limited to TOPDOWN_SPEEDS. """
+    g = runs[runs['mode'] == TOPDOWN_MODE]
+    g = g if len(g) else runs
+    speeds = sorted(s for s in g['speed'].unique() if s > 0) or sorted(g['speed'].unique())
+    if TOPDOWN_SPEEDS is not None:
+        speeds = [s for s in speeds if s in TOPDOWN_SPEEDS] or speeds[-1:]
     picks = []
-    for traj in traj_order(per_traj):
-        runs = per_traj[traj]
-        g = runs[runs['mode'] == TOPDOWN_MODE]
-        g = g if len(g) else runs
-        pool = g[g['success']] if g['success'].any() else g
-        speeds = sorted(pool['speed'].unique())
-        sp = TOPDOWN_SPEED if TOPDOWN_SPEED in speeds else speeds[-1]
-        r = pool[pool['speed'] == sp].sort_values('run').iloc[0]
-        p = paths.get((traj, sp, r['mode'], r['run']), {}).get('topdown')
-        if p is not None:
-            picks.append((traj, sp, r['mode'], bool(r['success']), p))
-    if not picks:
+    for sp in speeds:
+        gs = g[g['speed'] == sp].sort_values(['success', 'run'], ascending=[False, True])
+        for r in gs.itertuples():
+            p = paths.get((r.trajectory, sp, r.mode, r.run), {}).get('topdown')
+            if p is not None:
+                picks.append((sp, p))
+                break
+    return picks
+
+
+def plot_topdown(per_traj, paths, out_dir, name):
+    """ Top-down view of each trajectory: the car's pad-centre path coloured by its speed
+        (one run per speed for swept trajectories, so their growth with speed shows), the
+        spawn marked (open circle), the UAV waiting point marked (triangle). Each panel is
+        rotated so the car's starting heading points right, origin at the UAV waiting point,
+        equal axes. Panels in TOPDOWN_GRID order, TOPDOWN_NCOLS per row, one shared speed
+        colourbar. per_traj: {trajectory: runs} """
+    from matplotlib.collections import LineCollection
+    from matplotlib.cm import ScalarMappable
+
+    wanted = {t.lower(): t for t in per_traj}
+    order = [wanted[t.lower()] for t in TOPDOWN_GRID if t.lower() in wanted] \
+        if len(per_traj) > 1 else list(per_traj)
+    panels = [(traj, topdown_picks(per_traj[traj], paths)) for traj in order]
+    panels = [(traj, picks) for traj, picks in panels if picks]
+    if not panels:
         return
-    n = len(picks)
-    width = FIG_WIDTH_DOUBLE if n > 1 else FIG_WIDTH_SINGLE
-    panel_w = (width - 0.4) / n
-    fig, axes = new_figure(1, n, (width, panel_w + 0.35),
-                           dict(w_pad=0.03, h_pad=0.03, wspace=0.05), squeeze=False)
-    car_c = cmap_colour('car')
-    for ax, (traj, sp, mode, ok, p) in zip(axes[0], picks):
-        dc = MODE_COLOURS[mode]
-        tracks = ((p['car'], car_c, '-'), (p['drone'], dc, '--'))
-        for (x, y), c, ls in tracks:
-            ax.plot(x, y, color=c, ls=ls, zorder=3)
-        for (x, y), c, _ in tracks:
-            ax.plot(x[0], y[0], 'o', ms=ms(1.4), mfc='white', mec=c, mew=lw(), zorder=5)
-            ax.plot(x[-1], y[-1], 's' if ok else 'X', ms=ms(1.4), mfc=c, mec='black',
-                    mew=axlw(), zorder=6)
+
+    n = len(panels)
+    ncols = min(TOPDOWN_NCOLS, n)
+    nrows = int(np.ceil(n / ncols))
+    width = FIG_WIDTH_DOUBLE if ncols > 1 else FIG_WIDTH_SINGLE
+    panel_h = 0.55 * (width - 0.6) / ncols      # paths run along the heading: wide panels
+    fig, axes = new_figure(nrows, ncols, (width, nrows * panel_h + 0.45),
+                           dict(w_pad=0.03, h_pad=0.03, wspace=0.04, hspace=0.04),
+                           squeeze=False)
+
+    v_top = max(p['car'][2].max() for _, picks in panels for _, p in picks)
+    v_top = 10.0 * np.ceil(v_top / 10.0)            # colourbar to the next 10 km/h
+    base = matplotlib.colormaps[COLOURMAP]
+    cmap = mcolors.ListedColormap(base(np.linspace(*TOPDOWN_CMAP_RANGE, 256)))
+    norm = mcolors.Normalize(0.0, v_top)
+
+    for k, (traj, picks) in enumerate(panels):
+        ax = axes[k // ncols][k % ncols]
+        # Panel frame: origin at the UAV waiting point, starting heading along +x
+        p0 = picks[0][1]
+        ux, uy = p0['uav']
+        c, s = np.cos(p0['heading0']), np.sin(p0['heading0'])
+        frame = lambda x, y: (c * (x - ux) + s * (y - uy), -s * (x - ux) + c * (y - uy))
+
+        for sp, p in sorted(picks, key=lambda q: -q[0]):   # slowest drawn on top
+            x, y, v, tt = p['car']
+            keep = tt <= p['t_end'] if TOPDOWN_SPAN == 'landing' else np.ones(len(tt), bool)
+            X, Y = frame(x[keep], y[keep])
+            seg = np.stack([np.column_stack([X[:-1], Y[:-1]]),
+                            np.column_stack([X[1:], Y[1:]])], axis=1)
+            lc = LineCollection(seg, cmap=cmap, norm=norm, linewidths=lw(1.4),
+                                capstyle='round', zorder=3)
+            lc.set_array(0.5 * (v[keep][:-1] + v[keep][1:]))
+            ax.add_collection(lc)
+            ax.plot(X[0], Y[0], 'o', ms=ms(1.3), mfc='white', mec='0.15', mew=lw(), zorder=5)
+            if TOPDOWN_SHOW_DRONE:
+                qx, qy, qt = p['drone']
+                qk = qt <= p['t_end'] if TOPDOWN_SPAN == 'landing' else np.ones(len(qt), bool)
+                ax.plot(*frame(qx[qk], qy[qk]), color='0.45', ls='--', lw=lw(0.8), zorder=4)
+        if TOPDOWN_MARK_UAV:
+            ax.plot(0.0, 0.0, '^', ms=ms(1.8), mfc='black', mec='white', mew=axlw(), zorder=6)
+
+        ax.autoscale_view()
         ax.set_aspect('equal', adjustable='datalim')
-        ax.grid(True)
-        ax.set_title(traj_label(traj), fontweight='bold')
-        ax.text(0.97, 0.04, f'{sp:g} {SPEED_UNIT}', transform=ax.transAxes, ha='right',
-                va='bottom', fontsize=fs(0.8), color='0.3', zorder=10,
-                bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.8))
-        ax.set_xlabel('x (m)')
-    axes[0][0].set_ylabel('y (m)')
-    top_legend(fig, [
-        Line2D([], [], color=car_c, label='Car (pad centre)'),
-        Line2D([], [], color=MODE_COLOURS.get(TOPDOWN_MODE, '0.3'), ls='--', label='Drone'),
-        Line2D([], [], ls='none', marker='o', ms=ms(1.4), mfc='white', mec='0.3', mew=lw(),
-               label='Start'),
-        Line2D([], [], ls='none', marker='s', ms=ms(1.4), mfc='0.5', mec='black',
-               mew=axlw(), label='End')])
+        ax.grid(SHOW_GRID)
+        speeds = [sp for sp, _ in picks]
+        note = (f'{min(speeds):g}–{max(speeds):g} {SPEED_UNIT}' if len(speeds) > 1
+                else f'≤ {max(speeds):g} {SPEED_UNIT}' if is_standalone(traj)
+                else f'{speeds[0]:g} {SPEED_UNIT}')
+        if n > 1:
+            panel_title(ax, 'abcdefghij'[k], f'{traj_label(traj)} ({note})')
+        else:
+            ax.set_title(f'{traj_label(traj)} ({note})', loc='left')
+        if k // ncols == nrows - 1 or k + ncols >= n:
+            ax.set_xlabel('Distance along start heading (m)')
+        if k % ncols == 0:
+            ax.set_ylabel('Lateral (m)')
+    for k in range(n, nrows * ncols):            # empty slots in the last row
+        axes[k // ncols][k % ncols].set_visible(False)
+
+    cb = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=axes.ravel().tolist(),
+                      shrink=0.85, aspect=25, pad=0.01)
+    cb.set_label(f'Car speed ({SPEED_UNIT})')
+    cb.outline.set_linewidth(axlw())
+    cb.ax.tick_params(width=axlw())
+
+    handles = [Line2D([], [], ls='none', marker='o', ms=ms(1.3), mfc='white', mec='0.15',
+                      mew=lw(), label='Car spawn')]
+    if TOPDOWN_MARK_UAV:
+        handles.insert(0, Line2D([], [], ls='none', marker='^', ms=ms(1.8), mfc='black',
+                                 mec='white', mew=axlw(), label='UAV waiting point'))
+    if TOPDOWN_SHOW_DRONE:
+        handles.append(Line2D([], [], color='0.45', ls='--', lw=lw(0.8), label='Drone'))
+    top_legend(fig, handles)
     finish(fig, out_dir, name)
 
 
@@ -1934,10 +2022,14 @@ def main():
         print_raw_check(raw)
         with plt.rc_context(PAPER_RC):
             rmse_data[traj] = (summary[summary['mode'].isin(RMSE_MODES)], raw)
-            plot_rmse(*rmse_data[traj], tdir)
-            if RMSE_AXES_FIGURE and list(RMSE_METRICS) != list(AXIS_METRICS):
-                plot_rmse(*rmse_data[traj], tdir, AXIS_METRICS, 'rmse_axes_vs_speed')
-            plot_landing(runs, tdir)
+            if runs['speed'].nunique() > 1:
+                plot_rmse(*rmse_data[traj], tdir)
+                if RMSE_AXES_FIGURE and list(RMSE_METRICS) != list(AXIS_METRICS):
+                    plot_rmse(*rmse_data[traj], tdir, AXIS_METRICS, 'rmse_axes_vs_speed')
+                plot_landing(runs, tdir)
+            else:   # one speed (corners, mbzirc): a line vs speed would be a single dot
+                print(f"NOTE: '{traj}' has a single speed, so no *_vs_speed figures; "
+                      f"its numbers are in summary.csv and landing_table.tex")
             plot_clusters(runs, tdir)
             if CLUSTER_POOL_SPEEDS:
                 plot_clusters_pooled({traj: runs}, tdir)
@@ -1963,8 +2055,15 @@ def main():
             plot_landing_grid(grid_runs, adir)
             if CLUSTER_POOL_SPEEDS:
                 plot_clusters_pooled(grid_runs, adir, 'landing_clusters')
-            if PLOT_TOPDOWN:
-                plot_topdown(grid_runs, paths, adir, 'trajectories_topdown')
+
+    # Trajectory overview: standalone trajectories (corners, mbzirc) included, by TOPDOWN_GRID
+    grid_names = {t.lower() for t in TOPDOWN_GRID}
+    topdown_runs = {t: r for t, r in traj_runs.items() if t.lower() in grid_names}
+    if PLOT_TOPDOWN and len(topdown_runs) > 1:
+        adir = out_dir / 'all_trajectories'
+        adir.mkdir(parents=True, exist_ok=True)
+        with plt.rc_context(PAPER_RC):
+            plot_topdown(topdown_runs, paths, adir, 'trajectories_topdown')
 
     summary_all = pd.concat(summaries, ignore_index=True)
 
