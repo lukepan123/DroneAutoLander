@@ -143,6 +143,12 @@ class UKF:
 
         self._roof_agl = pad[2]   # pad height above home altitude, learned online,
                                   # persists across reset()
+        # The learned height may not wander further than this from the measured pad
+        # height (None = unlimited, the original behaviour). The pad height is known
+        # to a few cm and the drone's altitude to well under a metre, so a box-size
+        # "correction" of metres is a vision error, not a real height (2026-11-13).
+        self._roof_agl_nominal = float(pad[2])
+        self.roof_agl_max_dev = None
         self._car_fit_max_rel_rms = car_fit_max_rel_rms
         self._car_roof_gain = car_roof_gain
         self._yaw_seed_var_max = yaw_seed_var_max
@@ -361,7 +367,9 @@ class UKF:
             buf = self._seed_buffers[measurement_type]
             # Restart the window after a detection gap: an isolated early detection
             # (e.g. a partial box at the image edge) shouldn't anchor the velocity fit
-            if buf and stamp - buf[-1][0] > 0.3:
+            # 0.6 s (was 0.3): detections arrive ~0.10 s apart with the odd 0.30 s gap, and
+            # three such gaps restarted a 3 s seed window until it took 8.2 s (2026-11-13).
+            if buf and stamp - buf[-1][0] > 0.6:
                 buf.clear()
             qv = None if quad_vel is None else np.asarray(quad_vel, dtype=float)[:2].copy()
             buf.append((stamp, meas.z, meas.R, qv))
@@ -546,6 +554,7 @@ class UKF:
             return pad0, None, None  # box doesn't fit the car model (bad yaw / bad detection)
         if learn:
             self._roof_agl += self._car_roof_gain * dz
+            self._clamp_roof()
         pad0 = np.array([x, y, pad0[2] + self._car_roof_gain * dz])
 
         # Pass 2: fit x, y with that height ~fixed (height and range are coupled in
@@ -587,6 +596,13 @@ class UKF:
             return pos, self._wrap(psi_cam + np.sign(e) * delta), sigma_delta
         return pos, psi_cam, np.hypot(sigma_delta, delta)  # ambiguous: axis, honest sigma
 
+
+    def _clamp_roof(self) -> None:
+        """ Keep the learned pad height within roof_agl_max_dev of the measured one. """
+        if self.roof_agl_max_dev is not None:
+            lo = self._roof_agl_nominal - self.roof_agl_max_dev
+            hi = self._roof_agl_nominal + self.roof_agl_max_dev
+            self._roof_agl = float(min(max(self._roof_agl, lo), hi))
 
     def reset(self) -> None:
         """Reset runtime state; leaves parameters, weights, preallocated sigma buffers
@@ -943,6 +959,17 @@ class UKF:
         self.x += K @ y
         self.x[LP_State.YAW] = self._wrap(self.x[LP_State.YAW])
 
+        # Keep the pad height (state PZ + the drone altitude at the image) within
+        # roof_agl_max_dev of the measured pad height in pixel mode too. Unbounded, it
+        # drifted ~3 m at long range and the drone descended to follow it (2026-11-13).
+        if box and self.roof_agl_max_dev is not None and meas.cam is not None:
+            alt = float(meas.cam[3])
+            pad_h = self.x[LP_State.PZ] + alt
+            lo = self._roof_agl_nominal - self.roof_agl_max_dev
+            hi = self._roof_agl_nominal + self.roof_agl_max_dev
+            if pad_h < lo or pad_h > hi:
+                self.x[LP_State.PZ] = min(max(pad_h, lo), hi) - alt
+
         # Covariance update
         self.P -= K @ S @ K.T
         self.P = 0.5 * (self.P + self.P.T)
@@ -956,6 +983,7 @@ class UKF:
             self._roof_agl += self._car_roof_gain * (
                 self.x[LP_State.PZ] + meas.cam[3] - self._roof_agl
             )
+            self._clamp_roof()
 
         return True
 

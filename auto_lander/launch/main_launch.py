@@ -29,18 +29,31 @@ from launch_ros.parameter_descriptions import ParameterValue
 # ---- Camera: SIYI A2 mini, 1080p over RTSP, 160 deg horizontal (spec, same as SITL) ----
 # Both must describe the frame AS PROCESSED (same 16:9 aspect as the stream). The A2
 # applies its own distortion correction, so check how close to pinhole the output is.
-CAMERA_HFOV_RAD = 2.7925268                      # TODO: calibrate (spec value, 160 deg)
+# 2026-11-13: the A2's picture is a fisheye, not a 160 deg pinhole. gcs_start/rtsp_camera.py
+# now remaps it to a true pinhole of 120 deg before publishing /camera/image_raw, so this
+# MUST equal that node's out_hfov_deg and the distortion below stays zero. (With the raw
+# picture and 2.7925268 here every range came out about four times too short.)
+CAMERA_HFOV_RAD = 2.0943951                      # 120 deg, the rectified picture
 CAMERA_DISTORTION = [0.0, 0.0, 0.0, 0.0, 0.0]    # TODO: k1 k2 p1 p2 k3 from calibration
 
 # ---- Camera mount in the drone body frame: TODO measure on the real airframe ----
 # Read by the perception nodes (vision_common.load_camera_mount).
 CAMERA_MOUNT = {
-    "camera_offset_x": 0.02,
-    "camera_offset_y": -0.01,
-    "camera_offset_z": -0.124923,
-    "camera_mount_roll": -1.5707963,
+    # Measured on this airframe (2026-11-13): the camera sits in FRONT of the quad, about
+    # 12.5 cm ahead of the body centre and level with it in height and side to side.
+    # (The SITL values were 0.02 / -0.01 / -0.124923: slung underneath.)
+    "camera_offset_x": 0.125,
+    "camera_offset_y": 0.0,
+    "camera_offset_z": 0.0,
+    # Fitted 2026-11-13 from flight 14:19 (box centres in 163 frames against the car's RTK
+    # position, with the drone attitude and gimbal angle): the camera looks 7 deg to the
+    # right of the nose and 3 deg lower than the gimbal angle says. Nominal was
+    # -1.5707963 / 0.0 / -1.5707963. Roll about the forward axis stays 0 (the horizon is
+    # level in the frames when the drone is level). Whether the 7 deg is the mount, the
+    # lens centre or the compass is not known; this corrects all three while constant.
+    "camera_mount_roll": -1.6231562,    # -93 deg  (tilt: -90 = optical axis along the nose at gimbal 0)
     "camera_mount_pitch": 0.0,
-    "camera_mount_yaw": -1.5707963,
+    "camera_mount_yaw": -1.4486233,     # -83 deg  (pan)
 }
 
 # ---- Test car + landing pad: TODO measure the real car ----
@@ -97,6 +110,9 @@ def generate_launch_description():
                                           "camera driver publishes /camera/image_raw"),
         DeclareLaunchArgument("yolo_model", default_value="ugv_yolo11n_openvino_model",
                               description="YOLO model path (absolute, or relative to the cwd)"),
+        DeclareLaunchArgument("yolo_hef", default_value="",
+                              description="Hailo .hef car model: run YOLO on the AI HAT+ instead "
+                                          "of the CPU. Empty = CPU (OpenVINO)"),
         DeclareLaunchArgument("record_bag", default_value="true",
                               description="Record a rosbag of the key topics to ./bags/<run_id>"),
     ]
@@ -221,6 +237,7 @@ def generate_launch_description():
             # ----- YOLO -----
             {"yolo_enabled": True},
             {"yolo_model_path": ParameterValue(LaunchConfiguration("yolo_model"), value_type=str)},
+            {"yolo_hailo_hef": ParameterValue(LaunchConfiguration("yolo_hef"), value_type=str)},
             {"yolo_conf_threshold": 0.60},
             {"yolo_car_class_id": 0},
 
@@ -277,7 +294,8 @@ def generate_launch_description():
             {"yolo_shadow_fit_enabled": False},   # SITL-only diagnostic, costs CPU
             {"use_sim_time": False},
             {"wait_for_pilot_guided": False},      # pilot flips to GUIDED to start
-            {"mavros_message_rate_hz": 0.0},      # 0 = FCU SRx_* rates (see checklist)
+            {"never_arm": True},                  # the pilot arms; started from the ground station in the air
+            {"mavros_message_rate_hz": 20.0},     # was 0.0 (= FCU SRx_* rates): the checklist needs >= 20 Hz odometry
             {"max_runtime": ParameterValue(LaunchConfiguration("max_runtime"), value_type=float)},
             {"boundary_limit": ParameterValue(LaunchConfiguration("boundary_limit"), value_type=float)},
 
@@ -285,12 +303,12 @@ def generate_launch_description():
             {"landing_recovery_height": 7.0},
             {"landing_height_above_gnd": PAD_HEIGHT_M},
             {"landing_height_threshold": 0.2},
-            {"landing_centered_error_threshold": 3.0},
+            {"landing_centered_error_threshold": 1.5},   # was 3.0: the 15:28 descent started 2.97 m off
 
             {"landing_chase_altitude": 7.0},
             {"landing_descent_rate_far": -1.0},
             {"landing_descent_rate_close": -1.0},
-            {"landing_time_visual_min_time (s)": 1.1},
+            {"landing_time_visual_min_time (s)": 2.0},   # 1.1 originally, 3.0 for a while: 2 s so a re-seed fits before the car leaves the frame
             {"landing_pad_locked_time (s)": 30.0},
             {"landing_pad_lost_time (s)": 4.0},
 
@@ -316,12 +334,12 @@ def generate_launch_description():
             {"initial_yaw_state": 0.0},
 
             # ----- UKF parameters -----
-            {"UKF_seeding_num_samples": 10},
+            {"UKF_seeding_num_samples": 20},      # ends on time (2 s), not on count, at ~8 detections/s
             {"UKF_alpha": 0.5},
             {"UKF_beta": 2.0},
             {"UKF_kappa": 0.0},
             {"UKF_mahalanobis_threshold": 15.0},
-            {"UKF_max_consecutive_rejections": 5},
+            {"UKF_max_consecutive_rejections": 8},    # 5 reset on ~0.4 s of disagreement; 20 let it coast ~6 s on a bad velocity
             {"UKF_buffer_window_s": 1.0},         # Pi YOLO latency > SITL; 0.5 s drops frames
 
             {"UKF_initial_P_diag": [
@@ -345,14 +363,18 @@ def generate_launch_description():
             ]},
 
             {"UKF_unhealthy_covar": 500.0},
-            {"UKF_freq": 40.0},                   # drop to 20 if "UKF loop took" warnings appear
+            {"UKF_freq": 20.0},                   # was 40: loops took 25-41 ms on the Pi (budget 25 ms), 50 ms now
             {"apriltag_enabled": False},
 
             # ----- YOLO measurement model -----
             {"UKF_yolo_box_yaw_sigma_max": 0.25},
-            {"UKF_yolo_box_pixel_sigma": 5.0},
+            {"UKF_yolo_box_pixel_sigma": 8.0},    # was 5.0; box-centre error measured in flight is 6-9 px
             {"UKF_yolo_fit_yaw_enabled": True},
-            {"yolo_roof_height_gain": 0.2},
+            # Pad-height learning from the box size: was 0.2 per detection, which let the
+            # height wander by metres within a second on any vision error. Slow (about a
+            # 4 s time constant at 8 detections/s) and limited to +/- 0.5 m of PAD_HEIGHT_M.
+            {"yolo_roof_height_gain": 0.03},
+            {"yolo_roof_height_max_dev": 0.5},
 
             # ----- Car shape -----
             {"yolo_car_boxes": CAR_BOXES},
@@ -363,25 +385,36 @@ def generate_launch_description():
             {"CTRL_freq": 20.0},
 
             # ----- PID controller parameters -----
-            {"PID_lam_0": 6.0},
-            {"PID_Kp_0": 8.0},
-            {"PID_Kd_0": 4.0},
+            # Gentle first-flight set (2026-11-13): the three guidance gains halved together
+            # (README: "scale PID_Kp_0, PID_Kd_0 and PID_lam_0 down together"). SITL values
+            # were 6.0 / 8.0 / 4.0; with those the first hand-over commanded 20-38 deg at once.
+            {"PID_lam_0": 4.1},               # 14:42 flight used 3.0 / 4.0 / 2.0 and sat 5-8 m behind;
+            {"PID_Kp_0": 5.5},                # raised together by 1.375 (SITL: 6.0 / 8.0 / 4.0)
+            {"PID_Kd_0": 2.75},               # back from 5.0: the 15:28 flight with 5.0 swung twice as hard sideways
 
             # Altitude: outer height loop only, FCU runs vel/accel/throttle
             {"PID_Kp_pos_z": 2.0},
-            {"PID_vz_up_max": 2.0},           # MUST equal WPNAV_SPEED_UP / 100
-            {"PID_vz_dn_max": 2.0},           # MUST equal WPNAV_SPEED_DN / 100
-            {"PID_max_tilt": 0.70},           # rad (40 deg): ANGLE_MAX must be >= 4000
+            # Matched to this FCU on 2026-11-13 (ArduCopter 4.7: WP_SPD_UP 2.5, WP_SPD_DN 1.5 m/s).
+            # With 2.0 / 2.0 here every climb-rate command was scaled wrong: the 1.0 m/s
+            # landing descent came out as 0.75 m/s. Change both together with the FCU.
+            {"PID_vz_up_max": 2.5},           # MUST equal WP_SPD_UP (was WPNAV_SPEED_UP / 100)
+            {"PID_vz_dn_max": 1.5},           # MUST equal WP_SPD_DN (was WPNAV_SPEED_DN / 100)
+            {"PID_max_tilt": 0.40},           # rad (23 deg); was 0.26 (15 deg) for the first gentle flights, SITL 0.70 (40 deg).
+                                              # The FCU's own limit is ATC_ANGLE_MAX = 30 deg.
 
             {"PID_mass": 1.5},                # all-up weight (kg)
             {"PID_gravity": 9.81},
             {"PID_drag_coefficient": 0.03},
 
-            {"PID_max_angle_rate": 1.0},
+            {"PID_max_angle_rate": 0.5},      # rad/s command slew (SITL 1.0). Back from 0.8: this also limits YAW,
+                                              # and at 0.8 the heading whipped around (15:28 flight)
 
-            {"PID_d_blend_start": 6.0},
-            {"PID_d_blend_end": 3.0},
-            {"PID_d_hold_radius": 6.0},
+            # Yaw: face the car until 2 m (horizontal), blend to the car's heading by 1 m.
+            # Were 6.0 / 3.0 / 6.0: with a forward-facing camera, turning to a wrong car
+            # heading from 6 m out swung the camera off the car (15:46 flight, 65 deg).
+            {"PID_d_blend_start": 2.0},
+            {"PID_d_blend_end": 1.0},
+            {"PID_d_hold_radius": 2.0},
             {"PID_marker_yaw_sigma_threshold": 0.25},
 
             {"PID_drop_off_strength": 0.5},
@@ -389,7 +422,11 @@ def generate_launch_description():
             {"PID_drop_off": 7.0},
 
             # Pad-acceleration feedforward (turns / speed changes). 0.0 = off (pure PD)
-            {"PID_accel_ff_gain": 1.0},
+            # Hover-lean feedforward: half of the lean measured while waiting, at most 0.6 m/s^2
+            # (about 3.5 deg). Partial on purpose: if the wind drops it becomes an error.
+            {"hover_lean_ff_gain": 0.5},
+            {"hover_lean_ff_max": 0.6},
+            {"PID_accel_ff_gain": 0.3},       # was 1.0: it averaged 0.3 m/s2 (max 1.0) on a car at constant speed
         ],
     )
 

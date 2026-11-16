@@ -1,0 +1,27 @@
+/**:
+  ros__parameters:
+    # Only what goto_hold.py needs. No "param" plugin: its full parameter download
+    # floods the companion link for minutes (seen 2026-11-12 on the 15" drone).
+    #   sys_status        /mavros/state, heartbeat, set_message_interval
+    #   sys_time          clock sync
+    #   command           set_mode, takeoff, DO_CHANGE_SPEED
+    #   global_position   GPS fix, compass heading
+    #   local_position    local pose
+    #   setpoint_position position + yaw target in GUIDED
+    # and for the auto_lander hand-off ("ctrl lander"), which must find them already
+    # loaded because MAVROS cannot be restarted in the air:
+    #   imu               /mavros/imu/data
+    #   setpoint_raw      attitude + global position setpoints
+    #   setpoint_velocity velocity setpoints
+    # (gimbal_control is NOT loaded: the FC has no mount on this drone. gimbal_bridge.py
+    #  owns /mavros/gimbal_control/... and talks to the A2 mini over the SIYI SDK.)
+    plugin_allowlist:
+      - sys_status
+      - sys_time
+      - command
+      - global_position
+      - local_position
+      - setpoint_position
+      - imu
+      - setpoint_raw
+      - setpoint_velocity

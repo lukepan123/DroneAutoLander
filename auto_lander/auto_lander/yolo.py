@@ -184,8 +184,32 @@ class YoloNode(Node):
         self._dist_coeffs = self._intrinsics.dist_coeffs_array
 
         # ---- YOLO MODEL ----
+        # Optional Hailo-8L path (Raspberry Pi AI HAT+): with yolo_hailo_hef set, inference
+        # runs on the HAT (about 20 ms a frame) instead of OpenVINO on the CPU (about 200 ms
+        # in flight on 2026-11-13). The .hef must be a single-class car model, class 0.
+        # It needs HailoRT's python package (in ~/hailo/venv) and ~/hailo_det.py; if either
+        # is missing the node falls back to the CPU model and says so.
+        self.declare_parameter("yolo_hailo_hef", "")
+        self._hailo = None
+        hef = self.get_parameter("yolo_hailo_hef").get_parameter_value().string_value
+        if self.yolo_enabled and hef:
+            try:
+                import glob
+                import sys
+                for sp in glob.glob(os.path.expanduser("~/hailo/venv/lib/python3*/site-packages")):
+                    if sp not in sys.path:
+                        sys.path.append(sp)
+                if os.path.expanduser("~") not in sys.path:
+                    sys.path.insert(0, os.path.expanduser("~"))
+                from hailo_det import HailoYolo
+                self._hailo = HailoYolo(os.path.expanduser(hef), conf=self.yolo_conf_threshold, names=["car"])
+                self.get_logger().info(f"YOLO on the Hailo: {hef}")
+            except Exception as e:
+                self._hailo = None
+                self.get_logger().error(f"Hailo model '{hef}' not usable ({e!r}) - falling back to the CPU model")
+
         self.yolo_model = None
-        if self.yolo_enabled:
+        if self.yolo_enabled and self._hailo is None:
             try:
                 self.get_logger().info(f"Loading YOLO model: {self.yolo_model_path}")
                 self.yolo_model = YOLO(self.yolo_model_path)
@@ -357,7 +381,7 @@ class YoloNode(Node):
                 t_pub    measurement about to be published    (post-processing)
         """
 
-        if not self.yolo_enabled or self.yolo_model is None:
+        if not self.yolo_enabled or (self.yolo_model is None and self._hailo is None):
             return
 
         latest = self._get_new_image()
@@ -462,6 +486,21 @@ class YoloNode(Node):
         :return: list of (cx, cy, width, height, confidence), empty if no car was found
         """
         candidates = []
+
+        if self._hailo is not None:
+            # (x1, y1, x2, y2, class, confidence) in frame pixels; same filters as below
+            for x1, y1, x2, y2, cls, confidence in self._hailo.detect(frame):
+                if confidence < self.yolo_conf_threshold or int(cls) != 0:
+                    continue
+                margin = self._yolo_edge_margin_px
+                if (x1 < margin or y1 < margin or x2 > self._image_width - margin
+                        or y2 > self._image_height - margin):
+                    continue
+                candidates.append((
+                    float((x1 + x2) * 0.5), float((y1 + y2) * 0.5),
+                    float(x2 - x1), float(y2 - y1), float(confidence),
+                ))
+            return candidates
 
         results = self.yolo_model(  #type: ignore
             frame,                                   # 640x360

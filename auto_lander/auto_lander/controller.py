@@ -81,6 +81,11 @@ class Orchestrator(Node):
         self.YOLO_SHADOW_FIT_ENABLED = self.get_parameter("yolo_shadow_fit_enabled").get_parameter_value().bool_value
         # Real flight: never switch the FCU into GUIDED ourselves. The pilot selecting
         # GUIDED on the RC is the "go" signal; arming and takeoff then follow as in SITL.
+        # Ground-station start-up (gcs_start/goto_stack.sh lander): never send an ARM
+        # request. The pilot arms with the transmitter; started in the air, the vehicle is
+        # already armed and this only guarantees a re-arm can never come from here.
+        self.declare_parameter("never_arm", False)
+        self.NEVER_ARM = self.get_parameter("never_arm").get_parameter_value().bool_value
         self.declare_parameter("wait_for_pilot_guided", False)
         self.WAIT_FOR_PILOT_GUIDED = self.get_parameter("wait_for_pilot_guided").get_parameter_value().bool_value
         # MAVLink stream rate requested for GLOBAL_POSITION_INT / ATTITUDE (Hz). 0 = leave
@@ -196,6 +201,22 @@ class Orchestrator(Node):
         self.landing_pad_relative_odometry = Odometry()
         self.landing_pad_acceleration = np.zeros(2)   # pad accel (level frame, xy), from the UKF
         self._pad_acc_ff = np.full(2, np.nan)         # feedforward actually applied this tick (logged)
+
+        # Hover-lean feedforward (2026-11-13). The PD law has no term that holds a steady
+        # lean, so against wind (or a trim offset) it sits off the pad by lean / gain: in
+        # flight 15:28 a 3.7 deg lean meant 1.5 m to one side. While waiting (states
+        # 2000-2999) the FCU is holding zero velocity, so its attitude IS the lean needed;
+        # that is averaged as a horizontal acceleration in the world frame, frozen when
+        # tracking starts, and a fraction (gain) of it, limited to max, is added to the
+        # commanded acceleration. Deliberately partial and capped: if the wind drops the
+        # feedforward becomes an error of at most max / position-gain. gain 0 = off.
+        self.declare_parameter("hover_lean_ff_gain", 0.0)
+        self.HOVER_LEAN_FF_GAIN = self.get_parameter("hover_lean_ff_gain").get_parameter_value().double_value
+        self.declare_parameter("hover_lean_ff_max", 0.6)          # m/s^2 (0.6 is about 3.5 deg)
+        self.HOVER_LEAN_FF_MAX = self.get_parameter("hover_lean_ff_max").get_parameter_value().double_value
+        self._lean_acc = np.zeros(2)       # averaged hover lean as world-frame accel (east, north)
+        self._lean_time = 0.0              # seconds of hover that average is built on
+        self._lean_logged = False
         self.alt_pos_control = True
 
         self._last_quad_z_velocity = None
@@ -428,6 +449,11 @@ class Orchestrator(Node):
             yaw_seed_var_max=1.0 if self.UKF_YOLO_FIT_YAW_ENABLED else None,
             buffer_window=self.UKF_BUFFER_WINDOW,
         )
+        # Limit on how far the learned pad height may move from the configured one (m).
+        # 0 = unlimited (original behaviour).
+        self.declare_parameter("yolo_roof_height_max_dev", 0.0)
+        _dev = self.get_parameter("yolo_roof_height_max_dev").get_parameter_value().double_value
+        self._UKF_filter.roof_agl_max_dev = _dev if _dev > 0.0 else None
 
         self._UKF_diag = self._UKF_filter.get_covar_diagnostics()
         self._UKF_unhealthy_counter = 0
@@ -637,6 +663,19 @@ class Orchestrator(Node):
         if self._armed_confirmed and not self.fcu_state.armed:
             self._disarmed = True
 
+
+    @staticmethod
+    def _lean_to_world_accel(roll: float, pitch: float, yaw: float, g: float = 9.81) -> np.ndarray:
+        """ Horizontal acceleration (east, north) a hovering drone's lean is producing.
+            Inverse of the accel -> tilt mapping in pid_controller.update: pitch is the
+            forward component, roll the rightward one, both rotated by yaw (ENU).
+        """
+        fwd = g * np.tan(pitch)
+        right = g * np.tan(roll) / max(np.cos(pitch), 0.1)
+        return np.array([
+            fwd * np.cos(yaw) + right * np.sin(yaw),
+            fwd * np.sin(yaw) - right * np.cos(yaw),
+        ])
 
     def _odometry_callback(self, msg: Odometry) -> None:
         """ Obtain FCU Odometry, process quaternions into euler roll, pitch and yaw
@@ -1359,7 +1398,12 @@ class Orchestrator(Node):
             return
 
         if not self._armed_confirmed:
-            if not self._arm_requested:
+            if self.NEVER_ARM:
+                self.get_logger().info(
+                    "Not armed: waiting for the pilot to arm with the transmitter (never_arm).",
+                    throttle_duration_sec=5.0,
+                )
+            elif not self._arm_requested:
                 self._request_arm()
             self.controller_state = 0
             return
@@ -1613,6 +1657,14 @@ class Orchestrator(Node):
             self.alt_pos_control = True
             msg = self._pid_controller.stop(control_stamp)
             self.vel_pub.publish(msg)
+            # Learn the hover lean while the FCU holds still (see hover_lean_ff_gain)
+            if self.HOVER_LEAN_FF_GAIN > 0.0 and np.hypot(self.quad_vel[0], self.quad_vel[1]) < 0.5:
+                lean = self._lean_to_world_accel(self.quad_roll, self.quad_pitch, self.quad_yaw)
+                step = float(np.clip(control_dt, 0.0, 0.5))
+                alpha = step / (3.0 + step)                       # ~3 s time constant
+                self._lean_acc += alpha * (lean - self._lean_acc) if self._lean_time > 0.0 else lean
+                self._lean_time += step
+                self._lean_logged = False
         elif 3000 <= self.controller_state <= 6000:
             # Descent (4000) commands a climb rate directly; everything else holds height.
             # 6000 keeps the last rate (the cutoff flag drives the command there).
@@ -1623,12 +1675,33 @@ class Orchestrator(Node):
                     and -self.landing_pad_relative_position[LP_State.PZ] <= 2.0
                 )
                 self.target_alt_rate = self.DESCENT_RATE_CLOSE_SP if close else self.DESCENT_RATE_FAR_SP
+                # No estimate (filter reset and waiting for a seed): hold height. The relative
+                # height is frozen at its re-seed value until the seed completes, so the
+                # height loop would keep descending on it - 9.2 m to 5.7 m in 8 s on
+                # 2026-11-13 15:46. Climb rate 0 = hold, in every state before the cut.
+                if self._UKF_filter.seed_pending or not self._UKF_start:
+                    self.alt_pos_control = False
+                    self.target_alt_rate = 0.0
             # Pad acceleration feedforward. Its direction comes from the yaw estimate, so it
             # is only applied once the heading is trusted (same gate as marker_yaw).
             if marker_yaw is not None:
                 self._pad_acc_ff = self.PID_ACCEL_FF_GAIN * self.landing_pad_acceleration
             else:
                 self._pad_acc_ff = np.zeros(2)
+            # Hover-lean feedforward: needs at least 3 s of hover behind it
+            if self.HOVER_LEAN_FF_GAIN > 0.0 and self._lean_time >= 3.0:
+                lean_ff = self.HOVER_LEAN_FF_GAIN * self._lean_acc
+                mag = float(np.hypot(lean_ff[0], lean_ff[1]))
+                if mag > self.HOVER_LEAN_FF_MAX:
+                    lean_ff = lean_ff * (self.HOVER_LEAN_FF_MAX / mag)
+                if not self._lean_logged:
+                    self._lean_logged = True
+                    self.get_logger().info(
+                        f"Hover-lean feedforward: measured ({self._lean_acc[0]:+.2f}, {self._lean_acc[1]:+.2f}) "
+                        f"m/s^2 east/north over {self._lean_time:.0f} s of hover, applying "
+                        f"({lean_ff[0]:+.2f}, {lean_ff[1]:+.2f})"
+                    )
+                self._pad_acc_ff = self._pad_acc_ff + lean_ff
             # Position target = forecast cut point (forward-predicted). Velocity = CURRENT
             # relative velocity: that is the rate of change of the forecast error in steady
             # tracking, whereas the forward-predicted velocity carries a T * a_pad bias
